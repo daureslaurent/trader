@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import Dashboard from './pages/Dashboard'
 import Portfolio from './pages/Portfolio'
+import Logs from './pages/Logs'
 import Settings from './pages/Settings'
 
-type Page = 'dashboard' | 'portfolio' | 'settings'
+type Page = 'dashboard' | 'portfolio' | 'logs' | 'settings'
 
 export default function App() {
   const [page, setPage] = useState<Page>('dashboard')
@@ -11,6 +12,7 @@ export default function App() {
   const tabs: { key: Page; label: string }[] = [
     { key: 'dashboard', label: 'Dashboard' },
     { key: 'portfolio', label: 'Portfolio' },
+    { key: 'logs', label: 'Logs' },
     { key: 'settings', label: 'Settings' },
   ]
 
@@ -33,6 +35,7 @@ export default function App() {
 
       {page === 'dashboard' && <Dashboard />}
       {page === 'portfolio' && <Portfolio />}
+      {page === 'logs' && <Logs />}
       {page === 'settings' && <Settings />}
     </div>
   )
