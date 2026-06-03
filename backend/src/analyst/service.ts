@@ -20,7 +20,7 @@ export async function analyzeSignal(
   portfolioPercent: number,
 ): Promise<Signal> {
   const { system, user } = buildAnalysisPrompt(coin, price, change24h, volume, research, portfolioPercent)
-  logger.debug('LLM input', { coin, system, user })
+  logger.info('LLM input', { coin, system, user })
 
   try {
     const resp = await client.chat.completions.create({
@@ -34,7 +34,7 @@ export async function analyzeSignal(
     })
 
     const content = resp.choices[0]?.message?.content || ''
-    logger.debug('LLM output', { coin, content, finish_reason: resp.choices[0]?.finish_reason })
+    logger.info('LLM output', { coin, content, finish_reason: resp.choices[0]?.finish_reason })
     if (!content.trim()) {
       const finish = resp.choices[0]?.finish_reason
       logger.warn('LLM empty response', { coin, finish_reason: finish })
