@@ -2,7 +2,7 @@ import { Telegraf } from 'telegraf'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
-import { getDB } from '../db/index.js'
+import { queryOne } from '../db/index.js'
 import { ApprovalRequest } from '../types.js'
 
 let bot: Telegraf | null = null
@@ -19,9 +19,9 @@ export function startTelegramBot() {
   bot.help((ctx) => ctx.reply('/status - Portfolio\n/approve <id> - Approve trade\n/reject <id> - Reject trade'))
 
   bot.command('status', async (ctx) => {
-    const snap = getDB().prepare('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1').get() as any
+    const snap = queryOne('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1') as any
     if (!snap) return ctx.reply('No portfolio data yet.')
-    ctx.reply(`Portfolio: $${snap.total_value_usd?.toFixed(2)}\nHoldings: ${snap.holdings}`)
+    ctx.reply(`Portfolio: $${Number(snap.total_value_usd).toFixed(2)}\nHoldings: ${snap.holdings}`)
   })
 
   bot.command('approve', (ctx) => {

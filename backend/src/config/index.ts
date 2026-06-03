@@ -27,7 +27,6 @@ export const config = {
     baseURL: req('LLAMA_BASE_URL'),
     model: req('LLAMA_MODEL'),
   },
-  serpApiKey: opt('SERPAPI_KEY', ''),
   telegram: { botToken: opt('TELEGRAM_BOT_TOKEN', '') },
   approvalTimeoutMs: num('APPROVAL_TIMEOUT_MINUTES', 5) * 60 * 1000,
   port: num('PORT', 3000),

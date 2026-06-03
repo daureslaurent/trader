@@ -1,4 +1,4 @@
-import { initDB, getSettings, getDB } from './db/index.js'
+import { initDB, queryAll, queryOne, runSQL, getSettings } from './db/index.js'
 import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
@@ -42,10 +42,10 @@ async function tradingLoop() {
         portfolioPercent,
       )
 
-      const db = getDB()
-      db.prepare(
-        'INSERT INTO decisions (coin, action, reason, confidence, context) VALUES (?, ?, ?, ?, ?)'
-      ).run(data.symbol, signal.action, signal.reason, signal.confidence, JSON.stringify({ price: data.price, research }))
+      runSQL(
+        'INSERT INTO decisions (coin, action, reason, confidence, context) VALUES (?, ?, ?, ?, ?)',
+        [data.symbol, signal.action, signal.reason, signal.confidence, JSON.stringify({ price: data.price, research })]
+      )
 
       if (signal.action === 'HOLD' || signal.confidence < settings.min_confidence) {
         logger.debug('Skipping trade', { coin: data.symbol, action: signal.action, confidence: signal.confidence })
@@ -58,7 +58,6 @@ async function tradingLoop() {
     }
   }
 
-  // snapshot
   const snapshotBalance = await fetchBalance()
   let totalValue = 0
   for (const data of marketData) {
@@ -67,10 +66,10 @@ async function tradingLoop() {
   }
   if (snapshotBalance['USDT']) totalValue += snapshotBalance['USDT'].total
 
-  getDB().prepare('INSERT INTO portfolio_snapshots (total_value_usd, holdings) VALUES (?, ?)')
-    .run(totalValue, JSON.stringify(Object.fromEntries(
-      Object.entries(snapshotBalance).map(([k, v]) => [k, v.total])
-    )))
+  runSQL(
+    'INSERT INTO portfolio_snapshots (total_value_usd, holdings) VALUES (?, ?)',
+    [totalValue, JSON.stringify(Object.fromEntries(Object.entries(snapshotBalance).map(([k, v]) => [k, v.total])))]
+  )
 
   bus.emit('portfolio_updated')
   logger.info('Trading loop completed', { totalValue })
@@ -82,12 +81,12 @@ async function handleTradeSignal(signal: Signal) {
   const settings = getSettings()
 
   if (settings.approval_required || config.approvalsEnabled) {
-    const db = getDB()
-    const info = db.prepare(
-      'INSERT INTO trades (coin, side, quantity, status) VALUES (?, ?, ?, ?)'
-    ).run(signal.coin, signal.action, signal.quantity, 'PENDING')
+    const info = runSQL(
+      "INSERT INTO trades (coin, side, quantity, status) VALUES (?, ?, ?, 'PENDING')",
+      [signal.coin, signal.action, signal.quantity]
+    )
 
-    const tradeId = info.lastInsertRowid as number
+    const tradeId = info.lastInsertRowid
     const req: ApprovalRequest = {
       tradeId,
       coin: signal.coin,
@@ -118,12 +117,12 @@ async function handleTradeSignal(signal: Signal) {
 async function submitTrade(signal: Signal) {
   try {
     const result = await executeTrade(signal)
-    const db = getDB()
-    db.prepare(
-      'INSERT INTO trades (coin, side, quantity, price_usd, total_usd, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(signal.coin, signal.action, signal.quantity, result.price, result.cost, 'EXECUTED', 1)
+    runSQL(
+      'INSERT INTO trades (coin, side, quantity, price_usd, total_usd, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [signal.coin, signal.action, signal.quantity, result.price, result.cost, 'EXECUTED', 1]
+    )
 
-    const trade = db.prepare('SELECT * FROM trades ORDER BY id DESC LIMIT 1').get()
+    const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
     bus.emit('trade_executed', trade as any)
     logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price })
   } catch (err) {
@@ -152,9 +151,9 @@ bus.on('trade_rejected', (tradeId: number) => {
   logger.info('Trade rejected by user', { tradeId })
 })
 
-function start() {
+async function start() {
   logger.info('Starting CryptoBot...')
-  initDB()
+  await initDB()
   startAPI()
   startTelegramBot()
 

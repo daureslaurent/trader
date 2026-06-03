@@ -1,5 +1,3 @@
-import axios from 'axios'
-import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 
 export interface ResearchResult {
@@ -12,28 +10,11 @@ export interface ResearchResult {
 export async function researchCoin(coin: string): Promise<ResearchResult> {
   const symbol = coin.replace('/USDT', '')
 
-  if (!config.serpApiKey) {
-    return { coin, headlines: [], sentiment: 'neutral', summary: 'No search API key configured.' }
-  }
-
   try {
-    const resp = await axios.get('https://serpapi.com/search', {
-      params: {
-        q: `${symbol} crypto news`,
-        api_key: config.serpApiKey,
-        engine: 'google_news',
-        num: 5,
-      },
-      timeout: 15000,
-    })
+    const { search } = await import('../scraper/search.js')
+    const results = await search(`${symbol} crypto 2026`, { count: 5 })
 
-    const headlines: string[] = []
-    if (resp.data?.news_results) {
-      for (const item of resp.data.news_results.slice(0, 5)) {
-        if (item.title) headlines.push(item.title)
-      }
-    }
-
+    const headlines = results.map((r: { title: string }) => r.title)
     logger.debug('Research results', { coin, headlineCount: headlines.length })
     return { coin, headlines, sentiment: 'neutral', summary: headlines.join('. ') }
   } catch (err) {
