@@ -29,13 +29,14 @@ export async function analyzeSignal(
         { role: 'user', content: user },
       ],
       temperature: 0.3,
-      max_tokens: 300,
+      max_tokens: 500,
     })
 
-    const content = resp.choices[0]?.message?.content
-    if (!content) {
+    const content = resp.choices[0]?.message?.content || ''
+    if (!content.trim()) {
       const finish = resp.choices[0]?.finish_reason
-      throw new LLMError(`Empty content (finish_reason: ${finish})`)
+      logger.warn('LLM empty response', { coin, finish_reason: finish })
+      return { coin, action: 'HOLD', quantity: 0, reason: `LLM returned empty (${finish})`, confidence: 0 }
     }
 
     const cleaned = content
