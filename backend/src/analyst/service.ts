@@ -29,7 +29,7 @@ export async function analyzeSignal(
         { role: 'user', content: user },
       ],
       temperature: 0.3,
-      max_tokens: 500,
+      max_tokens: 28000,
     })
 
     const content = resp.choices[0]?.message?.content || ''
