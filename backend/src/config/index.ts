@@ -18,10 +18,13 @@ function num(key: string, def: number): number {
   return val ? parseInt(val, 10) : def
 }
 
+const stubMode = process.argv.includes('--stub')
+
 export const config = {
+  stub: stubMode,
   binance: {
-    apiKey: req('BINANCE_API_KEY'),
-    secret: req('BINANCE_SECRET'),
+    apiKey: stubMode ? 'stub' : req('BINANCE_API_KEY'),
+    secret: stubMode ? 'stub' : req('BINANCE_SECRET'),
   },
   llama: {
     baseURL: req('LLAMA_BASE_URL'),
