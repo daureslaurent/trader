@@ -3,6 +3,7 @@ FROM node:22-bookworm-slim
 RUN apt-get update -qq && apt-get install -y -qq \
   chromium \
   chromium-sandbox \
+  unzip \
   libnss3 \
   libnspr4 \
   libatk1.0-0 \
@@ -23,6 +24,7 @@ RUN apt-get update -qq && apt-get install -y -qq \
 
 WORKDIR /app
 COPY package.json package-lock.json ./
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 RUN npm ci
 COPY src/ ./src/
 COPY tsconfig.json ./
