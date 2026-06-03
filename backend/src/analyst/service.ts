@@ -29,14 +29,24 @@ export async function analyzeSignal(
         { role: 'user', content: user },
       ],
       temperature: 0.3,
-      max_tokens: 200,
-      response_format: { type: 'json_object' },
+      max_tokens: 300,
     })
 
     const content = resp.choices[0]?.message?.content
-    if (!content) throw new LLMError('Empty LLM response')
+    if (!content) {
+      const finish = resp.choices[0]?.finish_reason
+      throw new LLMError(`Empty content (finish_reason: ${finish})`)
+    }
 
-    const parsed = JSON.parse(content) as Signal
+    const cleaned = content
+      .replace(/```(?:json)?\s*/gi, '')
+      .replace(/```\s*$/g, '')
+      .trim()
+
+    const parsed = JSON.parse(cleaned) as Signal
+    if (!parsed.action || !['BUY', 'SELL', 'HOLD'].includes(parsed.action)) {
+      throw new LLMError(`Invalid action: ${parsed.action}, raw: ${content.substring(0, 200)}`)
+    }
     logger.info('Signal from LLM', { coin, action: parsed.action, confidence: parsed.confidence })
     return parsed
   } catch (err) {
