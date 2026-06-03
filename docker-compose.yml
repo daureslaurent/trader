@@ -8,10 +8,38 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
+  backend-approval:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    command: ["npx", "tsx", "src/index.ts", "--approval"]
+    profiles: ["approval"]
+
+  backend-stub:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    command: ["npx", "tsx", "src/index.ts", "--stub"]
+    profiles: ["stub"]
+
+  backend-stub-approval:
+    build: ./backend
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    command: ["npx", "tsx", "src/index.ts", "--stub", "--approval"]
+    profiles: ["stub-approval"]
+
   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
-    depends_on:
-      - backend
     restart: unless-stopped
