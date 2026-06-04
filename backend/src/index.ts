@@ -1,4 +1,4 @@
-import { initDB, queryAll, queryOne, runSQL, getSettings } from './db/index.js'
+import { initDB, queryOne, runSQL, getSettings } from './db/index.js'
 import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
@@ -8,6 +8,8 @@ import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trad
 import { researchCoin } from './researcher/index.js'
 import { extractResearch } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
+import { getMarketContext, checkOpenPositions, computePortfolioState } from './portfolio/index.js'
+import { calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/risk.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 
@@ -51,6 +53,10 @@ async function tradingLoop() {
   const marketData = await fetchMarketData(symbols)
   const balance = await fetchBalance()
 
+  await checkOpenPositions()
+
+  const portfolioState = computePortfolioState(balance, marketData, settings)
+
   for (const data of marketData) {
     const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
     try {
@@ -73,32 +79,16 @@ async function tradingLoop() {
         top_headlines: extractedResearch.top_headlines,
       })
 
-      const portfolioPercent = balance[data.symbol.replace('/USDT', '')]
-        ? ((balance[data.symbol.replace('/USDT', '')].total * data.price) / (Object.values(balance).reduce((s, b) => s + b.total * data.price, 0.01))) * 100
-        : 0
-
+      const marketCtx = await getMarketContext(data.symbol, data.price)
       logPipelineEvent('analysis_started', data.symbol, cycleId, {
-        symbol: data.symbol,
-        price: data.price,
-        change24h: data.change24h,
-        volume: data.volume,
+        symbol: data.symbol, price: data.price, change24h: data.change24h, volume: data.volume,
+        rsi14: marketCtx.rsi14, trend: marketCtx.trend, atr14: marketCtx.atr14,
       })
 
-      const signal = await analyzeSignal(
-        data.symbol,
-        data.price,
-        data.change24h,
-        data.volume,
-        extractedResearch,
-        portfolioPercent,
-      )
+      const signal = await analyzeSignal(data.symbol, marketCtx, portfolioState, extractedResearch)
 
       logPipelineEvent('signal_generated', data.symbol, cycleId, {
-        symbol: data.symbol,
-        action: signal.action,
-        quantity: signal.quantity,
-        reason: signal.reason,
-        confidence: signal.confidence,
+        symbol: data.symbol, action: signal.action, reason: signal.reason, confidence: signal.confidence,
       })
 
       runSQL(
@@ -111,15 +101,35 @@ async function tradingLoop() {
         continue
       }
 
-      await handleTradeSignal(signal, data.price)
+      if (signal.action === 'BUY') {
+        if (portfolioState.openPositionCount >= portfolioState.maxOpenPositions) {
+          logger.warn('Max open positions reached, skipping BUY', { coin: data.symbol, openPositions: portfolioState.openPositionCount })
+          continue
+        }
+
+        const qty = calculatePositionSize(data.price, marketCtx.atr14, signal.confidence, portfolioState.totalValueUsd, settings)
+        if (qty <= 0) continue
+
+        const buySignal: Signal = { ...signal, quantity: qty }
+        await handleTradeSignal(buySignal, data.price, marketCtx.atr14, settings)
+      } else if (signal.action === 'SELL') {
+        const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [data.symbol])
+        if (existing) {
+          const sellSignal: Signal = { ...signal, quantity: (existing.quantity as number) }
+          await handleTradeSignal(sellSignal, data.price)
+          runSQL(
+            "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
+            [(existing.quantity as number), data.price, (existing.id as number)]
+          )
+        } else {
+          logger.debug('No open position to sell', { coin: data.symbol })
+        }
+      }
     } catch (err) {
       logPipelineEvent('pipeline_error', data.symbol, cycleId, {
-        symbol: data.symbol,
-        error: (err as Error).message,
-        price: data.price,
-        change24h: data.change24h,
-        volume: data.volume,
-      })
+        symbol: data.symbol, error: (err as Error).message,
+        price: data.price, change24h: data.change24h, volume: data.volume,
+      } as Record<string, unknown>)
       logger.error('Error in trading loop', { coin: data.symbol, error: (err as Error).message })
     }
   }
@@ -141,12 +151,12 @@ async function tradingLoop() {
   logger.info('Trading loop completed', { totalValue })
 }
 
-async function handleTradeSignal(signal: Signal, price: number = 0) {
+async function handleTradeSignal(signal: Signal, price: number, atr?: number, settings?: any) {
   if (signal.action === 'HOLD') return
 
-  const settings = getSettings()
+  const s = getSettings()
 
-  if (settings.approval_required || config.approvalsEnabled) {
+  if (s.approval_required || config.approvalsEnabled) {
     const total = price * signal.quantity
     const info = runSQL(
       "INSERT INTO trades (coin, side, quantity, price, total, status) VALUES (?, ?, ?, ?, ?, 'PENDING')",
@@ -173,17 +183,17 @@ async function handleTradeSignal(signal: Signal, price: number = 0) {
       bus.emit('trade_rejected', tradeId)
       pendingApprovals.delete(tradeId)
       approvalTimers.delete(tradeId)
-      logger.info('Approval timed out', { tradeId })
     }, config.approvalTimeoutMs)
     approvalTimers.set(tradeId, timer)
   } else {
-    await submitTrade(signal)
+    await submitTrade(signal, undefined, atr, s)
   }
 }
 
-async function submitTrade(signal: Signal, tradeId?: number) {
+async function submitTrade(signal: Signal, tradeId?: number, atr?: number, settings?: any) {
   try {
     const result = await executeTrade(signal)
+
     if (tradeId) {
       runSQL(
         "UPDATE trades SET price = ?, total = ?, status = 'EXECUTED', approved = 1 WHERE id = ?",
@@ -194,6 +204,19 @@ async function submitTrade(signal: Signal, tradeId?: number) {
         'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [signal.coin, signal.action, signal.quantity, result.price, result.cost, 'EXECUTED', 1]
       )
+    }
+
+    if (signal.action === 'BUY' && atr && settings) {
+      const sl = calculateStopLoss(result.price, atr, settings)
+      const tp = calculateTakeProfit(result.price, atr, settings)
+      const existing = queryOne("SELECT id FROM positions WHERE coin = ? AND status = 'OPEN'", [signal.coin])
+      if (!existing) {
+        runSQL(
+          'INSERT INTO positions (coin, side, quantity, entry_price, stop_loss, take_profit, current_sl) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [signal.coin, 'BUY', result.quantity, result.price, sl, tp, sl]
+        )
+        logger.info('Position opened', { coin: signal.coin, price: result.price, sl, tp })
+      }
     }
 
     const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
@@ -224,6 +247,42 @@ bus.on('trade_rejected', (tradeId: number) => {
 
   runSQL("UPDATE trades SET approved = 0, status = 'FAILED' WHERE id = ? AND status = 'PENDING'", [tradeId])
   logger.info('Trade rejected by user', { tradeId })
+})
+
+  bus.on('stop_loss_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
+  logger.warn('Stop loss triggered', { coin, positionId, price })
+  try {
+    const signal: Signal = { coin, action: 'SELL', quantity: 0, reason: 'Stop loss', confidence: 1 }
+    const result = await executeTrade(signal)
+    runSQL(
+      "UPDATE positions SET status = 'SL_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
+      [price, positionId]
+    )
+    runSQL(
+      'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
+    )
+  } catch (err) {
+    logger.error('Failed to execute stop loss', { coin, error: (err as Error).message })
+  }
+})
+
+  bus.on('take_profit_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
+  logger.info('Take profit triggered', { coin, positionId, price })
+  try {
+    const signal: Signal = { coin, action: 'SELL', quantity: 0, reason: 'Take profit', confidence: 1 }
+    const result = await executeTrade(signal)
+    runSQL(
+      "UPDATE positions SET status = 'TP_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
+      [price, positionId]
+    )
+    runSQL(
+      'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
+    )
+  } catch (err) {
+    logger.error('Failed to execute take profit', { coin, error: (err as Error).message })
+  }
 })
 
 async function start() {
