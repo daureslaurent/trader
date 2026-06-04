@@ -23,14 +23,18 @@ function logPipelineEvent(
   data: Record<string, unknown>
 ): void {
   const payload = JSON.stringify(data)
-  runSQL(
+  const { lastInsertRowid } = runSQL(
     'INSERT INTO pipeline_events (coin, cycle_id, stage, data) VALUES (?, ?, ?, ?)',
     [coin, cycleId, stage, payload]
   )
-  const row = queryOne(
-    'SELECT * FROM pipeline_events WHERE id = (SELECT last_insert_rowid())'
-  )
-  if (row) broadcast('pipeline_event', row)
+  broadcast('pipeline_event', {
+    id: lastInsertRowid,
+    coin,
+    cycle_id: cycleId,
+    stage,
+    data: payload,
+    created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+  })
 }
 
 async function tradingLoop() {
