@@ -68,7 +68,8 @@ export async function extractResearch(
     const cleaned = content
       .replace(/```(?:json)?\s*/gi, '')
       .replace(/```\s*$/g, '')
-  
+      .trim()
+
     const parsed = JSON.parse(cleaned) as ExtractedArticle[]
 
     const articles = Array.isArray(parsed) ? parsed : []

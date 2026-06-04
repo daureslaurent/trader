@@ -2,7 +2,7 @@ import OpenAI from 'openai'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { Signal } from '../types.js'
-import { ResearchResult } from '../researcher/index.js'
+import { ExtractedResearch } from '../extractor/index.js'
 import { buildAnalysisPrompt } from './prompts.js'
 import { LLMError } from '../core/errors.js'
 
@@ -16,7 +16,7 @@ export async function analyzeSignal(
   price: number,
   change24h: number,
   volume: number,
-  research: ResearchResult,
+  research: ExtractedResearch,
   portfolioPercent: number,
 ): Promise<Signal> {
   const { system, user } = buildAnalysisPrompt(coin, price, change24h, volume, research, portfolioPercent)

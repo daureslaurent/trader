@@ -1,2 +1,2 @@
-export { researchCoin } from './service.js'
-export type { ResearchResult } from './service.js'
+export { researchCoin, extractResearch } from './service.js'
+export type { ResearchResult, ArticleContent } from './service.js'

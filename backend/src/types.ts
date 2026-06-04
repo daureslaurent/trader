@@ -13,8 +13,8 @@ export interface TradeRecord {
   coin: string
   side: 'BUY' | 'SELL'
   quantity: number
-  price_usd: number
-  total_usd: number
+  price: number
+  total: number
   signal_id: number | null
   status: 'PENDING' | 'EXECUTED' | 'FAILED'
   approved: boolean | null

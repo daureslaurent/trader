@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
 import { executeTrade } from '../trader/index.js'
+import { bus } from '../core/events.js'
 import { Signal } from '../types.js'
 
 export const router = Router()
@@ -24,13 +25,13 @@ router.get('/trades', (_req: Request, res: Response) => {
 
 router.post('/trade/approve/:id', (req: Request, res: Response) => {
   const { id } = req.params
-  runSQL("UPDATE trades SET approved = 1, status = 'EXECUTED' WHERE id = ? AND status = 'PENDING'", [id])
+  bus.emit('trade_approved', Number(id))
   res.json({ ok: true })
 })
 
 router.post('/trade/reject/:id', (req: Request, res: Response) => {
   const { id } = req.params
-  runSQL("UPDATE trades SET approved = 0, status = 'FAILED' WHERE id = ? AND status = 'PENDING'", [id])
+  bus.emit('trade_rejected', Number(id))
   res.json({ ok: true })
 })
 
@@ -40,7 +41,7 @@ router.post('/trade/manual', async (req: Request, res: Response) => {
     const signal: Signal = { coin, action: side, quantity, reason: 'Manual', confidence: 1 }
     const result = await executeTrade(signal)
     const info = runSQL(
-      'INSERT INTO trades (coin, side, quantity, price_usd, total_usd, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [coin, side, quantity, result.price, result.cost, 'EXECUTED', 1]
     )
     res.json({ ok: true, id: info.lastInsertRowid })

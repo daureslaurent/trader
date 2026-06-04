@@ -3,8 +3,8 @@ interface Trade {
   coin: string
   side: string
   quantity: number
-  price_usd: number
-  total_usd: number
+  price: number
+  total: number
   status: string
   created_at: string
 }
@@ -33,8 +33,8 @@ export default function TradeHistory({ trades }: { trades: Trade[] }) {
               <td>{t.coin.replace('/USDT', '')}</td>
               <td className={t.side === 'BUY' ? 'text-green-400' : 'text-red-400'}>{t.side}</td>
               <td className="text-right">{t.quantity}</td>
-              <td className="text-right">${t.price_usd?.toFixed(2) ?? '-'}</td>
-              <td className="text-right">${t.total_usd?.toFixed(2) ?? '-'}</td>
+              <td className="text-right">${t.price?.toFixed(2) ?? '-'}</td>
+              <td className="text-right">${t.total?.toFixed(2) ?? '-'}</td>
               <td className="text-center">
                 <span className={`px-2 py-0.5 rounded text-xs ${
                   t.status === 'EXECUTED' ? 'bg-green-900/50 text-green-400' :

@@ -5,7 +5,7 @@ import { bus } from './core/events.js'
 import { startAPI } from './api/index.js'
 import { startTelegramBot, sendApprovalMessage } from './telegram/index.js'
 import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trader/index.js'
-import { researchCoin } from './researcher/index.js'
+import { researchCoin, extractResearch } from './researcher/index.js'
 import { analyzeSignal } from './analyst/index.js'
 import { Signal, ApprovalRequest } from './types.js'
 
@@ -19,7 +19,7 @@ async function tradingLoop() {
   const symbols = [...settings.watchlist]
 
   if (symbols.length === 0) {
-    const topPairs = await getTopPairs(20)
+    const topPairs = await getTopPairs(3)
     symbols.push(...topPairs)
   }
 
@@ -28,7 +28,8 @@ async function tradingLoop() {
 
   for (const data of marketData) {
     try {
-      const research = await researchCoin(data.symbol)
+      const rawResearch = await researchCoin(data.symbol)
+      const extractedResearch = await extractResearch(rawResearch)
       const portfolioPercent = balance[data.symbol.replace('/USDT', '')]
         ? ((balance[data.symbol.replace('/USDT', '')].total * data.price) / (Object.values(balance).reduce((s, b) => s + b.total * data.price, 0.01))) * 100
         : 0
@@ -38,13 +39,13 @@ async function tradingLoop() {
         data.price,
         data.change24h,
         data.volume,
-        research,
+        extractedResearch,
         portfolioPercent,
       )
 
       runSQL(
         'INSERT INTO decisions (coin, action, reason, confidence, context) VALUES (?, ?, ?, ?, ?)',
-        [data.symbol, signal.action, signal.reason, signal.confidence, JSON.stringify({ price: data.price, research })]
+        [data.symbol, signal.action, signal.reason, signal.confidence, JSON.stringify({ price: data.price, extractedResearch })]
       )
 
       if (signal.action === 'HOLD' || signal.confidence < settings.min_confidence) {
@@ -52,7 +53,7 @@ async function tradingLoop() {
         continue
       }
 
-      await handleTradeSignal(signal)
+      await handleTradeSignal(signal, data.price)
     } catch (err) {
       logger.error('Error in trading loop', { coin: data.symbol, error: (err as Error).message })
     }
@@ -75,15 +76,16 @@ async function tradingLoop() {
   logger.info('Trading loop completed', { totalValue })
 }
 
-async function handleTradeSignal(signal: Signal) {
+async function handleTradeSignal(signal: Signal, price: number = 0) {
   if (signal.action === 'HOLD') return
 
   const settings = getSettings()
 
   if (settings.approval_required || config.approvalsEnabled) {
+    const total = price * signal.quantity
     const info = runSQL(
-      "INSERT INTO trades (coin, side, quantity, status) VALUES (?, ?, ?, 'PENDING')",
-      [signal.coin, signal.action, signal.quantity]
+      "INSERT INTO trades (coin, side, quantity, price, total, status) VALUES (?, ?, ?, ?, ?, 'PENDING')",
+      [signal.coin, signal.action, signal.quantity, price, total]
     )
 
     const tradeId = info.lastInsertRowid
@@ -92,7 +94,7 @@ async function handleTradeSignal(signal: Signal) {
       coin: signal.coin,
       side: signal.action,
       quantity: signal.quantity,
-      estimatedPrice: 0,
+      estimatedPrice: price,
       reason: signal.reason,
       confidence: signal.confidence,
       expiresAt: new Date(Date.now() + config.approvalTimeoutMs).toISOString(),
@@ -114,13 +116,20 @@ async function handleTradeSignal(signal: Signal) {
   }
 }
 
-async function submitTrade(signal: Signal) {
+async function submitTrade(signal: Signal, tradeId?: number) {
   try {
     const result = await executeTrade(signal)
-    runSQL(
-      'INSERT INTO trades (coin, side, quantity, price_usd, total_usd, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [signal.coin, signal.action, signal.quantity, result.price, result.cost, 'EXECUTED', 1]
-    )
+    if (tradeId) {
+      runSQL(
+        "UPDATE trades SET price = ?, total = ?, status = 'EXECUTED', approved = 1 WHERE id = ?",
+        [result.price, result.cost, tradeId]
+      )
+    } else {
+      runSQL(
+        'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [signal.coin, signal.action, signal.quantity, result.price, result.cost, 'EXECUTED', 1]
+      )
+    }
 
     const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
     bus.emit('trade_executed', trade as any)
@@ -139,7 +148,7 @@ bus.on('trade_approved', (tradeId: number) => {
   approvalTimers.delete(tradeId)
   pendingApprovals.delete(tradeId)
 
-  submitTrade(signal)
+  submitTrade(signal, tradeId)
 })
 
 bus.on('trade_rejected', (tradeId: number) => {
@@ -148,6 +157,7 @@ bus.on('trade_rejected', (tradeId: number) => {
   approvalTimers.delete(tradeId)
   pendingApprovals.delete(tradeId)
 
+  runSQL("UPDATE trades SET approved = 0, status = 'FAILED' WHERE id = ? AND status = 'PENDING'", [tradeId])
   logger.info('Trade rejected by user', { tradeId })
 })
 

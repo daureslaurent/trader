@@ -16,8 +16,8 @@ interface Trade {
   coin: string
   side: string
   quantity: number
-  price_usd: number
-  total_usd: number
+  price: number
+  total: number
   status: string
   created_at: string
 }
@@ -92,8 +92,8 @@ export default function Logs() {
                 <span className={entry.data.side === 'BUY' ? 'text-green-400' : 'text-red-400'}>
                   {entry.data.side} {entry.data.quantity}
                 </span>
-                {entry.data.price_usd && (
-                  <span className="text-gray-400">@ ${entry.data.price_usd.toFixed(2)}</span>
+                {entry.data.price && (
+                  <span className="text-gray-400">@ ${entry.data.price.toFixed(2)}</span>
                 )}
               </>
             )}
