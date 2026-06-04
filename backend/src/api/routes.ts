@@ -32,6 +32,31 @@ router.get('/chart', (_req: Request, res: Response) => {
   res.json(data)
 })
 
+router.get('/pipeline-events', (req: Request, res: Response) => {
+  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500)
+  const coin = req.query.coin as string | undefined
+  const cycleId = req.query.cycle_id as string | undefined
+
+  let sql = 'SELECT * FROM pipeline_events'
+  const params: (string | number)[] = []
+  const conditions: string[] = []
+
+  if (coin) {
+    conditions.push('coin = ?')
+    params.push(coin)
+  }
+  if (cycleId) {
+    conditions.push('cycle_id = ?')
+    params.push(cycleId)
+  }
+  if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ')
+  sql += ' ORDER BY created_at DESC LIMIT ?'
+  params.push(limit)
+
+  const events = queryAll(sql, params)
+  res.json(events)
+})
+
 router.get('/trades', (_req: Request, res: Response) => {
   const trades = queryAll('SELECT * FROM trades ORDER BY created_at DESC LIMIT 50')
   res.json(trades)
