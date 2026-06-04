@@ -3,8 +3,9 @@ import Dashboard from './pages/Dashboard'
 import Portfolio from './pages/Portfolio'
 import Logs from './pages/Logs'
 import Settings from './pages/Settings'
+import Charts from './pages/Charts'
 
-type Page = 'dashboard' | 'portfolio' | 'logs' | 'settings'
+type Page = 'dashboard' | 'portfolio' | 'logs' | 'settings' | 'charts'
 
 export default function App() {
   const [page, setPage] = useState<Page>('dashboard')
@@ -14,6 +15,7 @@ export default function App() {
     { key: 'portfolio', label: 'Portfolio' },
     { key: 'logs', label: 'Logs' },
     { key: 'settings', label: 'Settings' },
+    { key: 'charts', label: 'Charts' },
   ]
 
   return (
@@ -37,6 +39,7 @@ export default function App() {
       {page === 'portfolio' && <Portfolio />}
       {page === 'logs' && <Logs />}
       {page === 'settings' && <Settings />}
+      {page === 'charts' && <Charts />}
     </div>
   )
 }

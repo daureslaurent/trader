@@ -18,6 +18,20 @@ router.get('/decisions', (_req: Request, res: Response) => {
   res.json(decisions)
 })
 
+router.get('/chart', (_req: Request, res: Response) => {
+  const rows = queryAll(
+    'SELECT coin, action, confidence, created_at FROM decisions ORDER BY created_at ASC'
+  ) as { coin: string; action: string; confidence: number; created_at: string }[]
+  const data = rows.map((r) => ({
+    coin: r.coin,
+    action: r.action,
+    confidence: r.confidence,
+    value: r.confidence * (r.action === 'BUY' ? 1 : r.action === 'SELL' ? -1 : 0),
+    created_at: r.created_at,
+  }))
+  res.json(data)
+})
+
 router.get('/trades', (_req: Request, res: Response) => {
   const trades = queryAll('SELECT * FROM trades ORDER BY created_at DESC LIMIT 50')
   res.json(trades)
