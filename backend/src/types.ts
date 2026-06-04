@@ -57,3 +57,21 @@ export interface ApprovalRequest {
   confidence: number
   expiresAt: string
 }
+
+export type PipelineStage =
+  | 'research_started'
+  | 'research_completed'
+  | 'extraction_started'
+  | 'extraction_completed'
+  | 'analysis_started'
+  | 'signal_generated'
+  | 'pipeline_error'
+
+export interface PipelineEvent {
+  id: number
+  coin: string
+  cycle_id: string
+  stage: PipelineStage
+  data: string
+  created_at: string
+}
