@@ -5,12 +5,33 @@ import { bus } from './core/events.js'
 import { startAPI } from './api/index.js'
 import { startTelegramBot, sendApprovalMessage } from './telegram/index.js'
 import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trader/index.js'
-import { researchCoin, extractResearch } from './researcher/index.js'
+import { researchCoin } from './researcher/index.js'
+import { extractResearch } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { Signal, ApprovalRequest } from './types.js'
+import { Signal, ApprovalRequest, PipelineStage } from './types.js'
+import { broadcast } from './api/ws.js'
 
 let pendingApprovals: Map<number, Signal> = new Map()
 let approvalTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
+
+let cycleCounter = 0
+
+function logPipelineEvent(
+  stage: PipelineStage,
+  coin: string,
+  cycleId: string,
+  data: Record<string, unknown>
+): void {
+  const payload = JSON.stringify(data)
+  runSQL(
+    'INSERT INTO pipeline_events (coin, cycle_id, stage, data) VALUES (?, ?, ?, ?)',
+    [coin, cycleId, stage, payload]
+  )
+  const row = queryOne(
+    'SELECT * FROM pipeline_events WHERE id = (SELECT last_insert_rowid())'
+  )
+  if (row) broadcast('pipeline_event', row)
+}
 
 async function tradingLoop() {
   logger.info('Trading loop started')
@@ -27,12 +48,37 @@ async function tradingLoop() {
   const balance = await fetchBalance()
 
   for (const data of marketData) {
+    const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
     try {
+      logPipelineEvent('research_started', data.symbol, cycleId, { symbol: data.symbol })
       const rawResearch = await researchCoin(data.symbol)
+      logPipelineEvent('research_completed', data.symbol, cycleId, {
+        symbol: data.symbol,
+        headlines: rawResearch.headlines,
+        articles: rawResearch.articles,
+        sentiment: rawResearch.sentiment,
+        summary: rawResearch.summary,
+      })
+
+      logPipelineEvent('extraction_started', data.symbol, cycleId, { symbol: data.symbol, articleCount: rawResearch.articles.length })
       const extractedResearch = await extractResearch(rawResearch)
+      logPipelineEvent('extraction_completed', data.symbol, cycleId, {
+        symbol: data.symbol,
+        articles: extractedResearch.articles,
+        aggregated_sentiment: extractedResearch.aggregated_sentiment,
+        top_headlines: extractedResearch.top_headlines,
+      })
+
       const portfolioPercent = balance[data.symbol.replace('/USDT', '')]
         ? ((balance[data.symbol.replace('/USDT', '')].total * data.price) / (Object.values(balance).reduce((s, b) => s + b.total * data.price, 0.01))) * 100
         : 0
+
+      logPipelineEvent('analysis_started', data.symbol, cycleId, {
+        symbol: data.symbol,
+        price: data.price,
+        change24h: data.change24h,
+        volume: data.volume,
+      })
 
       const signal = await analyzeSignal(
         data.symbol,
@@ -42,6 +88,14 @@ async function tradingLoop() {
         extractedResearch,
         portfolioPercent,
       )
+
+      logPipelineEvent('signal_generated', data.symbol, cycleId, {
+        symbol: data.symbol,
+        action: signal.action,
+        quantity: signal.quantity,
+        reason: signal.reason,
+        confidence: signal.confidence,
+      })
 
       runSQL(
         'INSERT INTO decisions (coin, action, reason, confidence, context) VALUES (?, ?, ?, ?, ?)',
@@ -55,6 +109,10 @@ async function tradingLoop() {
 
       await handleTradeSignal(signal, data.price)
     } catch (err) {
+      logPipelineEvent('pipeline_error', data.symbol, cycleId, {
+        symbol: data.symbol,
+        error: (err as Error).message,
+      })
       logger.error('Error in trading loop', { coin: data.symbol, error: (err as Error).message })
     }
   }
