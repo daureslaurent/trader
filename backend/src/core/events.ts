@@ -8,6 +8,8 @@ interface EventMap {
   trade_executed: [TradeRecord]
   approval_requested: [ApprovalRequest]
   portfolio_updated: []
+  stop_loss_hit: [{ positionId: number; coin: string; price: number }]
+  take_profit_hit: [{ positionId: number; coin: string; price: number }]
   error: [Error]
 }
 
