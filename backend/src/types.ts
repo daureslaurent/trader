@@ -75,3 +75,47 @@ export interface PipelineEvent {
   data: string
   created_at: string
 }
+
+export interface MarketContext {
+  price: number
+  change24h: number
+  volume: number
+  rsi14: number
+  sma7: number
+  sma25: number
+  sma99: number
+  atr14: number
+  trend: 'uptrend' | 'downtrend' | 'ranging'
+  perf7d: number
+  volatility: 'high' | 'normal' | 'low'
+}
+
+export interface PortfolioState {
+  totalValueUsd: number
+  positions: { coin: string; allocationPct: number; pnlPct: number }[]
+  diversificationScore: number
+  openPositionCount: number
+  maxOpenPositions: number
+  targetAllocationPct: number
+}
+
+export interface RiskConfig {
+  stopLossAtrMultiplier: number
+  takeProfitAtrMultiplier: number
+  maxRiskPerTrade: number
+  maxOpenPositions: number
+}
+
+export interface PositionRecord {
+  id: number
+  coin: string
+  side: 'BUY'
+  quantity: number
+  entry_price: number
+  stop_loss: number
+  take_profit: number | null
+  current_sl: number
+  status: string
+  pnl: number | null
+  created_at: string
+}
