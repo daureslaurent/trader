@@ -33,7 +33,7 @@ router.get('/chart', (_req: Request, res: Response) => {
 })
 
 router.get('/pipeline-events', (req: Request, res: Response) => {
-  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500)
+  const limit = Math.min(Math.max(Math.floor(parseFloat(req.query.limit as string)) || 100, 1), 500)
   const coin = req.query.coin as string | undefined
   const cycleId = req.query.cycle_id as string | undefined
 
