@@ -45,6 +45,10 @@ export interface BotSettings {
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
+  stop_loss_atr: number
+  take_profit_atr: number
+  max_risk_per_trade: number
+  max_open_positions: number
 }
 
 export interface ApprovalRequest {

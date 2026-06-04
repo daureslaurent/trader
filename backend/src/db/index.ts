@@ -89,6 +89,10 @@ export function getSettings(): BotSettings {
     min_confidence: parseFloat(map.min_confidence || '0.3'),
     max_position_size_usd: parseFloat(map.max_position_size_usd || '100'),
     approval_required: map.approval_required === 'true',
+    stop_loss_atr: parseFloat(map.stop_loss_atr || '1.5'),
+    take_profit_atr: parseFloat(map.take_profit_atr || '3.0'),
+    max_risk_per_trade: parseFloat(map.max_risk_per_trade || '0.02'),
+    max_open_positions: parseInt(map.max_open_positions || '5', 10),
   }
 }
 

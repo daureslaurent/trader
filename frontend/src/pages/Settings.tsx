@@ -6,6 +6,10 @@ interface Settings {
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
+  stop_loss_atr: number
+  take_profit_atr: number
+  max_risk_per_trade: number
+  max_open_positions: number
 }
 
 export default function Settings() {
@@ -57,6 +61,24 @@ export default function Settings() {
         <div className="flex items-center gap-2">
           <input type="checkbox" id="approval" checked={settings.approval_required} onChange={(e) => setSettings({ ...settings, approval_required: e.target.checked })} />
           <label htmlFor="approval" className="text-sm">Approval required</label>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Stop Loss ATR</label>
+            <input type="number" step="0.1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.stop_loss_atr} onChange={(e) => setSettings({ ...settings, stop_loss_atr: parseFloat(e.target.value) })} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Take Profit ATR</label>
+            <input type="number" step="0.1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.take_profit_atr} onChange={(e) => setSettings({ ...settings, take_profit_atr: parseFloat(e.target.value) })} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Max Risk Per Trade (%)</label>
+            <input type="number" step="0.01" min="0" max="1" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_risk_per_trade} onChange={(e) => setSettings({ ...settings, max_risk_per_trade: parseFloat(e.target.value) })} />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Max Open Positions</label>
+            <input type="number" step="1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_open_positions} onChange={(e) => setSettings({ ...settings, max_open_positions: parseInt(e.target.value) })} />
+          </div>
         </div>
         <button type="submit" disabled={saving} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-medium disabled:opacity-50">
           {saving ? 'Saving...' : 'Save'}
