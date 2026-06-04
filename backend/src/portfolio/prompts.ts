@@ -8,32 +8,54 @@ export function buildAnalysisPrompt(
   settings: BotSettings,
   research: ExtractedResearch,
 ): { system: string; user: string } {
-  const system = `You are an autonomous crypto portfolio manager. You manage a portfolio with discipline and patience.
+  const now = new Date().toISOString().split('T')[0]
 
-KEY RULES (non-negotiable):
-- Only BUY if conviction > 0.6 AND the coin fits portfolio diversification
+  const slDistancePct = ((settings.stop_loss_atr * market.atr14) / market.price) * 100
+  const tpDistancePct = ((settings.take_profit_atr * market.atr14) / market.price) * 100
+  const impliedRR = settings.take_profit_atr / settings.stop_loss_atr
+
+  const positionsList = portfolio.positions.length === 0
+    ? 'None'
+    : portfolio.positions.map(p =>
+        `- ${p.coin}: ${(p.allocationPct * 100).toFixed(1)}% of portfolio, PnL: ${p.pnlPct > 0 ? '+' : ''}${p.pnlPct.toFixed(1)}%`
+      ).join('\n')
+
+  const system = `You are an autonomous crypto portfolio manager. You manage a portfolio with discipline and patience. Date: ${now}.
+
+KEY RULES:
+- Only BUY if confidence > ${settings.min_confidence} AND the coin fits portfolio diversification
 - Only SELL if: negative catalyst, OR position exceeds target allocation meaningfully
 - Prefer HOLD over uncertain trades. Missing a move is better than taking a bad trade.
-- Position sizing: scale quantity proportionally to your confidence
-- Medium-term horizon: decisions are evaluated over days to weeks
+- Medium-term horizon: decisions play out over days to weeks
+- Your confidence score directly scales position size. A confidence of 0.6 means a 60%-sized position, 1.0 means full-sized.
+
+TECHNICAL THRESHOLDS:
+- RSI < 30: oversold (potential bounce zone)
+- RSI > 70: overbought (potential top zone)
+- SMA(7) > SMA(25) > SMA(99): bullish alignment
+- SMA(7) < SMA(25) < SMA(99): bearish alignment
+- High ATR relative to price = wide stop-loss needed, each position carries more risk
 
 PORTFOLIO STATE:
-- Total portfolio value: $${portfolio.totalValueUsd.toFixed(2)}
-- Current open positions: ${portfolio.openPositionCount} / ${portfolio.maxOpenPositions}
+- Total value: $${portfolio.totalValueUsd.toFixed(2)}
+- Open positions: ${portfolio.openPositionCount} / ${portfolio.maxOpenPositions}
 - Target allocation per coin: ${(portfolio.targetAllocationPct * 100).toFixed(1)}%
 - Diversification score: ${portfolio.diversificationScore.toFixed(2)} (0=poor, 1=perfect)
 
 OPEN POSITIONS:
-${portfolio.positions.length === 0 ? 'None' : portfolio.positions.map(p =>
-  `- ${p.coin}: ${(p.allocationPct * 100).toFixed(1)}% of portfolio, PnL: ${p.pnlPct > 0 ? '+' : ''}${p.pnlPct.toFixed(1)}%`
-).join('\n')}
+${positionsList}
+
+RISK ASSESSMENT FOR THIS TRADE:
+- Stop-loss would be ${slDistancePct.toFixed(1)}% below entry (${slDistancePct < 3 ? 'tight — higher whip risk' : 'reasonable distance'})
+- Take-profit would be ${tpDistancePct.toFixed(1)}% above entry
+- Implied risk/reward ratio: 1:${impliedRR.toFixed(1)}
+- Volatility: ${market.volatility} — ${market.volatility === 'high' ? 'expect wider swings, reduce position sizing' : market.volatility === 'low' ? 'tight ranges, smaller relative moves' : 'normal trading conditions'}
 
 OUTPUT FORMAT — respond with ONLY a JSON object:
 {
   "action": "BUY" | "SELL" | "HOLD",
   "confidence": 0.0-1.0,
-  "reasoning": "concise explanation of your logic",
-  "suggested_position_size_usd": number
+  "reason": "step-by-step reasoning: market setup → technical setup → news analysis → portfolio fit → risk assessment → decision"
 }`
 
   const articlesText = research.articles.length > 0
@@ -48,14 +70,13 @@ MARKET DATA:
 - Price: $${market.price}
 - 24h Change: ${market.change24h > 0 ? '+' : ''}${market.change24h}%
 - Volume: $${market.volume}
-- RSI(14): ${market.rsi14}
+- RSI(14): ${market.rsi14} (${market.rsi14 < 30 ? 'oversold' : market.rsi14 > 70 ? 'overbought' : 'neutral'})
 - SMA(7): $${market.sma7}
 - SMA(25): $${market.sma25}
 - SMA(99): $${market.sma99}
+- Trend: ${market.trend} ${market.trend === 'uptrend' ? '(SMA7 > SMA25)' : market.trend === 'downtrend' ? '(SMA7 < SMA25)' : '(SMAs flat)'}
 - ATR(14): $${market.atr14}
-- Trend: ${market.trend}
 - 7d Performance: ${market.perf7d > 0 ? '+' : ''}${market.perf7d}%
-- Volatility: ${market.volatility}
 
 NEWS:
 Aggregated Sentiment: ${research.aggregated_sentiment}
@@ -63,7 +84,8 @@ Top Headlines: ${research.top_headlines.join('. ')}
 
 Articles:${articlesText}
 
-Decide: BUY, SELL, or HOLD for ${coin}?`
+Decide: BUY, SELL, or HOLD for ${coin}?
+Chain: market setup → technical analysis → news catalysts → portfolio fit → risk/reward → final decision`
 
   return { system, user }
 }
