@@ -116,6 +116,9 @@ async function tradingLoop() {
       logPipelineEvent('pipeline_error', data.symbol, cycleId, {
         symbol: data.symbol,
         error: (err as Error).message,
+        price: data.price,
+        change24h: data.change24h,
+        volume: data.volume,
       })
       logger.error('Error in trading loop', { coin: data.symbol, error: (err as Error).message })
     }
