@@ -15,7 +15,9 @@ function opt(key: string, def: string): string {
 
 function num(key: string, def: number): number {
   const val = process.env[key]
-  return val ? parseInt(val, 10) : def
+  if (!val) return def
+  const parsed = parseInt(val, 10)
+  return isNaN(parsed) ? def : parsed
 }
 
 const stubMode = process.argv.includes('--stub')

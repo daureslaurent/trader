@@ -249,10 +249,12 @@ bus.on('trade_rejected', (tradeId: number) => {
   logger.info('Trade rejected by user', { tradeId })
 })
 
-  bus.on('stop_loss_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
+ bus.on('stop_loss_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
   logger.warn('Stop loss triggered', { coin, positionId, price })
   try {
-    const signal: Signal = { coin, action: 'SELL', quantity: 0, reason: 'Stop loss', confidence: 1 }
+    const pos = queryOne("SELECT quantity FROM positions WHERE id = ?", [positionId])
+    const qty = pos ? (pos.quantity as number) : 0
+    const signal: Signal = { coin, action: 'SELL', quantity: qty, reason: 'Stop loss', confidence: 1 }
     const result = await executeTrade(signal)
     runSQL(
       "UPDATE positions SET status = 'SL_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
@@ -268,10 +270,12 @@ bus.on('trade_rejected', (tradeId: number) => {
   }
 })
 
-  bus.on('take_profit_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
+ bus.on('take_profit_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
   logger.info('Take profit triggered', { coin, positionId, price })
   try {
-    const signal: Signal = { coin, action: 'SELL', quantity: 0, reason: 'Take profit', confidence: 1 }
+    const pos = queryOne("SELECT quantity FROM positions WHERE id = ?", [positionId])
+    const qty = pos ? (pos.quantity as number) : 0
+    const signal: Signal = { coin, action: 'SELL', quantity: qty, reason: 'Take profit', confidence: 1 }
     const result = await executeTrade(signal)
     runSQL(
       "UPDATE positions SET status = 'TP_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
