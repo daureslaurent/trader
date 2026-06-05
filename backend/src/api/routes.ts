@@ -10,7 +10,61 @@ router.get('/portfolio', (_req: Request, res: Response) => {
   const snapshots = queryAll('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1')
   const latest = snapshots[0] || null
   if (latest) latest.holdings = JSON.parse(latest.holdings as string)
-  res.json(latest || { total_value_usd: 0, holdings: {} })
+  const openPositions = queryAll("SELECT COUNT(*) as count FROM positions WHERE status = 'OPEN'")
+  const openPositionCount = openPositions.length > 0 ? (openPositions[0] as { count: number }).count : 0
+  const settings = getSettings()
+  res.json({
+    ...(latest || { total_value_usd: 0, holdings: {} }),
+    open_position_count: openPositionCount,
+    max_open_positions: settings.max_open_positions,
+  })
+})
+
+router.get('/positions', async (_req: Request, res: Response) => {
+  try {
+    const positions = queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as Record<string, unknown>[]
+    if (positions.length === 0) return res.json([])
+    const ccxt = await import('ccxt')
+    const exchange = new ccxt.default.binance()
+    const enriched = await Promise.all(positions.map(async (pos) => {
+      try {
+        const ticker = await exchange.fetchTicker(pos.coin as string)
+        const currentPrice = ticker.last || (pos.entry_price as number)
+        const pnl = (pos.quantity as number) * (currentPrice - (pos.entry_price as number))
+        const pnlPct = ((currentPrice - (pos.entry_price as number)) / (pos.entry_price as number)) * 100
+        const distanceToSlPct = pos.stop_loss ? ((currentPrice - (pos.stop_loss as number)) / currentPrice) * 100 : null
+        const distanceToTpPct = pos.take_profit ? (((pos.take_profit as number) - currentPrice) / currentPrice) * 100 : null
+        return {
+          id: pos.id,
+          coin: pos.coin,
+          quantity: pos.quantity,
+          entry_price: pos.entry_price,
+          current_price: currentPrice,
+          pnl,
+          pnl_pct: Math.round(pnlPct * 100) / 100,
+          stop_loss: pos.stop_loss,
+          take_profit: pos.take_profit,
+          distance_to_sl_pct: distanceToSlPct ? Math.round(distanceToSlPct * 100) / 100 : null,
+          distance_to_tp_pct: distanceToTpPct ? Math.round(distanceToTpPct * 100) / 100 : null,
+          status: pos.status,
+        }
+      } catch {
+        return {
+          id: pos.id,
+          coin: pos.coin,
+          quantity: pos.quantity,
+          entry_price: pos.entry_price,
+          current_price: null, pnl: null, pnl_pct: null,
+          stop_loss: pos.stop_loss, take_profit: pos.take_profit,
+          distance_to_sl_pct: null, distance_to_tp_pct: null,
+          status: pos.status,
+        }
+      }
+    }))
+    res.json(enriched)
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message })
+  }
 })
 
 router.get('/decisions', (_req: Request, res: Response) => {

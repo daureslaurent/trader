@@ -262,6 +262,7 @@ bus.on('trade_rejected', (tradeId: number) => {
       'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
     )
+    broadcast('stop_loss_hit', { coin, price, pnl: null })
   } catch (err) {
     logger.error('Failed to execute stop loss', { coin, error: (err as Error).message })
   }
@@ -280,6 +281,7 @@ bus.on('trade_rejected', (tradeId: number) => {
       'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
     )
+    broadcast('take_profit_hit', { coin, price, pnl: null })
   } catch (err) {
     logger.error('Failed to execute take profit', { coin, error: (err as Error).message })
   }
