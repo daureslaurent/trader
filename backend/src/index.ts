@@ -1,4 +1,4 @@
-import { initDB, queryOne, runSQL, saveDB, getSettings } from './db/index.js'
+import { initDB, queryAll, queryOne, runSQL, saveDB, getSettings } from './db/index.js'
 import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
@@ -8,8 +8,7 @@ import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trad
 import { researchCoin } from './researcher/index.js'
 import { extractResearch } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { getMarketContext, checkOpenPositions, computePortfolioState } from './portfolio/index.js'
-import { calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/risk.js'
+import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, closeEntry, reduceEntryQuantity, getOpenEntries, calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/index.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 import { closeBrowser } from './scraper/browser.js'
@@ -55,10 +54,11 @@ async function tradingLoop() {
 
   const marketData = await fetchMarketData(symbols)
   const balance = await fetchBalance()
+  const usdtBalance = balance['USDT']?.total || 0
 
   await checkOpenPositions()
 
-  const portfolioState = computePortfolioState(balance, marketData, settings)
+  const portfolioState = getPortfolioState(marketData, usdtBalance, settings)
 
   for (const data of marketData) {
     const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
@@ -124,6 +124,10 @@ async function tradingLoop() {
             "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
             [(existing.quantity as number), data.price, (existing.id as number)]
           )
+          const sellEntries = queryAll("SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC", [data.symbol]) as { id: number; quantity: number }[]
+          for (const entry of sellEntries) {
+            reduceEntryQuantity(entry.id, (existing.quantity as number))
+          }
         } else {
           logger.debug('No open position to sell', { coin: data.symbol })
         }
@@ -137,21 +141,24 @@ async function tradingLoop() {
     }
   }
 
-  const snapshotBalance = await fetchBalance()
-  let totalValue = 0
-  for (const data of marketData) {
-    const coin = data.symbol.replace('/USDT', '')
-    if (snapshotBalance[coin]) totalValue += snapshotBalance[coin].total * data.price
+  const portfolioEntries = getOpenEntries()
+  let snapshotTotal = usdtBalance
+  const holdings: Record<string, number> = { USDT: usdtBalance }
+  for (const entry of portfolioEntries) {
+    const md = marketData.find(d => d.symbol === entry.coin)
+    if (md) {
+      snapshotTotal += entry.quantity * md.price
+      holdings[entry.coin] = entry.quantity
+    }
   }
-  if (snapshotBalance['USDT']) totalValue += snapshotBalance['USDT'].total
 
   runSQL(
     'INSERT INTO portfolio_snapshots (total_value_usd, holdings) VALUES (?, ?)',
-    [totalValue, JSON.stringify(Object.fromEntries(Object.entries(snapshotBalance).map(([k, v]) => [k, v.total])))]
+    [snapshotTotal, JSON.stringify(holdings)]
   )
 
   bus.emit('portfolio_updated')
-  logger.info('Trading loop completed', { totalValue })
+  logger.info('Trading loop completed', { totalValue: snapshotTotal })
 }
 
 async function handleTradeSignal(signal: Signal, price: number, atr?: number, settings?: any) {
@@ -224,6 +231,11 @@ async function submitTrade(signal: Signal, tradeId?: number, atr?: number, setti
 
     const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
     bus.emit('trade_executed', trade as any)
+
+    if (signal.action === 'BUY') {
+      addEntry(signal.coin, result.quantity, result.price, new Date().toISOString().split('T')[0], 'trade', (trade?.id as number) || (tradeId as number))
+    }
+
     logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price })
   } catch (err) {
     logger.error('Trade failed', { coin: signal.coin, error: err instanceof Error ? err.message : String(err) })
@@ -263,6 +275,10 @@ bus.on('trade_rejected', (tradeId: number) => {
       "UPDATE positions SET status = 'SL_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
       [price, positionId]
     )
+    const slPortfolioEntries = queryAll("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC", [coin]) as { id: number }[]
+    for (const entry of slPortfolioEntries) {
+      closeEntry(entry.id)
+    }
     runSQL(
       'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
@@ -284,6 +300,10 @@ bus.on('trade_rejected', (tradeId: number) => {
       "UPDATE positions SET status = 'TP_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
       [price, positionId]
     )
+    const tpPortfolioEntries = queryAll("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC", [coin]) as { id: number }[]
+    for (const entry of tpPortfolioEntries) {
+      closeEntry(entry.id)
+    }
     runSQL(
       'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
