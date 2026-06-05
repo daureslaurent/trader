@@ -1,11 +1,16 @@
-import { Telegraf } from 'telegraf'
+import { Telegraf, session } from 'telegraf'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
-import { queryOne } from '../db/index.js'
 import { ApprovalRequest } from '../types.js'
+import { MenuController } from './menu/index.js'
 
-let bot: Telegraf | null = null
+export interface MenuSession {
+  menuStack: string[]
+  pagination: Record<string, { page: number }>
+}
+
+let bot: Telegraf<{ session: MenuSession }> | null = null
 
 export function startTelegramBot() {
   if (!config.telegram.botToken) {
@@ -13,16 +18,12 @@ export function startTelegramBot() {
     return null
   }
 
-  bot = new Telegraf(config.telegram.botToken)
+  bot = new Telegraf<{ session: MenuSession }>(config.telegram.botToken)
 
-  bot.start((ctx) => ctx.reply('CryptoBot active. Use /status for portfolio, /approve <id> to confirm trades.'))
-  bot.help((ctx) => ctx.reply('/status - Portfolio\n/approve <id> - Approve trade\n/reject <id> - Reject trade'))
+  bot.use(session({ defaultSession: (): MenuSession => ({ menuStack: ['main'], pagination: {} }) }))
 
-  bot.command('status', async (ctx) => {
-    const snap = queryOne('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1') as any
-    if (!snap) return ctx.reply('No portfolio data yet.')
-    ctx.reply(`Portfolio: $${Number(snap.total_value_usd).toFixed(2)}\nHoldings: ${snap.holdings}`)
-  })
+  const menu = new MenuController(bot)
+  menu.register()
 
   bot.command('approve', (ctx) => {
     const id = parseInt(ctx.message.text.split(' ')[1], 10)
@@ -46,6 +47,20 @@ export function startTelegramBot() {
 
 export function sendApprovalMessage(req: ApprovalRequest): void {
   if (!bot) return
-  const msg = `⚠️ Trade Approval Needed\n\n${req.side} ${req.quantity} ${req.coin}\nEst: $${req.estimatedPrice}\nReason: ${req.reason}\nConfidence: ${(req.confidence * 100).toFixed(0)}%\n\n/approve ${req.tradeId}\n/reject ${req.tradeId}`
-  bot.telegram.sendMessage(process.env.TELEGRAM_CHAT_ID || '', msg).catch(() => {})
+  const msg = [
+    `⚠️ Trade Approval Needed`,
+    ``,
+    `${req.side} ${req.quantity} ${req.coin}`,
+    `Est: $${req.estimatedPrice.toFixed(2)}`,
+    `Reason: ${req.reason}`,
+    `Confidence: ${(req.confidence * 100).toFixed(0)}%`,
+    `Expires: ${new Date(req.expiresAt).toLocaleTimeString()}`,
+    ``,
+    `Tap /approve ${req.tradeId} or /reject ${req.tradeId}`,
+  ].join('\n')
+  bot.telegram.sendMessage(config.telegram.chatId, msg).catch(() => {})
+}
+
+export function getBot() {
+  return bot
 }
