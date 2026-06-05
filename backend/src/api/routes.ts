@@ -29,12 +29,14 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
     const enriched = enrichPortfolioEntriesWithPrices(entries, marketData)
 
     const totalValue = enriched.reduce((sum, e) => sum + ((e.current_price ?? 0) * e.quantity), 0) + usdtBalance
+    const settings = getSettings()
 
     res.json({
       total_value_usd: Math.round(totalValue * 100) / 100,
       entries: enriched,
       usdt_balance: usdtBalance,
       open_position_count: enriched.length,
+      max_open_positions: settings.max_open_positions,
     })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
