@@ -94,9 +94,24 @@ export interface MarketContext {
   volatility: 'high' | 'normal' | 'low'
 }
 
+export interface PortfolioEntry {
+  id: number
+  coin: string
+  quantity: number
+  buy_price: number
+  buy_date: string
+  status: 'OPEN' | 'CLOSED'
+  source: 'trade' | 'manual'
+  trade_id: number | null
+  current_price: number | null
+  delta_usd: number | null
+  delta_pct: number | null
+  created_at: string
+}
+
 export interface PortfolioState {
   totalValueUsd: number
-  positions: { coin: string; allocationPct: number; pnlPct: number }[]
+  positions: { coin: string; allocationPct: number; deltaPct: number; entryPrice: number; currentPrice: number; quantity: number }[]
   diversificationScore: number
   openPositionCount: number
   maxOpenPositions: number
