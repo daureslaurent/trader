@@ -3,7 +3,7 @@ import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
 import { startAPI } from './api/index.js'
-import { startTelegramBot, sendApprovalMessage } from './telegram/index.js'
+import { startTelegramBot, sendApprovalMessage, startNotifier } from './telegram/index.js'
 import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trader/index.js'
 import { researchCoin } from './researcher/index.js'
 import { extractResearch } from './extractor/index.js'
@@ -308,6 +308,7 @@ async function start() {
   await initDB()
   server = startAPI()
   startTelegramBot()
+  startNotifier()
 
   const settings = getSettings()
   const intervalMs = settings.interval_minutes * 60 * 1000
