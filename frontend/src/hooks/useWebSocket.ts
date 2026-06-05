@@ -5,65 +5,95 @@ interface WsMessage {
   data: unknown
 }
 
+let sharedSocket: WebSocket | null = null
+let listenerCount = 0
+let sharedConnected = false
+const messageListeners = new Set<(msg: WsMessage) => void>()
+const connectCallbacks = new Set<() => void>()
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let retries = 0
+const maxRetries = 10
+
+function notifyConnectCallbacks() {
+  connectCallbacks.forEach(fn => fn())
+}
+
+function start() {
+  if (sharedSocket?.readyState === WebSocket.OPEN || sharedSocket?.readyState === WebSocket.CONNECTING) return
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = `${protocol}//${window.location.host}/ws`
+  sharedSocket = new WebSocket(url)
+
+  sharedSocket.onopen = () => {
+    retries = 0
+    sharedConnected = true
+    notifyConnectCallbacks()
+  }
+
+  sharedSocket.onclose = () => {
+    sharedConnected = false
+    notifyConnectCallbacks()
+    if (listenerCount > 0 && retries < maxRetries) {
+      const delay = Math.min(1000 * Math.pow(2, retries), 30000)
+      retries++
+      reconnectTimer = setTimeout(start, delay)
+    }
+  }
+
+  sharedSocket.onerror = () => {
+    sharedSocket?.close()
+  }
+
+  sharedSocket.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data) as WsMessage
+      messageListeners.forEach(fn => fn(msg))
+    } catch { /* ignore malformed */ }
+  }
+}
+
+function stop() {
+  if (sharedSocket) {
+    sharedSocket.onclose = null
+    sharedSocket.close()
+    sharedSocket = null
+  }
+  sharedConnected = false
+  retries = 0
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+}
+
 export function useWebSocket(onMessage?: (msg: WsMessage) => void) {
-  const ws = useRef<WebSocket | null>(null)
-  const [connected, setConnected] = useState(false)
+  const [connected, setConnected] = useState(sharedConnected)
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
 
   useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout>
-    let retries = 0
-    let closed = false
-    const maxRetries = 10
+    listenerCount++
 
-    function connect() {
-      if (closed) return
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const url = `${protocol}//${window.location.host}/ws`
-      const socket = new WebSocket(url)
-      ws.current = socket
+    const handler = (msg: WsMessage) => onMessageRef.current?.(msg)
+    messageListeners.add(handler)
 
-      socket.onopen = () => {
-        if (closed) { socket.close(); return }
-        retries = 0
-        setConnected(true)
-      }
-
-      socket.onclose = () => {
-        setConnected(false)
-        if (!closed && retries < maxRetries) {
-          const delay = Math.min(1000 * Math.pow(2, retries), 30000)
-          retries++
-          reconnectTimer = setTimeout(connect, delay)
-        }
-      }
-
-      socket.onerror = () => {
-        socket.close()
-      }
-
-      socket.onmessage = (event) => {
-        if (closed) return
-        try {
-          const msg = JSON.parse(event.data) as WsMessage
-          onMessageRef.current?.(msg)
-        } catch { /* ignore malformed */ }
-      }
+    function onConnectChange() {
+      setConnected(sharedConnected)
     }
-
-    connect()
+    connectCallbacks.add(onConnectChange)
+    start()
 
     return () => {
-      closed = true
-      clearTimeout(reconnectTimer)
-      ws.current?.close()
+      listenerCount--
+      messageListeners.delete(handler)
+      connectCallbacks.delete(onConnectChange)
+      if (listenerCount === 0) stop()
     }
   }, [])
 
   const send = useCallback((msg: unknown) => {
-    if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify(msg))
+    if (sharedSocket?.readyState === WebSocket.OPEN) {
+      sharedSocket.send(JSON.stringify(msg))
     }
   }, [])
 
