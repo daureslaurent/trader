@@ -1,7 +1,15 @@
 import { Telegraf, Markup } from 'telegraf'
 import { MenuSession } from '../bot.js'
 import { logger } from '../core/logger.js'
+import { getSettings, updateSetting } from '../db/index.js'
+import { bus } from '../core/events.js'
 import * as dashboard from './views/dashboard.js'
+import * as portfolio from './views/portfolio.js'
+import * as trades from './views/trades.js'
+import * as decisions from './views/decisions.js'
+import * as pipeline from './views/pipeline.js'
+import * as settings from './views/settings.js'
+import * as approvals from './views/approvals.js'
 
 export class MenuController {
   private bot: Telegraf<{ session: MenuSession }>
@@ -10,6 +18,12 @@ export class MenuController {
   constructor(bot: Telegraf<{ session: MenuSession }>) {
     this.bot = bot
     this.views.set('dashboard', dashboard)
+    this.views.set('portfolio', portfolio)
+    this.views.set('trades', trades)
+    this.views.set('decisions', decisions)
+    this.views.set('pipeline', pipeline)
+    this.views.set('settings', settings)
+    this.views.set('approvals', approvals)
   }
 
   register() {
@@ -75,6 +89,60 @@ export class MenuController {
 
     this.bot.action('noop', async (ctx) => {
       await ctx.answerCbQuery()
+    })
+
+    this.bot.command('set', async (ctx) => {
+      const text = ctx.message.text.trim()
+      const parts = text.split(' ').filter(Boolean)
+      if (parts.length < 3) {
+        return ctx.reply('Usage: /set <key> <value>\nExample: /set interval_minutes 30')
+      }
+      const key = parts[1]
+      const value = parts.slice(2).join(' ')
+      try {
+        updateSetting(key, value)
+        ctx.reply(`✅ ${key} updated to ${value}`)
+      } catch (err) {
+        ctx.reply(`❌ Failed to update: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })
+
+    this.bot.action('setting:toggle:approval_required', async (ctx) => {
+      const settings = getSettings()
+      updateSetting('approval_required', String(!settings.approval_required))
+      await ctx.answerCbQuery(`Approval required: ${!settings.approval_required}`)
+      await this.renderView(ctx, 'settings')
+    })
+
+    this.bot.action(/^setting:edit:(.+)$/, async (ctx) => {
+      const labels: Record<string, string> = {
+        interval_minutes: 'Interval (min)',
+        min_confidence: 'Min Confidence',
+        max_position_size_usd: 'Max Position ($)',
+        stop_loss_atr: 'Stop Loss ATR',
+        take_profit_atr: 'Take Profit ATR',
+        max_risk_per_trade: 'Max Risk (%)',
+        max_open_positions: 'Max Positions',
+      }
+      const key = ctx.match[1]
+      await ctx.editMessageText(
+        `Send the new value for "${labels[key] || key}" as a message.\n\nReply with /set ${key} <value> to update.`
+      )
+      await ctx.answerCbQuery()
+    })
+
+    this.bot.action(/^approve:(\d+)$/, async (ctx) => {
+      const id = parseInt(ctx.match[1], 10)
+      bus.emit('trade_approved', id)
+      await ctx.answerCbQuery(`Trade ${id} approved`)
+      await this.renderView(ctx, 'approvals')
+    })
+
+    this.bot.action(/^reject:(\d+)$/, async (ctx) => {
+      const id = parseInt(ctx.match[1], 10)
+      bus.emit('trade_rejected', id)
+      await ctx.answerCbQuery(`Trade ${id} rejected`)
+      await this.renderView(ctx, 'approvals')
     })
   }
 
