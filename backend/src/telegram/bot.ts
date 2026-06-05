@@ -15,11 +15,6 @@ export interface BotContext extends Context {
 }
 
 let bot: Telegraf<BotContext> | null = null
-let chatId: number | null = null
-
-export function getChatId() {
-  return chatId
-}
 
 export function startTelegramBot() {
   if (!config.telegram.botToken) {
@@ -31,13 +26,8 @@ export function startTelegramBot() {
 
   bot.use(session({ defaultSession: (): MenuSession => ({ menuStack: ['main'], pagination: {} }) }))
 
-  bot.use((ctx, next) => {
-    if (ctx.chat?.id && !chatId) {
-      chatId = ctx.chat.id
-      logger.info('Telegram chat registered', { chatId })
-      ctx.telegram.sendMessage(chatId, '✅ CryptoBot started — monitoring markets').catch(() => {})
-    }
-    return next()
+  bot.catch((err) => {
+    logger.error('Telegram bot error', { error: err instanceof Error ? err.message : String(err) })
   })
 
   const menu = new MenuController(bot)
@@ -76,7 +66,7 @@ export function sendApprovalMessage(req: ApprovalRequest): void {
     ``,
     `Tap /approve ${req.tradeId} or /reject ${req.tradeId}`,
   ].join('\n')
-  if (chatId) bot.telegram.sendMessage(chatId, msg).catch(() => {})
+  bot.telegram.sendMessage(config.telegram.chatId, msg).catch(() => {})
 }
 
 export function getBot() {

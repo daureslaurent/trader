@@ -160,27 +160,38 @@ export class MenuController {
     const text = '🤖 CryptoBot — Main Menu\n\nSelect a section:'
     if (ctx.callbackQuery) {
       await ctx.editMessageText(text, { reply_markup: Markup.inlineKeyboard(buttons).reply_markup })
+      await ctx.answerCbQuery().catch(() => {})
     } else {
       await ctx.reply(text, { reply_markup: Markup.inlineKeyboard(buttons).reply_markup })
     }
-    await ctx.answerCbQuery().catch(() => {})
   }
 
   private async renderView(ctx: any, viewName: string) {
     const view = this.views.get(viewName)
     if (!view) {
-      await ctx.editMessageText('View not found. Use /menu to return.')
-      await ctx.answerCbQuery()
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText('View not found. Use /menu to return.')
+        await ctx.answerCbQuery()
+      }
       return
     }
     try {
       const { text, buttons } = await view.render(ctx)
       const fullButtons = [...buttons, [Markup.button.callback('◀️ Back', 'menu:back')]]
-      await ctx.editMessageText(text, { reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup })
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(text, { reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup })
+        await ctx.answerCbQuery()
+      } else {
+        await ctx.reply(text, { reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup })
+      }
     } catch (err) {
       logger.error('View render error', { view: viewName, error: err instanceof Error ? err.message : String(err) })
-      await ctx.editMessageText('Error loading data. Try again later.')
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText('Error loading data. Try again later.')
+        await ctx.answerCbQuery()
+      } else {
+        await ctx.reply('Error loading data. Try again later.')
+      }
     }
-    await ctx.answerCbQuery()
   }
 }
