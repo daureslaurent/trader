@@ -16,9 +16,10 @@ export function buildAnalysisPrompt(
 
   const positionsList = portfolio.positions.length === 0
     ? 'None'
-    : portfolio.positions.map(p =>
-        `- ${p.coin}: ${(p.allocationPct * 100).toFixed(1)}% of portfolio, PnL: ${p.pnlPct > 0 ? '+' : ''}${p.pnlPct.toFixed(1)}%`
-      ).join('\n')
+    : portfolio.positions.map(p => {
+        const deltaSign = p.deltaPct > 0 ? '+' : ''
+        return `- ${p.coin}: ${(p.allocationPct * 100).toFixed(1)}% of portfolio, bought at $${p.entryPrice.toFixed(2)}, now $${p.currentPrice.toFixed(2)}, delta: ${deltaSign}${p.deltaPct.toFixed(1)}%`
+      }).join('\n')
 
   const system = `You are an autonomous crypto portfolio manager. You manage a portfolio with discipline and patience. Date: ${now}.
 
