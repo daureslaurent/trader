@@ -80,6 +80,11 @@ export interface PipelineEvent {
   created_at: string
 }
 
+export interface MarketData {
+  symbol: string
+  price: number
+}
+
 export interface MarketContext {
   price: number
   change24h: number
