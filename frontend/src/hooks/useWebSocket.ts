@@ -14,22 +14,25 @@ export function useWebSocket(onMessage?: (msg: WsMessage) => void) {
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout>
     let retries = 0
+    let closed = false
     const maxRetries = 10
 
     function connect() {
+      if (closed) return
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const url = `${protocol}//${window.location.host}/ws`
       const socket = new WebSocket(url)
       ws.current = socket
 
       socket.onopen = () => {
+        if (closed) { socket.close(); return }
         retries = 0
         setConnected(true)
       }
 
       socket.onclose = () => {
         setConnected(false)
-        if (retries < maxRetries) {
+        if (!closed && retries < maxRetries) {
           const delay = Math.min(1000 * Math.pow(2, retries), 30000)
           retries++
           reconnectTimer = setTimeout(connect, delay)
@@ -41,6 +44,7 @@ export function useWebSocket(onMessage?: (msg: WsMessage) => void) {
       }
 
       socket.onmessage = (event) => {
+        if (closed) return
         try {
           const msg = JSON.parse(event.data) as WsMessage
           onMessageRef.current?.(msg)
@@ -51,6 +55,7 @@ export function useWebSocket(onMessage?: (msg: WsMessage) => void) {
     connect()
 
     return () => {
+      closed = true
       clearTimeout(reconnectTimer)
       ws.current?.close()
     }
