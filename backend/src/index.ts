@@ -8,7 +8,7 @@ import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trad
 import { researchCoin } from './researcher/index.js'
 import { extractResearch } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, closeEntry, reduceEntryQuantity, getOpenEntries, calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/index.js'
+import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, closeEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, syncUsdtEntry, calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/index.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 import { closeBrowser } from './scraper/browser.js'
@@ -55,10 +55,11 @@ async function tradingLoop() {
   const marketData = await fetchMarketData(symbols)
   const balance = await fetchBalance()
   const usdtBalance = balance['USDT']?.total || 0
+  syncUsdtEntry(usdtBalance)
 
   await checkOpenPositions()
 
-  const portfolioState = getPortfolioState(marketData, usdtBalance, settings)
+  const portfolioState = getPortfolioState(marketData, settings)
 
   for (const data of marketData) {
     const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
@@ -128,6 +129,10 @@ async function tradingLoop() {
           for (const entry of sellEntries) {
             reduceEntryQuantity(entry.id, (existing.quantity as number))
           }
+          const usdtEntry = getUsdtEntry()
+          if (usdtEntry) {
+            increaseEntryQuantity(usdtEntry.id, (existing.quantity as number) * data.price)
+          }
         } else {
           logger.debug('No open position to sell', { coin: data.symbol })
         }
@@ -141,14 +146,19 @@ async function tradingLoop() {
     }
   }
 
-  const portfolioEntries = getOpenEntries()
-  let snapshotTotal = usdtBalance
-  const holdings: Record<string, number> = { USDT: usdtBalance }
-  for (const entry of portfolioEntries) {
-    const md = marketData.find(d => d.symbol === entry.coin)
-    if (md) {
-      snapshotTotal += entry.quantity * md.price
+  const snapshotEntries = getOpenEntries()
+  let snapshotTotal = 0
+  const holdings: Record<string, number> = {}
+  for (const entry of snapshotEntries) {
+    if (entry.coin === 'USDT') {
+      snapshotTotal += entry.quantity
       holdings[entry.coin] = entry.quantity
+    } else {
+      const md = marketData.find(d => d.symbol === entry.coin)
+      if (md) {
+        snapshotTotal += entry.quantity * md.price
+        holdings[entry.coin] = entry.quantity
+      }
     }
   }
 
@@ -234,6 +244,10 @@ async function submitTrade(signal: Signal, tradeId?: number, atr?: number, setti
 
     if (signal.action === 'BUY') {
       addEntry(signal.coin, result.quantity, result.price, new Date().toISOString().split('T')[0], 'trade', (trade?.id as number) || (tradeId as number))
+      const usdtEntry = getUsdtEntry()
+      if (usdtEntry) {
+        reduceEntryQuantity(usdtEntry.id, result.cost)
+      }
     }
 
     logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price })
@@ -279,6 +293,10 @@ bus.on('trade_rejected', (tradeId: number) => {
     for (const entry of slPortfolioEntries) {
       closeEntry(entry.id)
     }
+    const slUsdtEntry = getUsdtEntry()
+    if (slUsdtEntry) {
+      increaseEntryQuantity(slUsdtEntry.id, result.cost)
+    }
     runSQL(
       'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
@@ -303,6 +321,10 @@ bus.on('trade_rejected', (tradeId: number) => {
     const tpPortfolioEntries = queryAll("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC", [coin]) as { id: number }[]
     for (const entry of tpPortfolioEntries) {
       closeEntry(entry.id)
+    }
+    const tpUsdtEntry = getUsdtEntry()
+    if (tpUsdtEntry) {
+      increaseEntryQuantity(tpUsdtEntry.id, result.cost)
     }
     runSQL(
       'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',

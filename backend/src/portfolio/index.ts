@@ -36,11 +36,15 @@ export async function checkOpenPositions(): Promise<void> {
 
 export {
   getOpenEntries,
+  getCoinEntries,
+  getUsdtEntry,
+  syncUsdtEntry,
   getAllEntries,
   getEntryById,
   addEntry,
   closeEntry,
   reduceEntryQuantity,
+  increaseEntryQuantity,
   removeEntry,
   updateEntryQuantity,
   updateEntry,

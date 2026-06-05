@@ -15,7 +15,6 @@ interface PortfolioEntryUI {
 interface PortfolioData {
   total_value_usd: number
   entries: PortfolioEntryUI[]
-  usdt_balance: number
   open_position_count: number
 }
 
@@ -39,7 +38,7 @@ export default function Portfolio() {
 
   return (
     <div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
         <div className="bg-gray-900 rounded-lg p-4">
           <div className="text-gray-400 text-sm">Total Value</div>
           <div className="text-3xl font-bold text-green-400">${portfolio?.total_value_usd?.toFixed(2) || '0.00'}</div>
@@ -47,10 +46,6 @@ export default function Portfolio() {
         <div className="bg-gray-900 rounded-lg p-4">
           <div className="text-gray-400 text-sm">Open Positions</div>
           <div className="text-3xl font-bold text-white">{portfolio?.open_position_count || 0}</div>
-        </div>
-        <div className="bg-gray-900 rounded-lg p-4">
-          <div className="text-gray-400 text-sm">USDT Balance</div>
-          <div className="text-3xl font-bold text-white">${portfolio?.usdt_balance?.toFixed(2) || '0.00'}</div>
         </div>
       </div>
 
@@ -95,14 +90,6 @@ export default function Portfolio() {
             </table>
           </div>
         )}
-      </div>
-
-      <div className="bg-gray-900 rounded-lg p-4">
-        <h2 className="text-lg font-semibold mb-3">Cash</h2>
-        <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-          <span className="font-medium">USDT</span>
-          <span className="text-gray-300">${portfolio?.usdt_balance?.toFixed(2) || '0.00'}</span>
-        </div>
       </div>
     </div>
   )

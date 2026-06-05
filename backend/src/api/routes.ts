@@ -11,16 +11,19 @@ export const router = Router()
 router.get('/portfolio', async (_req: Request, res: Response) => {
   try {
     let enriched: PortfolioEntry[] = getOpenEntries() as unknown as PortfolioEntry[]
-    let usdtBalance = 0
 
     try {
       const { getExchange } = await import('../trader/service.js')
       const exchange = getExchange()
-      const symbols = enriched.map(e => e.coin)
-      const tickers = symbols.length > 0 ? await exchange.fetchTickers(symbols) : {}
 
       const bal = await exchange.fetchBalance()
-      usdtBalance = (bal.total as unknown as Record<string, number>)['USDT'] || 0
+      const usdtBalance = (bal.total as unknown as Record<string, number>)['USDT'] || 0
+      const { syncUsdtEntry } = await import('../portfolio/index.js')
+      syncUsdtEntry(usdtBalance)
+
+      enriched = getOpenEntries() as unknown as PortfolioEntry[]
+      const symbols = enriched.filter(e => e.coin !== 'USDT').map(e => e.coin)
+      const tickers = symbols.length > 0 ? await exchange.fetchTickers(symbols) : {}
 
       const marketData = symbols.map(s => ({
         symbol: s,
@@ -34,14 +37,13 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
       // Binance unavailable (stub/dev mode) — return entries without live prices
     }
 
-    const totalValue = enriched.reduce((sum, e) => sum + ((e.current_price ?? 0) * e.quantity), 0) + usdtBalance
+    const totalValue = enriched.reduce((sum, e) => sum + ((e.current_price ?? 0) * e.quantity), 0)
     const settings = getSettings()
 
     res.json({
       total_value_usd: Math.round(totalValue * 100) / 100,
       entries: enriched,
-      usdt_balance: usdtBalance,
-      open_position_count: enriched.length,
+      open_position_count: enriched.filter(e => e.coin !== 'USDT').length,
       max_open_positions: settings.max_open_positions,
     })
   } catch (err) {

@@ -2,8 +2,28 @@ import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { MarketData, PortfolioEntry, PortfolioState, BotSettings } from '../types.js'
 
+const USDT_COIN = 'USDT'
+
 export function getOpenEntries(): PortfolioEntry[] {
   return queryAll("SELECT * FROM portfolio_entries WHERE status = 'OPEN' ORDER BY created_at ASC") as unknown as PortfolioEntry[]
+}
+
+export function getCoinEntries(): PortfolioEntry[] {
+  return queryAll("SELECT * FROM portfolio_entries WHERE status = 'OPEN' AND coin != ? ORDER BY created_at ASC", [USDT_COIN]) as unknown as PortfolioEntry[]
+}
+
+export function getUsdtEntry(): PortfolioEntry | null {
+  return queryOne("SELECT * FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [USDT_COIN]) as PortfolioEntry | null
+}
+
+export function syncUsdtEntry(usdtBalance: number): void {
+  const existing = getUsdtEntry()
+  if (existing) {
+    runSQL("UPDATE portfolio_entries SET quantity = ? WHERE id = ?", [usdtBalance, existing.id])
+  } else {
+    const today = new Date().toISOString().split('T')[0]
+    addEntry(USDT_COIN, usdtBalance, 1.0, today, 'manual')
+  }
 }
 
 export function getAllEntries(): PortfolioEntry[] {
@@ -58,6 +78,10 @@ export function updateEntryQuantity(id: number, quantity: number): void {
   runSQL("UPDATE portfolio_entries SET quantity = ? WHERE id = ?", [quantity, id])
 }
 
+export function increaseEntryQuantity(id: number, additionalQty: number): void {
+  runSQL("UPDATE portfolio_entries SET quantity = quantity + ? WHERE id = ?", [additionalQty, id])
+}
+
 export function updateEntry(id: number, updates: Partial<Pick<PortfolioEntry, 'quantity' | 'buy_price' | 'buy_date'>>): void {
   const setClauses: string[] = []
   const params: (string | number)[] = []
@@ -80,20 +104,21 @@ export function updateEntry(id: number, updates: Partial<Pick<PortfolioEntry, 'q
 
 export function getPortfolioState(
   marketData: MarketData[],
-  usdtBalance: number,
   settings: BotSettings,
 ): PortfolioState {
-  const entries = getOpenEntries()
-  let totalValue = usdtBalance
+  const usdtEntry = getUsdtEntry()
+  const coinEntries = getCoinEntries()
+  const usdtTotal = usdtEntry ? usdtEntry.quantity : 0
+  let totalValue = usdtTotal
 
-  for (const entry of entries) {
+  for (const entry of coinEntries) {
     const md = marketData.find(d => d.symbol === entry.coin)
     if (md) {
       totalValue += entry.quantity * md.price
     }
   }
 
-  const positions = entries.map(e => {
+  const positions = coinEntries.map(e => {
     const md = marketData.find(d => d.symbol === e.coin)
     const currentPrice = md?.price || e.buy_price
     const currentValue = e.quantity * currentPrice
@@ -133,8 +158,8 @@ export function enrichPortfolioEntriesWithPrices(
   marketData: MarketData[],
 ): PortfolioEntry[] {
   return entries.map(e => {
-    const md = marketData.find(d => d.symbol === e.coin)
-    const currentPrice = md?.price ?? null
+    const isUsdt = e.coin === USDT_COIN
+    const currentPrice = isUsdt ? 1.0 : (marketData.find(d => d.symbol === e.coin)?.price ?? null)
     const deltaUsd = currentPrice !== null && e.buy_price > 0
       ? (currentPrice - e.buy_price) * e.quantity
       : null
