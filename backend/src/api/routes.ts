@@ -4,20 +4,88 @@ import { executeTrade } from '../trader/index.js'
 import { bus } from '../core/events.js'
 import { Signal } from '../types.js'
 
+import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, enrichPortfolioEntriesWithPrices } from '../portfolio/index.js'
+
 export const router = Router()
 
-router.get('/portfolio', (_req: Request, res: Response) => {
-  const snapshots = queryAll('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1')
-  const latest = snapshots[0] || null
-  if (latest) latest.holdings = JSON.parse(latest.holdings as string)
-  const openPositions = queryAll("SELECT COUNT(*) as count FROM positions WHERE status = 'OPEN'")
-  const openPositionCount = openPositions.length > 0 ? (openPositions[0] as { count: number }).count : 0
-  const settings = getSettings()
-  res.json({
-    ...(latest || { total_value_usd: 0, holdings: {} }),
-    open_position_count: openPositionCount,
-    max_open_positions: settings.max_open_positions,
-  })
+router.get('/portfolio', async (_req: Request, res: Response) => {
+  try {
+    const { getExchange } = await import('../trader/service.js')
+    const exchange = getExchange()
+    const entries = getOpenEntries()
+    const symbols = entries.map(e => e.coin)
+    const tickers = symbols.length > 0 ? await exchange.fetchTickers(symbols) : {}
+
+    const bal = await exchange.fetchBalance()
+    const usdtBalance = (bal.total as unknown as Record<string, number>)['USDT'] || 0
+
+    const marketData = symbols.map(s => ({
+      symbol: s,
+      price: ((tickers as any)[s]?.last) || 0,
+      change24h: ((tickers as any)[s]?.percentage) || 0,
+      volume: ((tickers as any)[s]?.quoteVolume) || 0,
+    }))
+
+    const enriched = enrichPortfolioEntriesWithPrices(entries, marketData)
+
+    const totalValue = enriched.reduce((sum, e) => sum + ((e.current_price ?? 0) * e.quantity), 0) + usdtBalance
+
+    res.json({
+      total_value_usd: Math.round(totalValue * 100) / 100,
+      entries: enriched,
+      usdt_balance: usdtBalance,
+      open_position_count: enriched.length,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+router.post('/portfolio/entry', (req: Request, res: Response) => {
+  const { coin, quantity, buy_price, buy_date, source } = req.body
+  if (!coin || typeof coin !== 'string') return res.status(400).json({ error: 'coin required' })
+  if (typeof quantity !== 'number' || quantity <= 0) return res.status(400).json({ error: 'quantity must be positive number' })
+  if (typeof buy_price !== 'number' || buy_price <= 0) return res.status(400).json({ error: 'buy_price must be positive number' })
+  const date = buy_date || new Date().toISOString().split('T')[0]
+  const id = addEntry(coin, quantity, buy_price, date, source || 'manual')
+  res.json({ ok: true, id })
+})
+
+router.patch('/portfolio/entry/:id', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
+  const entry = getEntryById(id)
+  if (!entry) return res.status(404).json({ error: 'Entry not found' })
+  const { quantity, buy_price, buy_date } = req.body
+  updateEntry(id, { quantity, buy_price, buy_date })
+  res.json({ ok: true })
+})
+
+router.delete('/portfolio/entry/:id', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
+  removeEntry(id)
+  res.json({ ok: true })
+})
+
+router.get('/portfolio/history', async (_req: Request, res: Response) => {
+  try {
+    const { getExchange } = await import('../trader/service.js')
+    const exchange = getExchange()
+    const entries = getAllEntries()
+    const symbols = [...new Set(entries.filter(e => e.status === 'OPEN').map(e => e.coin))]
+    const tickers = symbols.length > 0 ? await exchange.fetchTickers(symbols) : {}
+    const marketData = symbols.map(s => ({
+      symbol: s,
+      price: ((tickers as any)[s]?.last) || 0,
+      change24h: 0,
+      volume: 0,
+    }))
+    const enriched = enrichPortfolioEntriesWithPrices(entries, marketData)
+    res.json(enriched)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 router.get('/positions', async (_req: Request, res: Response) => {
