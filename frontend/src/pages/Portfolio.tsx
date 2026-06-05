@@ -42,7 +42,7 @@ export default function Portfolio() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="bg-gray-900 rounded-lg p-4">
           <div className="text-gray-400 text-sm">Total Value</div>
-          <div className="text-3xl font-bold text-green-400">${portfolio?.total_value_usd.toFixed(2) || '0.00'}</div>
+          <div className="text-3xl font-bold text-green-400">${portfolio?.total_value_usd?.toFixed(2) || '0.00'}</div>
         </div>
         <div className="bg-gray-900 rounded-lg p-4">
           <div className="text-gray-400 text-sm">Open Positions</div>

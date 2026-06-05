@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
 import { executeTrade } from '../trader/index.js'
 import { bus } from '../core/events.js'
-import { Signal } from '../types.js'
+import { Signal, PortfolioEntry } from '../types.js'
 
 import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, enrichPortfolioEntriesWithPrices } from '../portfolio/index.js'
 
@@ -10,23 +10,29 @@ export const router = Router()
 
 router.get('/portfolio', async (_req: Request, res: Response) => {
   try {
-    const { getExchange } = await import('../trader/service.js')
-    const exchange = getExchange()
-    const entries = getOpenEntries()
-    const symbols = entries.map(e => e.coin)
-    const tickers = symbols.length > 0 ? await exchange.fetchTickers(symbols) : {}
+    let enriched: PortfolioEntry[] = getOpenEntries() as unknown as PortfolioEntry[]
+    let usdtBalance = 0
 
-    const bal = await exchange.fetchBalance()
-    const usdtBalance = (bal.total as unknown as Record<string, number>)['USDT'] || 0
+    try {
+      const { getExchange } = await import('../trader/service.js')
+      const exchange = getExchange()
+      const symbols = enriched.map(e => e.coin)
+      const tickers = symbols.length > 0 ? await exchange.fetchTickers(symbols) : {}
 
-    const marketData = symbols.map(s => ({
-      symbol: s,
-      price: ((tickers as any)[s]?.last) || 0,
-      change24h: ((tickers as any)[s]?.percentage) || 0,
-      volume: ((tickers as any)[s]?.quoteVolume) || 0,
-    }))
+      const bal = await exchange.fetchBalance()
+      usdtBalance = (bal.total as unknown as Record<string, number>)['USDT'] || 0
 
-    const enriched = enrichPortfolioEntriesWithPrices(entries, marketData)
+      const marketData = symbols.map(s => ({
+        symbol: s,
+        price: ((tickers as any)[s]?.last) || 0,
+        change24h: ((tickers as any)[s]?.percentage) || 0,
+        volume: ((tickers as any)[s]?.quoteVolume) || 0,
+      }))
+
+      enriched = enrichPortfolioEntriesWithPrices(enriched, marketData)
+    } catch {
+      // Binance unavailable (stub/dev mode) — return entries without live prices
+    }
 
     const totalValue = enriched.reduce((sum, e) => sum + ((e.current_price ?? 0) * e.quantity), 0) + usdtBalance
     const settings = getSettings()
