@@ -63,7 +63,7 @@ export default function Logs() {
       <div className="space-y-2 max-h-[70vh] overflow-y-auto">
         {entries.length === 0 && <p className="text-gray-500 text-sm">No activity yet.</p>}
         {entries.map((entry, i) => (
-          <div key={i} className="bg-gray-900 rounded px-3 py-2 text-sm flex items-start gap-3">
+          <div key={`${entry.ts}-${(entry.data as any).id || i}`} className="bg-gray-900 rounded px-3 py-2 text-sm flex items-start gap-3">
             <span className="text-xs text-gray-500 whitespace-nowrap mt-0.5 w-16 shrink-0">
               {new Date(entry.ts).toLocaleTimeString()}
             </span>

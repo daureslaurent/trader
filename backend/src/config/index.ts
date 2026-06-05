@@ -20,6 +20,9 @@ function num(key: string, def: number): number {
 
 const stubMode = process.argv.includes('--stub')
 
+const llamaBaseURL = req('LLAMA_BASE_URL')
+const llamaModel = req('LLAMA_MODEL')
+
 export const config = {
   stub: stubMode,
   binance: {
@@ -27,8 +30,18 @@ export const config = {
     secret: stubMode ? 'stub' : req('BINANCE_SECRET'),
   },
   llama: {
-    baseURL: req('LLAMA_BASE_URL'),
-    model: req('LLAMA_MODEL'),
+    baseURL: llamaBaseURL,
+    model: llamaModel,
+  },
+  extractor: {
+    baseURL: opt('EXTRACTOR_BASE_URL', llamaBaseURL),
+    model: opt('EXTRACTOR_MODEL', llamaModel),
+    maxTokens: num('EXTRACTOR_MAX_TOKENS', 8192),
+  },
+  analyst: {
+    baseURL: opt('ANALYST_BASE_URL', llamaBaseURL),
+    model: opt('ANALYST_MODEL', llamaModel),
+    maxTokens: num('ANALYST_MAX_TOKENS', 28000),
   },
   telegram: { botToken: opt('TELEGRAM_BOT_TOKEN', '') },
   approvalTimeoutMs: num('APPROVAL_TIMEOUT_MINUTES', 5) * 60 * 1000,

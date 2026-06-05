@@ -48,7 +48,7 @@ export default function Settings() {
         </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1">Interval (minutes)</label>
-          <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.interval_minutes} onChange={(e) => setSettings({ ...settings, interval_minutes: parseInt(e.target.value) })} />
+          <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.interval_minutes}            onChange={(e) => setSettings({ ...settings, interval_minutes: parseInt(e.target.value) || settings.interval_minutes })} />
         </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1">Min Confidence (0-1)</label>
@@ -56,7 +56,7 @@ export default function Settings() {
         </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1">Max Position ($)</label>
-          <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_position_size_usd} onChange={(e) => setSettings({ ...settings, max_position_size_usd: parseInt(e.target.value) })} />
+          <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_position_size_usd}            onChange={(e) => setSettings({ ...settings, max_position_size_usd: parseInt(e.target.value) || settings.max_position_size_usd })} />
         </div>
         <div className="flex items-center gap-2">
           <input type="checkbox" id="approval" checked={settings.approval_required} onChange={(e) => setSettings({ ...settings, approval_required: e.target.checked })} />
@@ -77,7 +77,7 @@ export default function Settings() {
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">Max Open Positions</label>
-            <input type="number" step="1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_open_positions} onChange={(e) => setSettings({ ...settings, max_open_positions: parseInt(e.target.value) })} />
+            <input type="number" step="1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_open_positions}            onChange={(e) => setSettings({ ...settings, max_open_positions: parseInt(e.target.value) || settings.max_open_positions })} />
           </div>
         </div>
         <button type="submit" disabled={saving} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-medium disabled:opacity-50">

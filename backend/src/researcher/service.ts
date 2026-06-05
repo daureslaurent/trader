@@ -15,8 +15,6 @@ export interface ResearchResult {
   summary: string
 }
 
-export { extractResearch } from '../extractor/service.js'
-
 export async function researchCoin(coin: string): Promise<ResearchResult> {
   const symbol = coin.replace('/USDT', '')
 

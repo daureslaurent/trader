@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
 
 CREATE INDEX IF NOT EXISTS idx_pipeline_cycle ON pipeline_events(cycle_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_created ON pipeline_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
+CREATE INDEX IF NOT EXISTS idx_snapshots_created ON portfolio_snapshots(created_at);
 
 CREATE TABLE IF NOT EXISTS positions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

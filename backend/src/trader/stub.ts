@@ -26,14 +26,12 @@ const FAKE_PRICES: Record<string, number> = {
 }
 
 const DEFAULT_PRICE = 10
-const DEFAULT_CHANGE = Math.random() * 10 - 5
-
 export async function fetchMarketData(symbols: string[]): Promise<MarketData[]> {
   logger.info('Stub: fetching market data', { count: symbols.length })
   return symbols.map((s) => ({
     symbol: s,
     price: FAKE_PRICES[s] || DEFAULT_PRICE,
-    change24h: DEFAULT_CHANGE,
+    change24h: Math.random() * 10 - 5,
     volume: FAKE_PRICES[s] ? Math.random() * 1e9 : Math.random() * 1e6,
   }))
 }
