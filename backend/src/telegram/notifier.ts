@@ -1,20 +1,19 @@
 import { bus } from '../core/events.js'
-import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { queryAll, queryOne } from '../db/index.js'
 import { formatCurrency } from './components/formatting.js'
-import { getBot } from './bot.js'
+import { getBot, getChatId } from './bot.js'
 
 function send(text: string) {
   const bot = getBot()
-  if (!bot || !config.telegram.chatId) return
-  bot.telegram.sendMessage(config.telegram.chatId, text).catch((err) => {
+  const id = getChatId()
+  if (!bot || !id) return
+  bot.telegram.sendMessage(id, text).catch((err) => {
     logger.warn('Telegram send failed', { error: err.message })
   })
 }
 
 export function startNotifier() {
-  send('✅ CryptoBot started — monitoring markets')
 
   bus.on('trade_executed', (trade: any) => {
     const emoji = trade.side === 'BUY' ? '🟢' : '🔴'
