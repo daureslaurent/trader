@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS trades (
   quantity REAL NOT NULL,
   price REAL,
   total REAL,
+  signal_id INTEGER,
   status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','EXECUTED','FAILED')),
   approved INTEGER,
   error TEXT,
@@ -19,7 +20,9 @@ CREATE TABLE IF NOT EXISTS decisions (
   reason TEXT NOT NULL,
   confidence REAL NOT NULL,
   context TEXT,
+  triggered_trade_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (triggered_trade_id) REFERENCES trades(id)
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
@@ -45,9 +48,6 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
 
 CREATE INDEX IF NOT EXISTS idx_pipeline_cycle ON pipeline_events(cycle_id);
 CREATE INDEX IF NOT EXISTS idx_pipeline_created ON pipeline_events(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
-CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
-CREATE INDEX IF NOT EXISTS idx_snapshots_created ON portfolio_snapshots(created_at);
 
 CREATE TABLE IF NOT EXISTS positions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS positions (
   take_profit REAL,
   current_sl  REAL NOT NULL,
   status      TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','CLOSED','SL_HIT','TP_HIT')),
+  entry_id    INTEGER,
+  exit_id     INTEGER,
   pnl         REAL,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -73,4 +75,11 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('min_confidence', '0.3'),
   ('max_position_size_usd', '100'),
   ('approval_required', 'false');
+
+CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
+CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_snapshots_created ON portfolio_snapshots(created_at);
+CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_created ON pipeline_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 `

@@ -43,8 +43,8 @@ function computeATR(candles: OHLCV[], period: number): number {
 
 export async function getMarketContext(symbol: string, price: number): Promise<MarketContext> {
   try {
-    const { default: ccxt } = await import('ccxt')
-    const exchange = new ccxt.binance()
+    const { getExchange } = await import('../trader/service.js')
+    const exchange = getExchange()
     const ohlcvRaw: unknown[][] = await exchange.fetchOHLCV(symbol, '1h', undefined, 168)
     const candles: OHLCV[] = (ohlcvRaw || []).map(c => ({
       timestamp: c[0] as number,
@@ -100,7 +100,7 @@ export async function getMarketContext(symbol: string, price: number): Promise<M
       volatility,
     }
   } catch (err) {
-    logger.warn('Failed to fetch market context', { symbol, error: (err as Error).message })
+    logger.warn('Failed to fetch market context', { symbol, error: err instanceof Error ? err.message : String(err) })
     return {
       price, change24h: 0, volume: 0,
       rsi14: 50, sma7: price, sma25: price, sma99: price,

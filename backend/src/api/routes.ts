@@ -24,8 +24,8 @@ router.get('/positions', async (_req: Request, res: Response) => {
   try {
     const positions = queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as Record<string, unknown>[]
     if (positions.length === 0) return res.json([])
-    const ccxt = await import('ccxt')
-    const exchange = new ccxt.default.binance()
+    const { getExchange } = await import('../trader/service.js')
+    const exchange = getExchange()
     const enriched = await Promise.all(positions.map(async (pos) => {
       try {
         const ticker = await exchange.fetchTicker(pos.coin as string)
@@ -63,7 +63,7 @@ router.get('/positions', async (_req: Request, res: Response) => {
     }))
     res.json(enriched)
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message })
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
 
@@ -117,19 +117,34 @@ router.get('/trades', (_req: Request, res: Response) => {
 })
 
 router.post('/trade/approve/:id', (req: Request, res: Response) => {
-  const { id } = req.params
-  bus.emit('trade_approved', Number(id))
+  const id = Number(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid trade ID' })
+  const trade = queryOne("SELECT id FROM trades WHERE id = ? AND status = 'PENDING'", [id])
+  if (!trade) return res.status(404).json({ error: 'Trade not found or not pending' })
+  bus.emit('trade_approved', id)
   res.json({ ok: true })
 })
 
 router.post('/trade/reject/:id', (req: Request, res: Response) => {
-  const { id } = req.params
-  bus.emit('trade_rejected', Number(id))
+  const id = Number(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid trade ID' })
+  const trade = queryOne("SELECT id FROM trades WHERE id = ? AND status = 'PENDING'", [id])
+  if (!trade) return res.status(404).json({ error: 'Trade not found or not pending' })
+  bus.emit('trade_rejected', id)
   res.json({ ok: true })
 })
 
 router.post('/trade/manual', async (req: Request, res: Response) => {
   const { coin, side, quantity } = req.body
+  if (!coin || typeof coin !== 'string' || !coin.includes('/')) {
+    return res.status(400).json({ error: 'Invalid coin symbol' })
+  }
+  if (!['BUY', 'SELL'].includes(side)) {
+    return res.status(400).json({ error: 'side must be BUY or SELL' })
+  }
+  if (typeof quantity !== 'number' || quantity <= 0) {
+    return res.status(400).json({ error: 'quantity must be a positive number' })
+  }
   try {
     const signal: Signal = { coin, action: side, quantity, reason: 'Manual', confidence: 1 }
     const result = await executeTrade(signal)
@@ -139,7 +154,7 @@ router.post('/trade/manual', async (req: Request, res: Response) => {
     )
     res.json({ ok: true, id: info.lastInsertRowid })
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message })
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
 

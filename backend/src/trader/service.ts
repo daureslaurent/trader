@@ -7,7 +7,7 @@ import { TradeError } from '../core/errors.js'
 
 let exchange: Exchange
 
-function getExchange(): Exchange {
+export function getExchange(): Exchange {
   if (!exchange) {
     exchange = new ccxt.binance({
       apiKey: config.binance.apiKey,
@@ -37,11 +37,11 @@ export async function fetchBalance(): Promise<AccountBalance> {
   const bal = await ex.fetchBalance()
   const result: AccountBalance = {}
   for (const [coin, info] of Object.entries(bal.total)) {
-    if (info && ((bal.total as any)[coin] || (bal.free as any)[coin] || (bal.used as any)[coin])) {
+    if (info !== undefined) {
       result[coin] = {
-        total: (bal.total as any)[coin] || 0,
-        free: (bal.free as any)[coin] || 0,
-        used: (bal.used as any)[coin] || 0,
+        total: Number((bal.total as any)[coin]) || 0,
+        free: Number((bal.free as any)[coin]) || 0,
+        used: Number((bal.used as any)[coin]) || 0,
       }
     }
   }
@@ -56,14 +56,16 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
 
   try {
     if (signal.action === 'BUY') {
-      const order = await ex.createMarketBuyOrder(symbol, signal.quantity)
+      const ticker = await ex.fetchTicker(symbol)
+      const cost = signal.quantity * (ticker.last || 1)
+      const order = await ex.createMarketOrderWithCost(symbol, 'buy', cost)
       return { id: order.id, price: order.price, quantity: order.amount, cost: order.cost }
     } else {
       const order = await ex.createMarketSellOrder(symbol, signal.quantity)
       return { id: order.id, price: order.price, quantity: order.amount, cost: order.cost }
     }
   } catch (err) {
-    throw new TradeError(`Trade failed for ${symbol}: ${(err as Error).message}`)
+    throw new TradeError(`Trade failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 

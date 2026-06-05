@@ -26,6 +26,7 @@ const FAKE_PRICES: Record<string, number> = {
 }
 
 const DEFAULT_PRICE = 10
+
 export async function fetchMarketData(symbols: string[]): Promise<MarketData[]> {
   logger.info('Stub: fetching market data', { count: symbols.length })
   return symbols.map((s) => ({

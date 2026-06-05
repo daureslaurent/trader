@@ -1,4 +1,4 @@
-import { initDB, queryOne, runSQL, getSettings } from './db/index.js'
+import { initDB, queryOne, runSQL, saveDB, getSettings } from './db/index.js'
 import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
@@ -12,9 +12,12 @@ import { getMarketContext, checkOpenPositions, computePortfolioState } from './p
 import { calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/risk.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
+import { closeBrowser } from './scraper/browser.js'
 
 let pendingApprovals: Map<number, Signal> = new Map()
 let approvalTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
+
+const loopAbortController = new AbortController()
 
 let cycleCounter = 0
 
@@ -127,10 +130,10 @@ async function tradingLoop() {
       }
     } catch (err) {
       logPipelineEvent('pipeline_error', data.symbol, cycleId, {
-        symbol: data.symbol, error: (err as Error).message,
+        symbol: data.symbol, error: err instanceof Error ? err.message : String(err),
         price: data.price, change24h: data.change24h, volume: data.volume,
       } as Record<string, unknown>)
-      logger.error('Error in trading loop', { coin: data.symbol, error: (err as Error).message })
+      logger.error('Error in trading loop', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -223,7 +226,7 @@ async function submitTrade(signal: Signal, tradeId?: number, atr?: number, setti
     bus.emit('trade_executed', trade as any)
     logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price })
   } catch (err) {
-    logger.error('Trade failed', { coin: signal.coin, error: (err as Error).message })
+    logger.error('Trade failed', { coin: signal.coin, error: err instanceof Error ? err.message : String(err) })
   }
 }
 
@@ -249,7 +252,7 @@ bus.on('trade_rejected', (tradeId: number) => {
   logger.info('Trade rejected by user', { tradeId })
 })
 
- bus.on('stop_loss_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
+  bus.on('stop_loss_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
   logger.warn('Stop loss triggered', { coin, positionId, price })
   try {
     const pos = queryOne("SELECT quantity FROM positions WHERE id = ?", [positionId])
@@ -266,11 +269,11 @@ bus.on('trade_rejected', (tradeId: number) => {
     )
     broadcast('stop_loss_hit', { coin, price, pnl: null })
   } catch (err) {
-    logger.error('Failed to execute stop loss', { coin, error: (err as Error).message })
+    logger.error('Failed to execute stop loss', { coin, error: err instanceof Error ? err.message : String(err) })
   }
 })
 
- bus.on('take_profit_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
+  bus.on('take_profit_hit', async ({ positionId, coin, price }: { positionId: number; coin: string; price: number }) => {
   logger.info('Take profit triggered', { coin, positionId, price })
   try {
     const pos = queryOne("SELECT quantity FROM positions WHERE id = ?", [positionId])
@@ -287,23 +290,43 @@ bus.on('trade_rejected', (tradeId: number) => {
     )
     broadcast('take_profit_hit', { coin, price, pnl: null })
   } catch (err) {
-    logger.error('Failed to execute take profit', { coin, error: (err as Error).message })
+    logger.error('Failed to execute take profit', { coin, error: err instanceof Error ? err.message : String(err) })
   }
 })
+
+export async function runLoop(intervalMs: number, signal: AbortSignal) {
+  while (!signal.aborted) {
+    await tradingLoop()
+    await new Promise(r => setTimeout(r, intervalMs))
+  }
+}
+
+let server: ReturnType<typeof startAPI> | undefined
 
 async function start() {
   logger.info('Starting CryptoBot...')
   await initDB()
-  startAPI()
+  server = startAPI()
   startTelegramBot()
 
   const settings = getSettings()
   const intervalMs = settings.interval_minutes * 60 * 1000
 
-  tradingLoop()
-  setInterval(tradingLoop, intervalMs)
+  runLoop(intervalMs, loopAbortController.signal)
 
   logger.info(`CryptoBot running. Loop every ${settings.interval_minutes} minutes.`)
 }
+
+async function shutdown(signal: string) {
+  logger.info(`Shutting down (${signal})`)
+  loopAbortController.abort()
+  try { await closeBrowser() } catch {}
+  saveDB()
+  if (server) server.close()
+  process.exit(0)
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
 
 start()

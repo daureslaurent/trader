@@ -23,8 +23,8 @@ export async function checkOpenPositions(): Promise<void> {
   for (const pos of positions) {
     try {
       if (!pos.coin) continue
-      const ccxt = await import('ccxt')
-      const exchange = new ccxt.default.binance()
+      const { getExchange } = await import('../trader/service.js')
+      const exchange = getExchange()
       const ticker = await exchange.fetchTicker(pos.coin)
       const currentPrice = ticker.last
       if (!currentPrice) continue
@@ -35,7 +35,7 @@ export async function checkOpenPositions(): Promise<void> {
       logger.info(`Position ${status}`, { coin: pos.coin, entry: pos.entry_price, current: currentPrice })
       bus.emit(status === 'SL_HIT' ? 'stop_loss_hit' as any : 'take_profit_hit' as any, { positionId: pos.id, coin: pos.coin, price: currentPrice })
     } catch (err) {
-      logger.warn('Failed to check position', { coin: pos.coin, error: (err as Error).message })
+      logger.warn('Failed to check position', { coin: pos.coin, error: err instanceof Error ? err.message : String(err) })
     }
   }
 }

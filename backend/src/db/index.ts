@@ -7,6 +7,9 @@ import { BotSettings } from '../types.js'
 const DB_PATH = process.env.DB_PATH || './data/cryptobot.db'
 
 let db: SqlJsDatabase
+let savePending = false
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+const SAVE_DEBOUNCE_MS = 2000
 
 export async function initDB(): Promise<SqlJsDatabase> {
   logger.info('Initializing database', { path: DB_PATH })
@@ -33,6 +36,16 @@ export function saveDB(): void {
   fs.writeFileSync(DB_PATH, Buffer.from(data))
 }
 
+export function scheduleSave(): void {
+  if (savePending) return
+  savePending = true
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    saveDB()
+    savePending = false
+  }, SAVE_DEBOUNCE_MS)
+}
+
 export function getDB(): SqlJsDatabase {
   if (!db) throw new Error('Database not initialized. Call initDB() first.')
   return db
@@ -41,13 +54,16 @@ export function getDB(): SqlJsDatabase {
 export function queryAll(sql: string, params?: (number | string | null)[]): Record<string, unknown>[] {
   if (params) {
     const stmt = db.prepare(sql)
-    stmt.bind(params as any)
-    const rows: Record<string, unknown>[] = []
-    while (stmt.step()) {
-      rows.push(stmt.getAsObject())
+    try {
+      stmt.bind(params as any)
+      const rows: Record<string, unknown>[] = []
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject())
+      }
+      return rows
+    } finally {
+      stmt.free()
     }
-    stmt.free()
-    return rows
   }
   const result = db.exec(sql)
   if (!result[0]) return []
@@ -67,13 +83,16 @@ export function queryOne(sql: string, params?: (number | string | null)[]): Reco
 export function runSQL(sql: string, params?: (number | string | null)[]): { changes: number; lastInsertRowid: number } {
   if (params) {
     const stmt = db.prepare(sql)
-    stmt.bind(params as any)
-    stmt.step()
-    stmt.free()
+    try {
+      stmt.bind(params as any)
+      stmt.step()
+    } finally {
+      stmt.free()
+    }
   } else {
     db.run(sql)
   }
-  saveDB()
+  scheduleSave()
   const result = db.exec('SELECT changes() AS changes, last_insert_rowid() AS lastInsertRowid')
   const row = result[0]?.values?.[0]
   return { changes: (row?.[0] as number) || 0, lastInsertRowid: (row?.[1] as number) || 0 }

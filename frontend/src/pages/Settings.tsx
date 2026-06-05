@@ -23,12 +23,18 @@ export default function Settings() {
   const save = async (e: FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    await fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
-    })
-    setSaving(false)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      })
+      if (!res.ok) throw new Error(`Save failed: ${res.status}`)
+    } catch (err) {
+      alert('Failed to save settings: ' + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!settings) return <p className="text-gray-500">Loading...</p>
@@ -43,20 +49,24 @@ export default function Settings() {
             type="text"
             className="w-full bg-gray-800 rounded px-3 py-2 text-sm"
             value={settings.watchlist.join(', ')}
-            onChange={(e) => setSettings({ ...settings, watchlist: e.target.value.split(',').map((s) => s.trim() + '/USDT').filter((s) => s !== '/USDT') })}
+            onChange={(e) => setSettings({
+              ...settings,
+              watchlist: e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
+                .map((s) => s.endsWith('/USDT') ? s : s + '/USDT')
+            })}
           />
         </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1">Interval (minutes)</label>
-          <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.interval_minutes}            onChange={(e) => setSettings({ ...settings, interval_minutes: parseInt(e.target.value) || settings.interval_minutes })} />
+           <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.interval_minutes} onChange={(e) => setSettings({ ...settings, interval_minutes: parseInt(e.target.value) || 0 })} />
         </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1">Min Confidence (0-1)</label>
-          <input type="number" step="0.1" min="0" max="1" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.min_confidence} onChange={(e) => setSettings({ ...settings, min_confidence: parseFloat(e.target.value) })} />
+           <input type="number" step="0.1" min="0" max="1" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.min_confidence} onChange={(e) => setSettings({ ...settings, min_confidence: parseFloat(e.target.value) || 0 })} />
         </div>
         <div>
           <label className="block text-sm text-gray-400 mb-1">Max Position ($)</label>
-          <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_position_size_usd}            onChange={(e) => setSettings({ ...settings, max_position_size_usd: parseInt(e.target.value) || settings.max_position_size_usd })} />
+           <input type="number" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_position_size_usd} onChange={(e) => setSettings({ ...settings, max_position_size_usd: parseInt(e.target.value) || 0 })} />
         </div>
         <div className="flex items-center gap-2">
           <input type="checkbox" id="approval" checked={settings.approval_required} onChange={(e) => setSettings({ ...settings, approval_required: e.target.checked })} />
@@ -65,19 +75,19 @@ export default function Settings() {
         <div className="space-y-3">
           <div>
             <label className="block text-sm text-gray-400 mb-1">Stop Loss ATR</label>
-            <input type="number" step="0.1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.stop_loss_atr} onChange={(e) => setSettings({ ...settings, stop_loss_atr: parseFloat(e.target.value) })} />
+             <input type="number" step="0.1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.stop_loss_atr} onChange={(e) => setSettings({ ...settings, stop_loss_atr: parseFloat(e.target.value) || 0 })} />
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">Take Profit ATR</label>
-            <input type="number" step="0.1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.take_profit_atr} onChange={(e) => setSettings({ ...settings, take_profit_atr: parseFloat(e.target.value) })} />
+             <input type="number" step="0.1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.take_profit_atr} onChange={(e) => setSettings({ ...settings, take_profit_atr: parseFloat(e.target.value) || 0 })} />
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">Max Risk Per Trade (%)</label>
-            <input type="number" step="0.01" min="0" max="1" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_risk_per_trade} onChange={(e) => setSettings({ ...settings, max_risk_per_trade: parseFloat(e.target.value) })} />
+             <input type="number" step="0.01" min="0" max="1" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_risk_per_trade} onChange={(e) => setSettings({ ...settings, max_risk_per_trade: parseFloat(e.target.value) || 0 })} />
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">Max Open Positions</label>
-            <input type="number" step="1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_open_positions}            onChange={(e) => setSettings({ ...settings, max_open_positions: parseInt(e.target.value) || settings.max_open_positions })} />
+             <input type="number" step="1" min="0" className="w-full bg-gray-800 rounded px-3 py-2 text-sm" value={settings.max_open_positions} onChange={(e) => setSettings({ ...settings, max_open_positions: parseInt(e.target.value) || 0 })} />
           </div>
         </div>
         <button type="submit" disabled={saving} className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-medium disabled:opacity-50">

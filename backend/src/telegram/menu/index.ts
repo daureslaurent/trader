@@ -64,6 +64,15 @@ export class MenuController {
       await ctx.answerCbQuery()
     })
 
+    this.bot.action(/^page:(.+):(prev|next)$/, async (ctx) => {
+      const viewName = ctx.match[1]
+      const dir = ctx.match[2]
+      const state = ctx.session.pagination[viewName]
+      if (!state) return ctx.answerCbQuery()
+      state.page = dir === 'next' ? state.page + 1 : state.page - 1
+      await this.renderView(ctx, viewName)
+    })
+
     this.bot.action('noop', async (ctx) => {
       await ctx.answerCbQuery()
     })

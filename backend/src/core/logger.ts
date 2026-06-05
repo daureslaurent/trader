@@ -6,7 +6,7 @@ const level = (process.env.LOG_LEVEL || 'info') as LogLevel
 function log(levelName: LogLevel, message: string, data?: unknown) {
   if (LOG_LEVELS[levelName] < LOG_LEVELS[level]) return
   const entry = { t: new Date().toISOString(), level: levelName, msg: message, ...(data ? { data } : {}) }
-  if (levelName === 'warn' || levelName === 'error') console.error(JSON.stringify(entry))
+  if (levelName === 'error' || levelName === 'warn') console.error(JSON.stringify(entry))
   else console.log(JSON.stringify(entry))
 }
 

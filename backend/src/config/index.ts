@@ -45,7 +45,10 @@ export const config = {
     model: opt('ANALYST_MODEL', llamaModel),
     maxTokens: num('ANALYST_MAX_TOKENS', 28000),
   },
-  telegram: { botToken: opt('TELEGRAM_BOT_TOKEN', '') },
+  telegram: {
+    botToken: opt('TELEGRAM_BOT_TOKEN', ''),
+    chatId: opt('TELEGRAM_CHAT_ID', ''),
+  },
   approvalTimeoutMs: num('APPROVAL_TIMEOUT_MINUTES', 5) * 60 * 1000,
   port: num('PORT', 3000),
   approvalsEnabled: process.argv.includes('--approval'),
