@@ -10,7 +10,7 @@ export const router = Router()
 
 router.get('/portfolio', async (_req: Request, res: Response) => {
   try {
-    let enriched: PortfolioEntry[] = getOpenEntries() as unknown as PortfolioEntry[]
+    let marketData: { symbol: string; price: number; change24h: number; volume: number }[] = []
 
     try {
       const { getExchange } = await import('../trader/service.js')
@@ -21,21 +21,22 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
       const { syncUsdtEntry } = await import('../portfolio/index.js')
       syncUsdtEntry(usdtBalance)
 
-      enriched = getOpenEntries() as unknown as PortfolioEntry[]
-      const symbols = enriched.filter(e => e.coin !== 'USDT').map(e => e.coin)
+      const entries = getOpenEntries() as unknown as PortfolioEntry[]
+      const symbols = entries.filter(e => e.coin !== 'USDT').map(e => e.coin)
       const tickers = symbols.length > 0 ? await exchange.fetchTickers(symbols) : {}
 
-      const marketData = symbols.map(s => ({
+      marketData = symbols.map(s => ({
         symbol: s,
         price: ((tickers as any)[s]?.last) || 0,
         change24h: ((tickers as any)[s]?.percentage) || 0,
         volume: ((tickers as any)[s]?.quoteVolume) || 0,
       }))
-
-      enriched = enrichPortfolioEntriesWithPrices(enriched, marketData)
     } catch {
-      // Binance unavailable (stub/dev mode) — return entries without live prices
+      // Binance unavailable (stub/dev mode)
     }
+
+    const entries = getOpenEntries() as unknown as PortfolioEntry[]
+    const enriched = enrichPortfolioEntriesWithPrices(entries, marketData)
 
     const totalValue = enriched.reduce((sum, e) => sum + ((e.current_price ?? 0) * e.quantity), 0)
     const settings = getSettings()

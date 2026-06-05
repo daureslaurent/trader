@@ -69,19 +69,19 @@ export default function Portfolio() {
               </thead>
               <tbody>
                 {positions.map(p => {
-                  const isPositive = p.delta_pct !== null && p.delta_pct >= 0
+                  const isPositive = p.delta_pct !== null && p.delta_pct !== undefined && p.delta_pct >= 0
                   return (
                     <tr key={p.id} className="border-b border-gray-800 hover:bg-gray-800/40">
                       <td className="py-3 pr-4 font-medium">{p.coin}</td>
                       <td className="text-right py-3 pr-4">{p.quantity}</td>
                       <td className="text-right py-3 pr-4">{p.buy_date}</td>
-                      <td className="text-right py-3 pr-4">${p.buy_price.toFixed(2)}</td>
+                      <td className="text-right py-3 pr-4">${p.buy_price?.toFixed(2) ?? '—'}</td>
                       <td className="text-right py-3 pr-4">{p.current_price ? `$${p.current_price.toFixed(2)}` : '—'}</td>
                       <td className={`text-right py-3 pr-4 font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
-                        {p.delta_usd !== null ? `${p.delta_usd > 0 ? '+' : ''}$${p.delta_usd.toFixed(2)}` : '—'}
+                        {p.delta_usd != null ? `${p.delta_usd > 0 ? '+' : ''}$${p.delta_usd.toFixed(2)}` : '—'}
                       </td>
                       <td className={`text-right py-3 font-medium ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
-                        {p.delta_pct !== null ? `${p.delta_pct > 0 ? '+' : ''}${p.delta_pct.toFixed(2)}%` : '—'}
+                        {p.delta_pct != null ? `${p.delta_pct > 0 ? '+' : ''}${p.delta_pct.toFixed(2)}%` : '—'}
                       </td>
                     </tr>
                   )
