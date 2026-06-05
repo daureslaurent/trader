@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf'
-import { queryAll, queryOne } from '../../db/index.js'
+import { queryAll, queryOne } from '../../../db/index.js'
 import { formatCurrency, formatPnlPct } from '../../components/formatting.js'
 
 export async function render(ctx: any) {
@@ -9,7 +9,7 @@ export async function render(ctx: any) {
   if (positions.length === 0) {
     lines.push('💼 Portfolio', '', 'No open positions.')
   } else {
-    let { getExchange } = await import('../../trader/service.js')
+    let { getExchange } = await import('../../../trader/service.js')
     let exchange: any
     try { exchange = getExchange() } catch { exchange = null }
 

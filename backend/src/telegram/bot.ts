@@ -1,4 +1,4 @@
-import { Telegraf, session } from 'telegraf'
+import { Telegraf, session, Context } from 'telegraf'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
@@ -10,7 +10,11 @@ export interface MenuSession {
   pagination: Record<string, { page: number }>
 }
 
-let bot: Telegraf<{ session: MenuSession }> | null = null
+export interface BotContext extends Context {
+  session: MenuSession
+}
+
+let bot: Telegraf<BotContext> | null = null
 
 export function startTelegramBot() {
   if (!config.telegram.botToken) {
@@ -18,7 +22,7 @@ export function startTelegramBot() {
     return null
   }
 
-  bot = new Telegraf<{ session: MenuSession }>(config.telegram.botToken)
+  bot = new Telegraf<BotContext>(config.telegram.botToken)
 
   bot.use(session({ defaultSession: (): MenuSession => ({ menuStack: ['main'], pagination: {} }) }))
 

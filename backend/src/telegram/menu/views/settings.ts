@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf'
-import { getSettings } from '../../db/index.js'
+import { getSettings } from '../../../db/index.js'
 
 export async function render(ctx: any) {
   const settings = getSettings()

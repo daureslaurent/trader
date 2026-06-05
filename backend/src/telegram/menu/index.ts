@@ -1,8 +1,8 @@
 import { Telegraf, Markup } from 'telegraf'
-import { MenuSession } from '../bot.js'
-import { logger } from '../core/logger.js'
-import { getSettings, updateSetting } from '../db/index.js'
-import { bus } from '../core/events.js'
+import { BotContext } from '../bot.js'
+import { logger } from '../../core/logger.js'
+import { getSettings, updateSetting } from '../../db/index.js'
+import { bus } from '../../core/events.js'
 import * as dashboard from './views/dashboard.js'
 import * as portfolio from './views/portfolio.js'
 import * as trades from './views/trades.js'
@@ -12,10 +12,10 @@ import * as settings from './views/settings.js'
 import * as approvals from './views/approvals.js'
 
 export class MenuController {
-  private bot: Telegraf<{ session: MenuSession }>
+  private bot: Telegraf<BotContext>
   private views = new Map<string, { render: (ctx: any) => Promise<{ text: string; buttons: ReturnType<typeof Markup.button.callback>[][] }> }>()
 
-  constructor(bot: Telegraf<{ session: MenuSession }>) {
+  constructor(bot: Telegraf<BotContext>) {
     this.bot = bot
     this.views.set('dashboard', dashboard)
     this.views.set('portfolio', portfolio)

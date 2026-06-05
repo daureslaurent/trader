@@ -8,7 +8,7 @@ import { getBot } from './bot.js'
 function send(text: string) {
   const bot = getBot()
   if (!bot || !config.telegram.chatId) return
-  bot.telegram.sendMessage(config.telegram.chatId, text, { disable_web_page_preview: true }).catch((err) => {
+  bot.telegram.sendMessage(config.telegram.chatId, text).catch((err) => {
     logger.warn('Telegram send failed', { error: err.message })
   })
 }

@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf'
-import { queryAll } from '../../db/index.js'
+import { queryAll } from '../../../db/index.js'
 import { formatCurrency, formatTime, tradeStatusEmoji } from '../../components/formatting.js'
 import { paginationButtons, paginate } from '../../components/pagination.js'
 

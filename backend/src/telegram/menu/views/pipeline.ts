@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf'
-import { queryAll } from '../../db/index.js'
+import { queryAll } from '../../../db/index.js'
 import { actionEmoji, formatTime } from '../../components/formatting.js'
 
 export async function render(ctx: any) {

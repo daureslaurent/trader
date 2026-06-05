@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf'
-import { queryAll, queryOne } from '../../db/index.js'
+import { queryAll, queryOne } from '../../../db/index.js'
 import { formatCurrency } from '../../components/formatting.js'
 
 export async function render(ctx: any) {
