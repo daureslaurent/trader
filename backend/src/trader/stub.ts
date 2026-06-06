@@ -1,6 +1,7 @@
 import { Signal } from '../types.js'
 import { MarketData, AccountBalance, TradeResult, CoinTradeResult, BalanceInfo } from './types.js'
 import { logger } from '../core/logger.js'
+import { getSettings } from '../db/index.js'
 
 const FAKE_PRICES: Record<string, number> = {
   'BTC/USDC': 67500,
@@ -48,32 +49,47 @@ export async function fetchBalance(): Promise<AccountBalance> {
 }
 
 export async function executeTrade(signal: Signal): Promise<TradeResult> {
+  const feeRate = getSettings().fee_rate
   const price = FAKE_PRICES[signal.coin] || DEFAULT_PRICE
-  const cost = signal.quantity * price
+  const grossCost = signal.quantity * price
 
   if (signal.action === 'BUY') {
     logger.info('🛸 Binance fetchTicker', { symbol: signal.coin })
-    logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'buy', cost })
+    logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'buy', cost: grossCost })
+    // BUY: fee charged from received coins — you get fewer coins for the same USDC spend
+    const feeCostUsdc = grossCost * feeRate
+    const netQuantity = signal.quantity * (1 - feeRate)
+    return {
+      id: `stub-${Date.now()}`,
+      price,
+      quantity: netQuantity,
+      cost: grossCost,
+      fee: { cost: feeCostUsdc, currency: 'USDC' },
+    }
   } else {
     logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'sell', quantity: signal.quantity })
-  }
-
-  return {
-    id: `stub-${Date.now()}`,
-    price,
-    quantity: signal.quantity,
-    cost,
-    fee: { cost: cost * 0.001, currency: 'USDC' },
+    // SELL: fee charged from received USDC — you get less USDC for the same coins sold
+    const grossUsdc = signal.quantity * price
+    const feeCostUsdc = grossUsdc * feeRate
+    const netUsdc = grossUsdc - feeCostUsdc
+    return {
+      id: `stub-${Date.now()}`,
+      price,
+      quantity: signal.quantity,
+      cost: netUsdc,
+      fee: { cost: feeCostUsdc, currency: 'USDC' },
+    }
   }
 }
 
 export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fromAmount: number): Promise<CoinTradeResult> {
+  const feeRate = getSettings().fee_rate
   const fromPrice = fromSymbol === 'USDC' ? 1 : (FAKE_PRICES[fromSymbol] || DEFAULT_PRICE)
   const toPrice = toSymbol === 'USDC' ? 1 : (FAKE_PRICES[toSymbol] || DEFAULT_PRICE)
 
-  const usdtValue = fromAmount * fromPrice
-  const fee = usdtValue * 0.001
-  const toAmount = (usdtValue - fee) / toPrice
+  const usdcValue = fromAmount * fromPrice
+  const feeCostUsdc = usdcValue * feeRate
+  const toAmount = (usdcValue - feeCostUsdc) / toPrice
 
   if (fromSymbol === 'USDC') {
     logger.info('🛸 Binance createMarketOrder', { symbol: toSymbol, side: 'buy', cost: fromAmount })
@@ -88,7 +104,7 @@ export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fro
     toAmount,
     fromPrice,
     toPrice,
-    fee: { cost: fee, currency: 'USDC' },
+    fee: { cost: feeCostUsdc, currency: 'USDC' },
   }
 }
 

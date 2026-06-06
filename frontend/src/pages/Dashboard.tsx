@@ -132,9 +132,9 @@ export default function Dashboard({ onApprovalAction }: Props) {
           icon={<PortfolioIcon />}
         />
         <Stat
-          label="Open Positions"
-          value={openPositions}
-          sub={`of ${maxPositions} max`}
+          label="Bot Positions"
+          value={`${openPositions} / ${maxPositions}`}
+          sub={openPositions >= maxPositions ? 'limit reached' : `${maxPositions - openPositions} slots free`}
           icon={<PositionIcon />}
         />
         <Stat

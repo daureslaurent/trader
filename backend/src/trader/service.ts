@@ -57,6 +57,30 @@ function fillPrice(order: { price?: number | null; average?: number | null; cost
   return 0
 }
 
+// Normalise all fees to a USDC-equivalent amount.
+// CCXT may report fee in base currency (e.g. BTC on a BUY) or quote (USDC on a SELL).
+function extractFeeUsdc(order: any, fillPriceValue: number): { cost: number; currency: string } {
+  const rawFees: { cost?: number; currency?: string }[] = []
+  if (Array.isArray(order.fees) && order.fees.length > 0) {
+    rawFees.push(...order.fees)
+  } else if (order.fee && order.fee.cost != null) {
+    rawFees.push(order.fee)
+  }
+
+  let totalUsdc = 0
+  for (const f of rawFees) {
+    if (!f.cost) continue
+    const cur = (f.currency ?? '').toUpperCase()
+    if (cur === 'USDC' || cur === 'USDT' || cur === '') {
+      totalUsdc += f.cost
+    } else {
+      // Base-currency fee (e.g. BTC) — convert to USDC using fill price
+      totalUsdc += f.cost * fillPriceValue
+    }
+  }
+  return { cost: totalUsdc, currency: 'USDC' }
+}
+
 export async function executeTrade(signal: Signal): Promise<TradeResult> {
   const ex = getExchange()
   const symbol = signal.coin
@@ -69,12 +93,14 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
       logger.info('🛸 Binance createMarketOrder', { symbol, side: 'buy', cost })
       const order = await ex.createMarketOrderWithCost(symbol, 'buy', cost)
       const price = fillPrice(order)
-      return { id: order.id, price, quantity: order.amount || 0, cost: order.cost || cost }
+      const fee = extractFeeUsdc(order, price)
+      return { id: order.id, price, quantity: order.amount || 0, cost: order.cost || cost, fee }
     } else {
       logger.info('🛸 Binance createMarketOrder', { symbol, side: 'sell', quantity: signal.quantity })
       const order = await ex.createMarketSellOrder(symbol, signal.quantity)
       const price = fillPrice(order)
-      return { id: order.id, price, quantity: order.amount || signal.quantity, cost: order.cost || (price * signal.quantity) }
+      const fee = extractFeeUsdc(order, price)
+      return { id: order.id, price, quantity: order.amount || signal.quantity, cost: order.cost || (price * signal.quantity), fee }
     }
   } catch (err) {
     throw new TradeError(`Trade failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`)
@@ -96,7 +122,8 @@ export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fro
       const order = await ex.createMarketOrderWithCost(toSymbol, 'buy', fromAmount)
       const toPrice = fillPrice(order)
       const toAmount = order.amount || (toPrice > 0 ? fromAmount / toPrice : 0)
-      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice: 1, toPrice }
+      const fee = extractFeeUsdc(order, toPrice)
+      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice: 1, toPrice, fee }
     }
 
     if (toBase === 'USDC') {
@@ -104,7 +131,8 @@ export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fro
       const order = await ex.createMarketSellOrder(fromSymbol, fromAmount)
       const fromPrice = fillPrice(order)
       const toAmount = order.cost || (fromPrice * fromAmount)
-      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice, toPrice: 1 }
+      const fee = extractFeeUsdc(order, fromPrice)
+      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice, toPrice: 1, fee }
     }
 
     throw new TradeError(`Trade requires one side to be USDC (got ${fromSymbol}→${toSymbol})`)

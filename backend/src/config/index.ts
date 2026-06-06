@@ -45,6 +45,10 @@ export const config = {
     model: opt('ANALYST_MODEL', llamaModel),
     maxTokens: num('ANALYST_MAX_TOKENS', 28000),
   },
+  discoverer: {
+    baseURL: opt('DISCOVERER_BASE_URL', llamaBaseURL),
+    model: opt('DISCOVERER_MODEL', llamaModel),
+  },
   telegram: {
     botToken: opt('TELEGRAM_BOT_TOKEN', ''),
     chatId: opt('TELEGRAM_CHAT_ID', ''),

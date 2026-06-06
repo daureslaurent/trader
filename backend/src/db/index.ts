@@ -3,6 +3,7 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js'
 import { SCHEMA } from './schema.js'
 import { logger } from '../core/logger.js'
 import { BotSettings } from '../types.js'
+import { config } from '../config/index.js'
 
 const DB_PATH = process.env.DB_PATH || './data/cryptobot.db'
 
@@ -36,6 +37,70 @@ export async function initDB(): Promise<SqlJsDatabase> {
     db.run('CREATE INDEX IF NOT EXISTS idx_extraction_cache_coin ON extraction_cache(coin)')
   } catch {
     // Index already exists — ignore
+  }
+
+  // Migrate trades: add fee columns if missing
+  try {
+    db.run('ALTER TABLE trades ADD COLUMN fee_cost REAL NOT NULL DEFAULT 0')
+    logger.info('Migrated trades: added fee_cost column')
+  } catch { /* already exists */ }
+  try {
+    db.run("ALTER TABLE trades ADD COLUMN fee_currency TEXT NOT NULL DEFAULT 'USDC'")
+    logger.info('Migrated trades: added fee_currency column')
+  } catch { /* already exists */ }
+
+  // Migrate portfolio_entries: expand source CHECK constraint to include 'transfer'
+  try {
+    const rows = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='portfolio_entries'")
+    const sql = rows[0]?.values?.[0]?.[0] as string | undefined
+    if (sql && !sql.includes("'transfer'")) {
+      db.run('ALTER TABLE portfolio_entries RENAME TO portfolio_entries_old')
+      db.run(`CREATE TABLE portfolio_entries (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        coin        TEXT NOT NULL,
+        quantity    REAL NOT NULL,
+        buy_price   REAL NOT NULL,
+        buy_date    TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','CLOSED')),
+        source      TEXT NOT NULL DEFAULT 'trade' CHECK(source IN ('trade','manual','transfer')),
+        trade_id    INTEGER REFERENCES trades(id),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      )`)
+      db.run('INSERT INTO portfolio_entries SELECT * FROM portfolio_entries_old')
+      db.run('DROP TABLE portfolio_entries_old')
+      db.run('CREATE INDEX IF NOT EXISTS idx_portfolio_entries_status ON portfolio_entries(status)')
+      logger.info('Migrated portfolio_entries: expanded source CHECK constraint')
+    }
+  } catch (err) {
+    logger.warn('portfolio_entries source constraint migration failed', { err: String(err) })
+  }
+
+  // Seed fee_rate setting for existing DBs
+  db.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('fee_rate', '0.001')")
+
+  // Seed discover settings for existing DBs
+  db.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('discover_cron', '0 6 * * *')")
+  db.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('discover_min_score', '0.65')")
+  db.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('discover_top_n', '30')")
+  db.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('discover_auto_add', 'false')")
+  db.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('discover_min_volume_usd', '5000000')")
+
+  // Create coin_discoveries table for existing DBs
+  try {
+    db.run(`CREATE TABLE IF NOT EXISTS coin_discoveries (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      coin        TEXT NOT NULL,
+      score       REAL NOT NULL,
+      reasoning   TEXT NOT NULL,
+      market_data TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','auto_added')),
+      cycle_id    TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    db.run('CREATE INDEX IF NOT EXISTS idx_discoveries_created ON coin_discoveries(created_at DESC)')
+    db.run('CREATE INDEX IF NOT EXISTS idx_discoveries_status ON coin_discoveries(status)')
+  } catch {
+    // Already exists — ignore
   }
 
   saveDB()
@@ -127,6 +192,14 @@ export function getSettings(): BotSettings {
     max_risk_per_trade: parseFloat(map.max_risk_per_trade || '0.02'),
     max_open_positions: parseInt(map.max_open_positions || '5', 10),
     cache_ttl_hours: parseInt(map.cache_ttl_hours || '13', 10),
+    fee_rate: parseFloat(map.fee_rate || '0.001'),
+    discover_cron: map.discover_cron || '0 6 * * *',
+    discover_min_score: parseFloat(map.discover_min_score || '0.65'),
+    discover_top_n: parseInt(map.discover_top_n || '30', 10),
+    discover_auto_add: map.discover_auto_add === 'true',
+    discover_min_volume_usd: parseFloat(map.discover_min_volume_usd || '5000000'),
+    discoverer_base_url: map.discoverer_base_url || config.discoverer.baseURL,
+    discoverer_model: map.discoverer_model || config.discoverer.model,
   }
 }
 

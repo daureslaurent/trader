@@ -7,8 +7,9 @@ import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
 import { Signal, PortfolioEntry } from '../types.js'
 import * as priceCache from '../market/index.js'
+import { getDiscoveries, approveDiscovery, rejectDiscovery, deleteDiscovery, isRunning } from '../discoverer/index.js'
 
-import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, enrichPortfolioEntriesWithPrices, depositUsdt, withdrawUsdt, getUsdtEntry, updatePortfolioForTrade } from '../portfolio/index.js'
+import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, closeEntry, reduceEntryQuantity, enrichPortfolioEntriesWithPrices, depositUsdt, withdrawUsdt, getUsdtEntry, updatePortfolioForTrade } from '../portfolio/index.js'
 
 function normalizeSymbol(coin: string): string {
   const upper = coin.trim().toUpperCase()
@@ -45,10 +46,13 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
 
     const localUsdc = entries.find(e => e.coin === 'USDC')?.quantity ?? 0
 
+    const botPositionCount = (queryAll("SELECT COUNT(*) AS cnt FROM positions WHERE status = 'OPEN'")[0]?.cnt as number) ?? 0
+
     res.json({
       total_value: Math.round(totalValue * 100) / 100,
       entries: enriched,
-      open_position_count: enriched.filter(e => e.coin !== 'USDC').length,
+      open_position_count: botPositionCount,
+      holdings_count: enriched.filter(e => e.coin !== 'USDC').length,
       max_open_positions: settings.max_open_positions,
       binance_usdc: binanceUsdc,
       available_usdc: binanceUsdc !== null ? Math.max(0, binanceUsdc - localUsdc) : null,
@@ -133,11 +137,141 @@ router.post('/portfolio/usdc/withdraw', async (req: Request, res: Response) => {
   res.json({ ok: true, balance: result.balance })
 })
 
+router.get('/binance/balance', async (_req: Request, res: Response) => {
+  if (config.stub) {
+    return res.json({ BTC: 0.05, ETH: 0.5, SOL: 5, BNB: 2, USDC: 10000 })
+  }
+  try {
+    const exchange = getExchange()
+    logger.info('🛸 Binance fetchBalance')
+    const bal = await exchange.fetchBalance()
+    const free = bal.free as unknown as Record<string, number>
+    const nonZero = Object.fromEntries(Object.entries(free).filter(([, v]) => (v ?? 0) > 0))
+    res.json(nonZero)
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+router.post('/portfolio/transfer', async (req: Request, res: Response) => {
+  const { direction, coin, quantity, buy_price } = req.body
+
+  if (!['from_binance', 'to_binance'].includes(direction)) {
+    return res.status(400).json({ error: 'direction must be from_binance or to_binance' })
+  }
+  if (!coin || typeof coin !== 'string') {
+    return res.status(400).json({ error: 'coin required' })
+  }
+  if (typeof quantity !== 'number' || quantity <= 0) {
+    return res.status(400).json({ error: 'quantity must be a positive number' })
+  }
+
+  const symbol = normalizeSymbol(coin)
+  if (symbol === 'USDC') {
+    return res.status(400).json({ error: 'Use deposit/withdraw for USDC' })
+  }
+
+  try {
+    if (direction === 'from_binance') {
+      if (typeof buy_price !== 'number' || buy_price <= 0) {
+        return res.status(400).json({ error: 'buy_price required for Binance → Local transfer' })
+      }
+
+      if (!config.stub) {
+        const exchange = getExchange()
+        logger.info('🛸 Binance fetchBalance')
+        const bal = await exchange.fetchBalance()
+        const asset = symbol.split('/')[0]
+        const available = (bal.free as unknown as Record<string, number>)[asset] ?? 0
+        if (available < quantity) {
+          return res.status(400).json({
+            error: `Insufficient Binance balance: ${available} ${asset} available`,
+            binance_balance: available,
+          })
+        }
+      }
+
+      const date = new Date().toISOString().split('T')[0]
+      const id = addEntry(symbol, quantity, buy_price, date, 'transfer')
+      return res.json({ ok: true, id })
+    }
+
+    // to_binance: remove from local tracking FIFO
+    const entries = (getOpenEntries() as unknown as PortfolioEntry[]).filter(e => e.coin === symbol)
+    if (entries.length === 0) {
+      return res.status(400).json({ error: `No open local position for ${symbol}` })
+    }
+
+    const totalLocal = entries.reduce((s, e) => s + e.quantity, 0)
+    if (quantity > totalLocal + 1e-10) {
+      const asset = symbol.split('/')[0]
+      return res.status(400).json({
+        error: `Insufficient local balance: ${totalLocal} ${asset} available`,
+        local_balance: totalLocal,
+      })
+    }
+
+    let remaining = quantity
+    for (const entry of entries) {
+      if (remaining <= 1e-10) break
+      if (entry.quantity <= remaining + 1e-10) {
+        remaining -= entry.quantity
+        closeEntry(entry.id)
+      } else {
+        reduceEntryQuantity(entry.id, remaining)
+        remaining = 0
+      }
+    }
+
+    return res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
 router.delete('/portfolio/entry/:id', (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
   removeEntry(id)
   res.json({ ok: true })
+})
+
+router.get('/portfolio/gains', (_req: Request, res: Response) => {
+  try {
+    const rows = queryAll(`
+      SELECT
+        coin,
+        SUM(CASE WHEN side = 'BUY'  THEN total ELSE 0 END) AS total_bought,
+        SUM(CASE WHEN side = 'SELL' THEN total ELSE 0 END) AS total_sold,
+        SUM(CASE WHEN side = 'SELL' THEN total ELSE -total END) AS realized_pnl,
+        SUM(fee_cost) AS total_fees
+      FROM trades
+      WHERE status = 'EXECUTED' AND coin != 'USDC'
+      GROUP BY coin
+      HAVING SUM(CASE WHEN side = 'SELL' THEN 1 ELSE 0 END) > 0
+      ORDER BY realized_pnl DESC
+    `) as { coin: string; total_bought: number; total_sold: number; realized_pnl: number; total_fees: number }[]
+
+    const total_pnl = rows.reduce((s, r) => s + r.realized_pnl, 0)
+    const total_fees = rows.reduce((s, r) => s + (r.total_fees ?? 0), 0)
+
+    res.json({
+      total_pnl: Math.round(total_pnl * 100) / 100,
+      total_fees: Math.round(total_fees * 100) / 100,
+      coins: rows.map(r => ({
+        coin: r.coin,
+        total_bought: Math.round(r.total_bought * 100) / 100,
+        total_sold: Math.round(r.total_sold * 100) / 100,
+        realized_pnl: Math.round(r.realized_pnl * 100) / 100,
+        fees_paid: Math.round((r.total_fees ?? 0) * 100) / 100,
+        pnl_pct: r.total_bought > 0
+          ? Math.round((r.realized_pnl / r.total_bought) * 10000) / 100
+          : 0,
+      })),
+    })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 router.get('/portfolio/history', (_req: Request, res: Response) => {
@@ -238,6 +372,10 @@ router.get('/pipeline-events', (req: Request, res: Response) => {
     conditions.push('cycle_id = ?')
     params.push(cycleId)
   }
+  if (req.query.stage) {
+    conditions.push('stage LIKE ?')
+    params.push(`${req.query.stage as string}%`)
+  }
   if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' ORDER BY created_at DESC LIMIT ?'
   params.push(limit)
@@ -283,9 +421,11 @@ router.post('/trade/manual', async (req: Request, res: Response) => {
   try {
     const signal: Signal = { coin, action: side, quantity, reason: 'Manual', confidence: 1 }
     const result = await executeTrade(signal)
+    const feeCost = result.fee?.cost ?? 0
+    const feeCurrency = result.fee?.currency ?? 'USDC'
     const info = runSQL(
-      'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [coin, side, quantity, result.price, result.cost, 'EXECUTED', 1]
+      'INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [coin, side, quantity, result.price, result.cost, feeCost, feeCurrency, 'EXECUTED', 1]
     )
     res.json({ ok: true, id: info.lastInsertRowid })
   } catch (err) {
@@ -311,17 +451,19 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
 
   try {
     const result = await executeCoinTrade(fromSymbol, toSymbol, amount)
+    const feeCost = result.fee?.cost ?? 0
+    const feeCurrency = result.fee?.currency ?? 'USDC'
 
     let tradeInfo: ReturnType<typeof runSQL>
     if (toSymbol === 'USDC') {
       tradeInfo = runSQL(
-        'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [fromSymbol, 'SELL', amount, result.fromPrice, amount * result.fromPrice, 'EXECUTED', 1]
+        'INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [fromSymbol, 'SELL', amount, result.fromPrice, amount * result.fromPrice, feeCost, feeCurrency, 'EXECUTED', 1]
       )
     } else {
       tradeInfo = runSQL(
-        'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [toSymbol, 'BUY', result.toAmount, result.toPrice, result.toAmount * result.toPrice, 'EXECUTED', 1]
+        'INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [toSymbol, 'BUY', result.toAmount, result.toPrice, result.toAmount * result.toPrice, feeCost, feeCurrency, 'EXECUTED', 1]
       )
     }
 
@@ -339,6 +481,7 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
       fee: result.fee,
     })
   } catch (err) {
+    logger.error('Trade execute failed', { from, to, amount, error: err instanceof Error ? err.message : String(err) })
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
@@ -431,6 +574,47 @@ router.delete('/cache/article', (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
+})
+
+// ── Discover pipeline ──────────────────────────────────────────────────────
+
+router.get('/discover', (_req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Math.max(parseInt((_req.query.limit as string) || '50', 10), 1), 200)
+    const discoveries = getDiscoveries(limit)
+    res.json({ running: isRunning(), discoveries })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+router.post('/discover/run', (_req: Request, res: Response) => {
+  const cycleId = `${Date.now().toString(36)}-discovery`
+  bus.emit('discovery_run_requested', { cycle_id: cycleId })
+  res.json({ ok: true, cycle_id: cycleId })
+})
+
+router.post('/discover/approve/:id', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
+  const result = approveDiscovery(id)
+  if (!result.ok) return res.status(400).json({ error: result.error })
+  res.json({ ok: true })
+})
+
+router.post('/discover/reject/:id', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
+  const result = rejectDiscovery(id)
+  if (!result.ok) return res.status(400).json({ error: result.error })
+  res.json({ ok: true })
+})
+
+router.delete('/discover/:id', (req: Request, res: Response) => {
+  const id = Number(req.params.id)
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
+  deleteDiscovery(id)
+  res.json({ ok: true })
 })
 
 router.get('/settings', (_req: Request, res: Response) => {

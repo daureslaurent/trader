@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'portfolio' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings'
+export type Page = 'dashboard' | 'portfolio' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover'
 
 export interface Trade {
   id: number
@@ -27,35 +27,55 @@ export interface PortfolioEntry {
   quantity: number
   buy_price: number
   buy_date: string
-  current_price?: number
-  current_value?: number
-  delta_pct?: number
-  delta_usd?: number
+  source?: 'trade' | 'manual' | 'transfer'
+  current_price?: number | null
+  current_value?: number | null
+  delta_pct?: number | null
+  delta_usd?: number | null
 }
 
 export interface PortfolioResponse {
   total_value: number
   entries: PortfolioEntry[]
+  /** Bot-managed positions (positions table, status=OPEN). Does NOT include manual/transfer holdings. */
   open_position_count: number
+  /** All non-USDC portfolio_entries with status=OPEN */
+  holdings_count: number
   max_open_positions: number
   binance_usdc: number | null
   available_usdc: number | null
 }
 
-export interface Position {
+export interface ActivePosition {
   id: number
   coin: string
-  side: string
   quantity: number
   entry_price: number
-  current_price: number
+  current_price: number | null
+  pnl: number | null
+  pnl_pct: number | null
   stop_loss: number
-  take_profit: number
-  current_sl: number
-  pnl: number
-  status: string
-  created_at: string
+  take_profit: number | null
+  distance_to_sl_pct: number | null
+  distance_to_tp_pct: number | null
+  status: 'OPEN' | 'CLOSED' | 'SL_HIT' | 'TP_HIT'
 }
+
+export interface GainsCoin {
+  coin: string
+  total_bought: number
+  total_sold: number
+  realized_pnl: number
+  fees_paid: number
+  pnl_pct: number
+}
+
+export interface GainsResponse {
+  total_pnl: number
+  total_fees: number
+  coins: GainsCoin[]
+}
+
 
 export interface PipelineEvent {
   id: number
@@ -115,4 +135,33 @@ export interface Toast {
   id: number
   type: 'success' | 'error' | 'warning' | 'info'
   message: string
+}
+
+export interface DiscoveryResult {
+  id: number
+  coin: string
+  score: number
+  reasoning: string
+  market_data: string
+  status: 'pending' | 'approved' | 'rejected' | 'auto_added'
+  cycle_id: string
+  created_at: string
+}
+
+export interface DiscoveryMarketData {
+  price: number
+  change24h: number
+  volume: number
+  rsi14: number
+  trend: 'uptrend' | 'downtrend' | 'ranging'
+  volatility: 'high' | 'normal' | 'low'
+  atr14: number
+  sma7: number
+  sma25: number
+  perf7d: number
+}
+
+export interface DiscoverResponse {
+  running: boolean
+  discoveries: DiscoveryResult[]
 }

@@ -15,6 +15,8 @@ export interface TradeRecord {
   quantity: number
   price: number
   total: number
+  fee_cost: number
+  fee_currency: string
   signal_id: number | null
   status: 'PENDING' | 'EXECUTED' | 'FAILED'
   approved: boolean | null
@@ -50,7 +52,34 @@ export interface BotSettings {
   max_risk_per_trade: number
   max_open_positions: number
   cache_ttl_hours: number
+  fee_rate: number
+  discover_cron: string
+  discover_min_score: number
+  discover_top_n: number
+  discover_auto_add: boolean
+  discover_min_volume_usd: number
+  discoverer_base_url: string
+  discoverer_model: string
 }
+
+export interface DiscoveryResult {
+  id: number
+  coin: string
+  score: number
+  reasoning: string
+  market_data: string
+  status: 'pending' | 'approved' | 'rejected' | 'auto_added'
+  cycle_id: string
+  created_at: string
+}
+
+export type DiscoveryStage =
+  | 'discovery_started'
+  | 'discovery_candidates_found'
+  | 'discovery_evaluating'
+  | 'discovery_scored'
+  | 'discovery_completed'
+  | 'discovery_error'
 
 export interface ApprovalRequest {
   tradeId: number
@@ -75,6 +104,12 @@ export type PipelineStage =
   | 'pipeline_error'
   | 'pipeline_timeout'
   | 'pipeline_failed'
+  | 'discovery_started'
+  | 'discovery_candidates_found'
+  | 'discovery_evaluating'
+  | 'discovery_scored'
+  | 'discovery_completed'
+  | 'discovery_error'
 
 export interface PipelineEvent {
   id: number

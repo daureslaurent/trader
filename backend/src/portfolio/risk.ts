@@ -17,14 +17,25 @@ export function calculatePositionSize(
   settings: BotSettings,
 ): number {
   const risk = parseSettings(settings)
+  const feeRate = settings.fee_rate ?? 0.001
+
   const targetRisk = balanceUsd * risk.maxRiskPerTrade
   const riskAdjusted = targetRisk * Math.max(confidence, 0.1)
+
+  // Effective price paid per coin including the buy-side fee
+  // (fee is charged from received coins, so effective cost = price / (1 - feeRate))
+  const effectivePrice = price / (1 - feeRate)
+
+  let qty: number
   if (atr <= 0 || risk.stopLossAtrMultiplier <= 0) {
-    return Math.min(riskAdjusted / price, settings.max_position_size_usd / price)
+    qty = Math.min(riskAdjusted / effectivePrice, settings.max_position_size_usd / effectivePrice)
+  } else {
+    const volAdjusted = riskAdjusted / (atr * risk.stopLossAtrMultiplier)
+    const maxQty = settings.max_position_size_usd / effectivePrice
+    qty = Math.min(volAdjusted, maxQty)
   }
-  const volAdjusted = riskAdjusted / (atr * risk.stopLossAtrMultiplier)
-  const maxQty = settings.max_position_size_usd / price
-  return Math.min(volAdjusted, maxQty)
+
+  return qty
 }
 
 export function calculateStopLoss(
@@ -43,6 +54,13 @@ export function calculateTakeProfit(
 ): number {
   const risk = parseSettings(settings)
   return entryPrice + (atr * risk.takeProfitAtrMultiplier)
+}
+
+// Minimum sell price to cover both the buy-side and sell-side fees (round-trip break-even).
+// buy_fee is charged on received coins: effective_entry = entry / (1 - feeRate)
+// sell_fee is charged on proceeds: break_even_sell = effective_entry / (1 - feeRate)
+export function calculateBreakEven(entryPrice: number, feeRate: number): number {
+  return entryPrice / Math.pow(1 - feeRate, 2)
 }
 
 export function checkPosition(currentPrice: number, position: PositionRecord): 'HOLD' | 'SL_HIT' | 'TP_HIT' {

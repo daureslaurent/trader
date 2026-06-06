@@ -1,0 +1,263 @@
+import OpenAI from 'openai'
+import { logger } from '../core/logger.js'
+import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
+import { getMarketContext } from '../portfolio/market.js'
+import { getTopPairs, fetchMarketData } from '../trader/index.js'
+import { getOpenEntries } from '../portfolio/index.js'
+import { bus } from '../core/events.js'
+import { broadcast } from '../api/ws.js'
+import { DiscoveryResult } from '../types.js'
+import { buildDiscoveryPrompt } from './prompts.js'
+import { LLMError } from '../core/errors.js'
+
+function makeClient(baseURL: string): OpenAI {
+  return new OpenAI({ baseURL, apiKey: 'ollama' })
+}
+
+let running = false
+
+function logDiscoveryEvent(
+  stage: string,
+  coin: string,
+  cycleId: string,
+  data: Record<string, unknown>,
+): void {
+  const payload = JSON.stringify(data)
+  const { lastInsertRowid } = runSQL(
+    'INSERT INTO pipeline_events (coin, cycle_id, stage, data) VALUES (?, ?, ?, ?)',
+    [coin, cycleId, stage, payload]
+  )
+  broadcast('pipeline_event', {
+    id: lastInsertRowid,
+    coin,
+    cycle_id: cycleId,
+    stage,
+    data: payload,
+    created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+  })
+}
+
+async function evaluateCandidate(
+  symbol: string,
+  price: number,
+  change24h: number,
+  volume: number,
+  cycleId: string,
+): Promise<{ score: number; reasoning: string; marketData: Record<string, unknown> } | null> {
+  logDiscoveryEvent('discovery_evaluating', symbol, cycleId, { symbol, price, volume })
+
+  try {
+    const marketCtx = await getMarketContext(symbol, price)
+    const { system, user } = buildDiscoveryPrompt(symbol, marketCtx)
+
+    const settings = getSettings()
+    const client = makeClient(settings.discoverer_base_url)
+    logger.info('Request LLM', { module: 'discoverer', coin: symbol, model: settings.discoverer_model })
+    const resp = await client.chat.completions.create({
+      model: settings.discoverer_model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.2,
+      max_tokens: 512,
+      response_format: { type: 'json_object' },
+    })
+
+    const content = resp.choices[0]?.message?.content ?? ''
+    if (!content.trim()) throw new LLMError('Empty response')
+
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(content)
+    } catch {
+      throw new LLMError(`JSON parse failed: ${content.substring(0, 200)}`)
+    }
+
+    const score = typeof parsed.score === 'number'
+      ? Math.min(1, Math.max(0, parsed.score))
+      : 0
+    const reasoning = typeof parsed.reasoning === 'string' && parsed.reasoning.trim()
+      ? parsed.reasoning.trim()
+      : 'No reasoning provided'
+
+    const marketData = {
+      price,
+      change24h,
+      volume,
+      rsi14: marketCtx.rsi14,
+      trend: marketCtx.trend,
+      volatility: marketCtx.volatility,
+      atr14: marketCtx.atr14,
+      sma7: marketCtx.sma7,
+      sma25: marketCtx.sma25,
+      perf7d: marketCtx.perf7d,
+    }
+
+    logDiscoveryEvent('discovery_scored', symbol, cycleId, { symbol, score, reasoning, ...marketData })
+    logger.info('Discovery scored', { symbol, score })
+    return { score, reasoning, marketData }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.warn('Failed to evaluate discovery candidate', { symbol, error: message })
+    logDiscoveryEvent('discovery_error', symbol, cycleId, { symbol, error: message })
+    return null
+  }
+}
+
+export function isRunning(): boolean {
+  return running
+}
+
+export async function runDiscovery(cycleId: string): Promise<void> {
+  if (running) {
+    logger.warn('Discovery pipeline already running, skipping')
+    return
+  }
+
+  running = true
+  logger.info('Discovery pipeline started', { cycleId })
+
+  try {
+    const settings = getSettings()
+
+    logDiscoveryEvent('discovery_started', 'DISCOVERY', cycleId, {
+      top_n: settings.discover_top_n,
+      min_volume_usd: settings.discover_min_volume_usd,
+    })
+
+    const topPairs = await getTopPairs(settings.discover_top_n)
+
+    const watchlist = settings.watchlist
+    const portfolioEntries = getOpenEntries() as unknown as { coin: string }[]
+    const excluded = new Set([...watchlist, ...portfolioEntries.map(e => e.coin)])
+
+    const candidates = topPairs.filter(s => !excluded.has(s))
+
+    logDiscoveryEvent('discovery_candidates_found', 'DISCOVERY', cycleId, {
+      total_pairs: topPairs.length,
+      candidates: candidates.length,
+      excluded: excluded.size,
+    })
+
+    if (candidates.length === 0) {
+      logDiscoveryEvent('discovery_completed', 'DISCOVERY', cycleId, {
+        discovered: 0,
+        message: 'No new candidates after filtering',
+      })
+      logger.info('Discovery: no new candidates')
+      return
+    }
+
+    const marketDataList = await fetchMarketData(candidates)
+    const volumeFiltered = marketDataList.filter(d => d.volume >= settings.discover_min_volume_usd)
+
+    logger.info('Discovery candidates after volume filter', {
+      before: candidates.length,
+      after: volumeFiltered.length,
+    })
+
+    // Evaluate in batches of 5 to avoid overwhelming the LLM
+    const BATCH_SIZE = 5
+    const discoveries: { symbol: string; score: number; reasoning: string; marketData: Record<string, unknown> }[] = []
+
+    for (let i = 0; i < volumeFiltered.length; i += BATCH_SIZE) {
+      const batch = volumeFiltered.slice(i, i + BATCH_SIZE)
+      const results = await Promise.allSettled(
+        batch.map(d => evaluateCandidate(d.symbol, d.price, d.change24h, d.volume, cycleId))
+      )
+      for (let j = 0; j < results.length; j++) {
+        const r = results[j]
+        if (r.status === 'fulfilled' && r.value !== null) {
+          discoveries.push({ symbol: batch[j].symbol, ...r.value })
+        }
+      }
+    }
+
+    // Persist results and optionally auto-add to watchlist
+    const newWatchlist = [...watchlist]
+    let autoAdded = 0
+
+    for (const d of discoveries) {
+      const shouldAutoAdd = settings.discover_auto_add && d.score >= settings.discover_min_score
+      runSQL(
+        'INSERT INTO coin_discoveries (coin, score, reasoning, market_data, status, cycle_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [d.symbol, d.score, d.reasoning, JSON.stringify(d.marketData), shouldAutoAdd ? 'auto_added' : 'pending', cycleId]
+      )
+
+      if (shouldAutoAdd && !newWatchlist.includes(d.symbol)) {
+        newWatchlist.push(d.symbol)
+        autoAdded++
+        logger.info('Auto-added to watchlist via discovery', { coin: d.symbol, score: d.score })
+      }
+
+      const discoveryPayload = { coin: d.symbol, score: d.score, reasoning: d.reasoning, auto_added: shouldAutoAdd }
+      bus.emit('coin_discovered', discoveryPayload)
+      broadcast('coin_discovered', discoveryPayload)
+    }
+
+    if (autoAdded > 0) {
+      updateSetting('watchlist', JSON.stringify(newWatchlist))
+      bus.emit('settings_updated', getSettings() as import('../types.js').BotSettings)
+    }
+
+    logDiscoveryEvent('discovery_completed', 'DISCOVERY', cycleId, {
+      evaluated: volumeFiltered.length,
+      discovered: discoveries.length,
+      auto_added: autoAdded,
+    })
+
+    logger.info('Discovery pipeline completed', {
+      evaluated: volumeFiltered.length,
+      discovered: discoveries.length,
+      autoAdded,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logDiscoveryEvent('discovery_error', 'DISCOVERY', cycleId, { error: message })
+    logger.error('Discovery pipeline failed', { error: message })
+  } finally {
+    running = false
+  }
+}
+
+export function getDiscoveries(limit = 50): DiscoveryResult[] {
+  return queryAll(
+    'SELECT * FROM coin_discoveries ORDER BY created_at DESC LIMIT ?',
+    [limit]
+  ) as unknown as DiscoveryResult[]
+}
+
+export function approveDiscovery(id: number): { ok: boolean; error?: string } {
+  const discovery = queryOne('SELECT * FROM coin_discoveries WHERE id = ?', [id])
+  if (!discovery) return { ok: false, error: 'Discovery not found' }
+  if (discovery.status !== 'pending') return { ok: false, error: `Already ${discovery.status}` }
+
+  const settings = getSettings()
+  const watchlist = [...settings.watchlist]
+  const coin = discovery.coin as string
+
+  if (!watchlist.includes(coin)) {
+    watchlist.push(coin)
+    updateSetting('watchlist', JSON.stringify(watchlist))
+    bus.emit('settings_updated', getSettings() as import('../types.js').BotSettings)
+  }
+
+  runSQL("UPDATE coin_discoveries SET status = 'approved' WHERE id = ?", [id])
+  logger.info('Discovery approved, added to watchlist', { coin, id })
+  return { ok: true }
+}
+
+export function rejectDiscovery(id: number): { ok: boolean; error?: string } {
+  const discovery = queryOne('SELECT * FROM coin_discoveries WHERE id = ?', [id])
+  if (!discovery) return { ok: false, error: 'Discovery not found' }
+  if (discovery.status !== 'pending') return { ok: false, error: `Already ${discovery.status}` }
+
+  runSQL("UPDATE coin_discoveries SET status = 'rejected' WHERE id = ?", [id])
+  logger.info('Discovery rejected', { coin: discovery.coin, id })
+  return { ok: true }
+}
+
+export function deleteDiscovery(id: number): void {
+  runSQL('DELETE FROM coin_discoveries WHERE id = ?', [id])
+}

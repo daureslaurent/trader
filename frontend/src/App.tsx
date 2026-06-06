@@ -13,6 +13,7 @@ import Settings from './pages/Settings'
 import Charts from './pages/Charts'
 import LLM from './pages/LLM'
 import CacheView from './pages/CacheView'
+import Discover from './pages/Discover'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
@@ -23,6 +24,7 @@ const PAGE_TITLES: Record<Page, string> = {
   logs: 'Logs',
   cache: 'Article Cache',
   settings: 'Settings',
+  discover: 'Discover Coins',
 }
 
 let toastId = 0
@@ -100,6 +102,14 @@ function AppInner() {
     } else if (event === 'trade_rejected') {
       pendingRef.current = Math.max(0, pendingRef.current - 1)
       setPendingCount(pendingRef.current)
+    } else if (event === 'coin_discovered') {
+      const d = data as { coin: string; score: number; auto_added: boolean }
+      const coin = d.coin.replace('/USDC', '')
+      if (d.auto_added) {
+        addToast('success', `Discovered ${coin} — auto-added to watchlist (score ${Math.round(d.score * 100)}%)`)
+      } else {
+        addToast('info', `New candidate: ${coin} (score ${Math.round(d.score * 100)}%)`)
+      }
     }
   }, [])
 
@@ -148,6 +158,7 @@ function AppInner() {
           {page === 'charts' && <Charts />}
           {page === 'logs' && <Logs />}
           {page === 'cache' && <CacheView />}
+          {page === 'discover' && <Discover />}
           {page === 'settings' && <Settings />}
         </main>
       </div>

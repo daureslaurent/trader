@@ -10,10 +10,11 @@ import cron, { ScheduledTask } from 'node-cron'
 import { researchCoin } from './researcher/index.js'
 import { extractResearch, selectArticles } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, closeEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, seedUsdtIfAbsent, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/index.js'
+import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, closeEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, seedUsdtIfAbsent, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit, calculateBreakEven } from './portfolio/index.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 import { closeBrowser } from './scraper/browser.js'
+import { runDiscovery } from './discoverer/index.js'
 
 let pendingApprovals: Map<number, Signal> = new Map()
 let approvalTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
@@ -21,7 +22,21 @@ let approvalTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
 const PIPELINE_TIMEOUT_MS = 60 * 60 * 1000 // 1 hour
 
 let cronTask: ScheduledTask | null = null
+let discoveryCronTask: ScheduledTask | null = null
 let cycleCounter = 0
+
+function scheduleDiscovery(expression: string): void {
+  discoveryCronTask?.stop()
+  if (!cron.validate(expression)) {
+    logger.error('Invalid discovery cron expression, falling back to daily', { expression })
+    expression = '0 6 * * *'
+  }
+  discoveryCronTask = cron.schedule(expression, () => {
+    const cycleId = `${Date.now().toString(36)}-discovery`
+    runDiscovery(cycleId)
+  })
+  logger.info('Discovery pipeline scheduled', { cron: expression })
+}
 
 function schedulePipeline(expression: string): void {
   cronTask?.stop()
@@ -224,7 +239,10 @@ async function tradingLoop() {
           }
           const usdtEntry = getUsdtEntry()
           if (usdtEntry) {
-            increaseEntryQuantity(usdtEntry.id, (existing.quantity as number) * data.price)
+            // Net USDC after sell-side fee
+            const feeRate = settings.fee_rate ?? 0.001
+            const grossUsdc = (existing.quantity as number) * data.price
+            increaseEntryQuantity(usdtEntry.id, grossUsdc * (1 - feeRate))
           }
         } else {
           logger.debug('No open position to sell', { coin: data.symbol })
@@ -330,16 +348,18 @@ async function handleTradeSignal(signal: Signal, price: number, atr?: number, se
 async function submitTrade(signal: Signal, tradeId?: number, atr?: number, settings?: any) {
   try {
     const result = await executeTrade(signal)
+    const feeCost = result.fee?.cost ?? 0
+    const feeCurrency = result.fee?.currency ?? 'USDC'
 
     if (tradeId) {
       runSQL(
-        "UPDATE trades SET price = ?, total = ?, status = 'EXECUTED', approved = 1 WHERE id = ?",
-        [result.price, result.cost, tradeId]
+        "UPDATE trades SET price = ?, total = ?, fee_cost = ?, fee_currency = ?, status = 'EXECUTED', approved = 1 WHERE id = ?",
+        [result.price, result.cost, feeCost, feeCurrency, tradeId]
       )
     } else {
       runSQL(
-        'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [signal.coin, signal.action, signal.quantity, result.price, result.cost, 'EXECUTED', 1]
+        'INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [signal.coin, signal.action, result.quantity, result.price, result.cost, feeCost, feeCurrency, 'EXECUTED', 1]
       )
     }
 
@@ -352,7 +372,7 @@ async function submitTrade(signal: Signal, tradeId?: number, atr?: number, setti
           'INSERT INTO positions (coin, side, quantity, entry_price, stop_loss, take_profit, current_sl) VALUES (?, ?, ?, ?, ?, ?, ?)',
           [signal.coin, 'BUY', result.quantity, result.price, sl, tp, sl]
         )
-        logger.info('Position opened', { coin: signal.coin, price: result.price, sl, tp })
+        logger.info('Position opened', { coin: signal.coin, price: result.price, sl, tp, feeCost })
       }
     }
 
@@ -360,14 +380,16 @@ async function submitTrade(signal: Signal, tradeId?: number, atr?: number, setti
     bus.emit('trade_executed', trade as any)
 
     if (signal.action === 'BUY') {
-      addEntry(signal.coin, result.quantity, result.price, new Date().toISOString().split('T')[0], 'trade', (trade?.id as number) || (tradeId as number))
+      // cost basis = USDC spent / net coins received (fee already baked into result.quantity)
+      const costBasis = result.quantity > 0 ? result.cost / result.quantity : result.price
+      addEntry(signal.coin, result.quantity, costBasis, new Date().toISOString().split('T')[0], 'trade', (trade?.id as number) || (tradeId as number))
       const usdtEntry = getUsdtEntry()
       if (usdtEntry) {
         reduceEntryQuantity(usdtEntry.id, result.cost)
       }
     }
 
-    logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price })
+    logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price, fee: feeCost })
   } catch (err) {
     logger.error('Trade failed', { coin: signal.coin, error: err instanceof Error ? err.message : String(err) })
   }
@@ -402,6 +424,8 @@ bus.on('trade_rejected', (tradeId: number) => {
     const qty = pos ? (pos.quantity as number) : 0
     const signal: Signal = { coin, action: 'SELL', quantity: qty, reason: 'Stop loss', confidence: 1 }
     const result = await executeTrade(signal)
+    const feeCost = result.fee?.cost ?? 0
+    const feeCurrency = result.fee?.currency ?? 'USDC'
     runSQL(
       "UPDATE positions SET status = 'SL_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
       [price, positionId]
@@ -415,8 +439,8 @@ bus.on('trade_rejected', (tradeId: number) => {
       increaseEntryQuantity(slUsdtEntry.id, result.cost)
     }
     runSQL(
-      'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
+      'INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [coin, 'SELL', result.quantity, result.price, result.cost, feeCost, feeCurrency, 'EXECUTED', 1]
     )
     broadcast('stop_loss_hit', { coin, price, pnl: null })
   } catch (err) {
@@ -431,6 +455,8 @@ bus.on('trade_rejected', (tradeId: number) => {
     const qty = pos ? (pos.quantity as number) : 0
     const signal: Signal = { coin, action: 'SELL', quantity: qty, reason: 'Take profit', confidence: 1 }
     const result = await executeTrade(signal)
+    const feeCost = result.fee?.cost ?? 0
+    const feeCurrency = result.fee?.currency ?? 'USDC'
     runSQL(
       "UPDATE positions SET status = 'TP_HIT', pnl = (quantity * (? - entry_price)) WHERE id = ?",
       [price, positionId]
@@ -444,8 +470,8 @@ bus.on('trade_rejected', (tradeId: number) => {
       increaseEntryQuantity(tpUsdtEntry.id, result.cost)
     }
     runSQL(
-      'INSERT INTO trades (coin, side, quantity, price, total, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [coin, 'SELL', result.quantity, result.price, result.cost, 'EXECUTED', 1]
+      'INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [coin, 'SELL', result.quantity, result.price, result.cost, feeCost, feeCurrency, 'EXECUTED', 1]
     )
     broadcast('take_profit_hit', { coin, price, pnl: null })
   } catch (err) {
@@ -478,6 +504,7 @@ async function start() {
   if (initialCoins.length > 0) priceCache.subscribe([...new Set(initialCoins)])
 
   schedulePipeline(settings.pipeline_cron)
+  scheduleDiscovery(settings.discover_cron)
 
   // Run once immediately at startup, then cron takes over
   runPipeline()
@@ -488,6 +515,13 @@ async function start() {
 // Reschedule when the frontend saves new settings
 bus.on('settings_updated', (updated) => {
   if (updated.pipeline_cron) schedulePipeline(updated.pipeline_cron)
+  if (updated.discover_cron) scheduleDiscovery(updated.discover_cron)
+})
+
+bus.on('discovery_run_requested', ({ cycle_id }) => {
+  runDiscovery(cycle_id).catch(err => {
+    logger.error('Discovery run failed', { error: err instanceof Error ? err.message : String(err) })
+  })
 })
 
 bus.on('pipeline_run_requested', ({ symbol, cycle_id }) => {
@@ -505,6 +539,7 @@ bus.on('pipeline_run_requested', ({ symbol, cycle_id }) => {
 async function shutdown(signal: string) {
   logger.info(`Shutting down (${signal})`)
   cronTask?.stop()
+  discoveryCronTask?.stop()
   priceCache.stop()
   try { await closeBrowser() } catch {}
   saveDB()

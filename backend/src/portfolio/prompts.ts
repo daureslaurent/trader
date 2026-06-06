@@ -1,6 +1,7 @@
 import { MarketContext, PortfolioState, BotSettings } from '../types.js'
 import { ExtractedResearch } from '../extractor/index.js'
 import { CoinPortfolioContext } from './service.js'
+import { calculateBreakEven } from './risk.js'
 
 export function buildAnalysisPrompt(
   coin: string,
@@ -11,6 +12,12 @@ export function buildAnalysisPrompt(
   coinCtx: CoinPortfolioContext,
 ): { system: string; user: string } {
   const now = new Date().toISOString().split('T')[0]
+
+  const feeRate = settings.fee_rate ?? 0.001
+  const feeRatePct = (feeRate * 100).toFixed(3)
+  const roundTripFeePct = (feeRate * 2 * 100).toFixed(3)
+  const breakEvenPrice = calculateBreakEven(market.price, feeRate)
+  const breakEvenPct = ((breakEvenPrice - market.price) / market.price * 100).toFixed(3)
 
   const slDistancePct = ((settings.stop_loss_atr * market.atr14) / market.price) * 100
   const tpDistancePct = ((settings.take_profit_atr * market.atr14) / market.price) * 100
@@ -61,6 +68,12 @@ THIS COIN — LOCAL PORTFOLIO:
 ${coinHoldingLine}
 Recent trades:
 ${recentTradesLine}
+
+FEE CONTEXT:
+- Exchange fee rate: ${feeRatePct}% per trade
+- Round-trip cost (buy + sell): ${roundTripFeePct}% of position value
+- Break-even sell price if buying now: $${breakEvenPrice.toFixed(4)} (+${breakEvenPct}% above current price)
+- Factor fees into expected gain — a ${roundTripFeePct}% move up just breaks even
 
 RISK ASSESSMENT FOR THIS TRADE:
 - Stop-loss would be ${slDistancePct.toFixed(1)}% below entry (${slDistancePct < 3 ? 'tight — higher whip risk' : 'reasonable distance'})

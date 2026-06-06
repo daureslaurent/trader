@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS trades (
   quantity REAL NOT NULL,
   price REAL,
   total REAL,
+  fee_cost REAL NOT NULL DEFAULT 0,
+  fee_currency TEXT NOT NULL DEFAULT 'USDC',
   signal_id INTEGER,
   status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','EXECUTED','FAILED')),
   approved INTEGER,
@@ -75,7 +77,27 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('pipeline_cron', '0 * * * *'),
   ('min_confidence', '0.3'),
   ('max_position_size_usd', '100'),
-  ('approval_required', 'false');
+  ('approval_required', 'false'),
+  ('fee_rate', '0.001'),
+  ('discover_cron', '0 6 * * *'),
+  ('discover_min_score', '0.65'),
+  ('discover_top_n', '30'),
+  ('discover_auto_add', 'false'),
+  ('discover_min_volume_usd', '5000000');
+
+CREATE TABLE IF NOT EXISTS coin_discoveries (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  coin        TEXT NOT NULL,
+  score       REAL NOT NULL,
+  reasoning   TEXT NOT NULL,
+  market_data TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','auto_added')),
+  cycle_id    TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_discoveries_created ON coin_discoveries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discoveries_status ON coin_discoveries(status);
 
 CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
 CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
@@ -91,7 +113,7 @@ CREATE TABLE IF NOT EXISTS portfolio_entries (
   buy_price   REAL NOT NULL,
   buy_date    TEXT NOT NULL,
   status      TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','CLOSED')),
-  source      TEXT NOT NULL DEFAULT 'trade' CHECK(source IN ('trade','manual')),
+  source      TEXT NOT NULL DEFAULT 'trade' CHECK(source IN ('trade','manual','transfer')),
   trade_id    INTEGER REFERENCES trades(id),
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );

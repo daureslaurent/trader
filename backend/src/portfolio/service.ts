@@ -97,7 +97,7 @@ export function addEntry(
   quantity: number,
   buyPrice: number,
   buyDate: string,
-  source: 'trade' | 'manual' = 'trade',
+  source: 'trade' | 'manual' | 'transfer' = 'trade',
   tradeId?: number,
 ): number {
   const { lastInsertRowid } = runSQL(
@@ -201,11 +201,15 @@ export function getPortfolioState(
   const avgDeviation = deviations.length > 0 ? deviations.reduce((s, d) => s + d, 0) / deviations.length : 0
   const diversificationScore = Math.max(0, 1 - avgDeviation)
 
+  // openPositionCount tracks only bot-managed positions (positions table, status=OPEN).
+  // portfolio_entries includes manual/transfer holdings which don't consume a bot slot.
+  const botPositionCount = (queryAll("SELECT COUNT(*) AS cnt FROM positions WHERE status = 'OPEN'")[0]?.cnt as number) ?? 0
+
   return {
     totalValueUsd: totalValue,
     positions,
     diversificationScore,
-    openPositionCount: positions.length,
+    openPositionCount: botPositionCount,
     maxOpenPositions: settings.max_open_positions,
     targetAllocationPct,
   }

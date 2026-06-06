@@ -16,6 +16,7 @@ interface SettingsData {
   max_risk_per_trade: number
   max_open_positions: number
   cache_ttl_hours: number
+  fee_rate: number
 }
 
 const CRON_PRESETS = [
@@ -184,6 +185,9 @@ export default function Settings() {
         </Row>
         <Row label="Take profit (ATR ×)" hint="Take profit distance in ATR multiples">
           <Input type="number" step="0.1" min="0" value={settings.take_profit_atr} onChange={e => set('take_profit_atr', parseFloat(e.target.value) || 0)} />
+        </Row>
+        <Row label="Fee rate" hint="Exchange fee per trade (e.g. 0.001 = 0.1%) — used in break-even and position sizing">
+          <Input type="number" step="0.0001" min="0" max="0.1" value={settings.fee_rate ?? 0.001} onChange={e => set('fee_rate', parseFloat(e.target.value) || 0)} />
         </Row>
       </Card>
 

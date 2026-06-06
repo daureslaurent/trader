@@ -65,5 +65,6 @@ export {
   calculatePositionSize,
   calculateStopLoss,
   calculateTakeProfit,
+  calculateBreakEven,
   checkPosition,
 } from './risk.js'

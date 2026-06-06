@@ -12,6 +12,8 @@ interface EventMap {
   stop_loss_hit: [{ positionId: number; coin: string; price: number }]
   take_profit_hit: [{ positionId: number; coin: string; price: number }]
   pipeline_run_requested: [{ symbol: string; cycle_id: string }]
+  discovery_run_requested: [{ cycle_id: string }]
+  coin_discovered: [{ coin: string; score: number; reasoning: string; auto_added: boolean }]
   error: [Error]
 }
 
