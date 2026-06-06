@@ -22,3 +22,13 @@ export interface TradeResult {
   cost: number
   fee?: { cost: number; currency: string }
 }
+
+export interface CoinTradeResult {
+  fromSymbol: string
+  toSymbol: string
+  fromAmount: number
+  toAmount: number
+  fromPrice: number
+  toPrice: number
+  fee?: { cost: number; currency: string }
+}

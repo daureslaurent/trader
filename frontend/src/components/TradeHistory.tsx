@@ -1,47 +1,36 @@
-interface Trade {
-  id: number
-  coin: string
-  side: string
-  quantity: number
-  price: number
-  total: number
-  status: string
-  created_at: string
-}
+import { Trade } from '../types'
+import { actionBadge, statusBadge } from './ui/Badge'
+import { fmtUSD, fmt, formatDate } from '../lib/utils'
 
-export default function TradeHistory({ trades }: { trades: Trade[] }) {
-  if (trades.length === 0) return <p className="text-gray-500 text-sm">No trades yet.</p>
+export function TradeHistory({ trades }: { trades: Trade[] }) {
+  if (trades.length === 0) {
+    return <p className="text-sm text-muted py-6 text-center">No trades recorded yet.</p>
+  }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto -mx-1">
+      <table className="w-full text-sm min-w-[600px]">
         <thead>
-          <tr className="text-gray-400 border-b border-gray-800">
-            <th className="text-left py-2">Time</th>
-            <th className="text-left">Coin</th>
-            <th className="text-left">Side</th>
-            <th className="text-right">Qty</th>
-            <th className="text-right">Price</th>
-            <th className="text-right">Total</th>
-            <th className="text-center">Status</th>
+          <tr className="border-b border-border">
+            <th className="text-left py-2.5 px-3 text-xs font-medium text-muted uppercase tracking-wide">Time</th>
+            <th className="text-left px-3 text-xs font-medium text-muted uppercase tracking-wide">Coin</th>
+            <th className="text-left px-3 text-xs font-medium text-muted uppercase tracking-wide">Side</th>
+            <th className="text-right px-3 text-xs font-medium text-muted uppercase tracking-wide">Qty</th>
+            <th className="text-right px-3 text-xs font-medium text-muted uppercase tracking-wide">Price</th>
+            <th className="text-right px-3 text-xs font-medium text-muted uppercase tracking-wide">Total</th>
+            <th className="text-center px-3 text-xs font-medium text-muted uppercase tracking-wide">Status</th>
           </tr>
         </thead>
-        <tbody>
-          {trades.map((t) => (
-            <tr key={t.id} className="border-b border-gray-800/50">
-              <td className="py-2 text-gray-400">{new Date(t.created_at).toLocaleTimeString()}</td>
-              <td>{t.coin.replace('/USDT', '')}</td>
-              <td className={t.side === 'BUY' ? 'text-green-400' : 'text-red-400'}>{t.side}</td>
-              <td className="text-right">{t.quantity}</td>
-              <td className="text-right">${t.price?.toFixed(2) ?? '-'}</td>
-              <td className="text-right">${t.total?.toFixed(2) ?? '-'}</td>
-              <td className="text-center">
-                <span className={`px-2 py-0.5 rounded text-xs ${
-                  t.status === 'EXECUTED' ? 'bg-green-900/50 text-green-400' :
-                  t.status === 'FAILED' ? 'bg-red-900/50 text-red-400' :
-                  'bg-yellow-900/50 text-yellow-400'
-                }`}>{t.status}</span>
-              </td>
+        <tbody className="divide-y divide-border">
+          {trades.map(t => (
+            <tr key={t.id} className="hover:bg-surface-elevated/50 transition-colors duration-100">
+              <td className="py-3 px-3 text-xs text-muted font-mono">{formatDate(t.created_at)}</td>
+              <td className="px-3 font-medium">{t.coin.replace('/USDC', '')}</td>
+              <td className="px-3">{actionBadge(t.side)}</td>
+              <td className="px-3 text-right tabular-nums">{fmt(t.quantity, 6)}</td>
+              <td className="px-3 text-right tabular-nums">{t.price ? fmtUSD(t.price) : '—'}</td>
+              <td className="px-3 text-right tabular-nums">{t.total ? fmtUSD(t.total) : '—'}</td>
+              <td className="px-3 text-center">{statusBadge(t.status)}</td>
             </tr>
           ))}
         </tbody>

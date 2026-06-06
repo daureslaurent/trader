@@ -24,6 +24,20 @@ export async function initDB(): Promise<SqlJsDatabase> {
   }
 
   db.run(SCHEMA)
+
+  // Migrate extraction_cache: add coin column if missing (existing DBs won't have it)
+  try {
+    db.run("ALTER TABLE extraction_cache ADD COLUMN coin TEXT NOT NULL DEFAULT ''")
+    logger.info('Migrated extraction_cache: added coin column')
+  } catch {
+    // Column already exists — ignore
+  }
+  try {
+    db.run('CREATE INDEX IF NOT EXISTS idx_extraction_cache_coin ON extraction_cache(coin)')
+  } catch {
+    // Index already exists — ignore
+  }
+
   saveDB()
   logger.info('Database initialized')
   return db
@@ -104,7 +118,7 @@ export function getSettings(): BotSettings {
   for (const row of rows) map[row.key as string] = row.value as string
   return {
     watchlist: JSON.parse(map.watchlist || '[]'),
-    interval_minutes: parseInt(map.interval_minutes || '60', 10),
+    pipeline_cron: map.pipeline_cron || '0 * * * *',
     min_confidence: parseFloat(map.min_confidence || '0.3'),
     max_position_size_usd: parseFloat(map.max_position_size_usd || '100'),
     approval_required: map.approval_required === 'true',
@@ -112,6 +126,7 @@ export function getSettings(): BotSettings {
     take_profit_atr: parseFloat(map.take_profit_atr || '3.0'),
     max_risk_per_trade: parseFloat(map.max_risk_per_trade || '0.02'),
     max_open_positions: parseInt(map.max_open_positions || '5', 10),
+    cache_ttl_hours: parseInt(map.cache_ttl_hours || '13', 10),
   }
 }
 

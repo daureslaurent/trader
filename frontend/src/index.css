@@ -2,6 +2,106 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   THEMES  — applied via data-theme attribute on <html>
+   ============================================================ */
+
+:root,
+[data-theme='dark'] {
+  --surface-base: #09090b;
+  --surface-card: #111115;
+  --surface-elevated: #18181c;
+  --surface-hover: #1e1e24;
+  --accent-rgb: 34 197 94;
+  --buy-rgb: 34 197 94;
+  --sell-rgb: 239 68 68;
+  --warn-rgb: 245 158 11;
+  --foreground: #fafafa;
+  --muted-fg: #71717a;
+  --border-color: rgba(255, 255, 255, 0.06);
+  color-scheme: dark;
+}
+
+[data-theme='midnight'] {
+  --surface-base: #020817;
+  --surface-card: #0c1528;
+  --surface-elevated: #111e38;
+  --surface-hover: #162544;
+  --accent-rgb: 96 165 250;
+  --buy-rgb: 52 211 153;
+  --sell-rgb: 248 113 113;
+  --warn-rgb: 251 191 36;
+  --foreground: #e2e8f0;
+  --muted-fg: #64748b;
+  --border-color: rgba(96, 165, 250, 0.1);
+  color-scheme: dark;
+}
+
+[data-theme='neon'] {
+  --surface-base: #030712;
+  --surface-card: #0a0f1e;
+  --surface-elevated: #0f1830;
+  --surface-hover: #141f3a;
+  --accent-rgb: 34 211 238;
+  --buy-rgb: 74 222 128;
+  --sell-rgb: 248 113 113;
+  --warn-rgb: 251 191 36;
+  --foreground: #f0f9ff;
+  --muted-fg: #4c7399;
+  --border-color: rgba(34, 211, 238, 0.08);
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --surface-base: #f8fafc;
+  --surface-card: #ffffff;
+  --surface-elevated: #f1f5f9;
+  --surface-hover: #e9eef5;
+  --accent-rgb: 22 163 74;
+  --buy-rgb: 22 163 74;
+  --sell-rgb: 220 38 38;
+  --warn-rgb: 217 119 6;
+  --foreground: #0f172a;
+  --muted-fg: #64748b;
+  --border-color: #e2e8f0;
+  color-scheme: light;
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(127, 127, 127, 0.15) transparent;
+}
+
+*::-webkit-scrollbar { width: 5px; height: 5px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(127, 127, 127, 0.15);
+  border-radius: 99px;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--surface-base);
+  color: var(--foreground);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   NEON THEME — subtle glow accents
+   ============================================================ */
+
+[data-theme='neon'] .neon-border {
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.2), 0 0 20px rgba(34, 211, 238, 0.06);
 }

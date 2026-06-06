@@ -9,7 +9,8 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
-    command: ["npx", "tsx", "src/index.ts", "--stub", "--approval"]
+    command: ["npx", "tsx", "src/index.ts", "--approval"]
+    # command: ["npx", "tsx", "src/index.ts", "--stub", "--approval"]
 
   frontend:
     build: ./frontend

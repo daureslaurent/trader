@@ -66,12 +66,13 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES
+  ('cache_ttl_hours', '13'),
   ('stop_loss_atr', '2'),
   ('take_profit_atr', '4'),
   ('max_risk_per_trade', '0.02'),
   ('max_open_positions', '5'),
   ('watchlist', '[]'),
-  ('interval_minutes', '60'),
+  ('pipeline_cron', '0 * * * *'),
   ('min_confidence', '0.3'),
   ('max_position_size_usd', '100'),
   ('approval_required', 'false');
@@ -96,4 +97,13 @@ CREATE TABLE IF NOT EXISTS portfolio_entries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_portfolio_entries_status ON portfolio_entries(status);
+
+CREATE TABLE IF NOT EXISTS extraction_cache (
+  url       TEXT PRIMARY KEY,
+  coin      TEXT NOT NULL DEFAULT '',
+  data      TEXT NOT NULL,
+  cached_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_cache_coin ON extraction_cache(coin);
 `

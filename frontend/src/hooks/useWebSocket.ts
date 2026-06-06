@@ -1,53 +1,45 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 
-interface WsMessage {
-  type: string
-  data: unknown
-}
-
 let sharedSocket: WebSocket | null = null
 let listenerCount = 0
 let sharedConnected = false
-const messageListeners = new Set<(msg: WsMessage) => void>()
-const connectCallbacks = new Set<() => void>()
+const messageListeners = new Set<(event: string, data: unknown) => void>()
+const connectCallbacks = new Set<(connected: boolean) => void>()
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let retries = 0
 const maxRetries = 10
 
-function notifyConnectCallbacks() {
-  connectCallbacks.forEach(fn => fn())
+function notifyConnect(connected: boolean) {
+  connectCallbacks.forEach(fn => fn(connected))
 }
 
 function start() {
   if (sharedSocket?.readyState === WebSocket.OPEN || sharedSocket?.readyState === WebSocket.CONNECTING) return
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = `${protocol}//${window.location.host}/ws`
-  sharedSocket = new WebSocket(url)
+  sharedSocket = new WebSocket(`${protocol}//${window.location.host}/ws`)
 
   sharedSocket.onopen = () => {
     retries = 0
     sharedConnected = true
-    notifyConnectCallbacks()
+    notifyConnect(true)
   }
 
   sharedSocket.onclose = () => {
     sharedConnected = false
-    notifyConnectCallbacks()
+    notifyConnect(false)
     if (listenerCount > 0 && retries < maxRetries) {
-      const delay = Math.min(1000 * Math.pow(2, retries), 30000)
+      const delay = Math.min(1000 * 2 ** retries, 30000)
       retries++
       reconnectTimer = setTimeout(start, delay)
     }
   }
 
-  sharedSocket.onerror = () => {
-    sharedSocket?.close()
-  }
+  sharedSocket.onerror = () => sharedSocket?.close()
 
   sharedSocket.onmessage = (event) => {
     try {
-      const msg = JSON.parse(event.data) as WsMessage
-      messageListeners.forEach(fn => fn(msg))
+      const msg = JSON.parse(event.data) as { type: string; data: unknown }
+      messageListeners.forEach(fn => fn(msg.type, msg.data))
     } catch { /* ignore malformed */ }
   }
 }
@@ -60,33 +52,37 @@ function stop() {
   }
   sharedConnected = false
   retries = 0
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer)
-    reconnectTimer = null
-  }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
 }
 
-export function useWebSocket(onMessage?: (msg: WsMessage) => void) {
+export function useWebSocket(
+  onMessage?: (event: string, data: unknown) => void,
+  onConnected?: (connected: boolean) => void,
+) {
   const [connected, setConnected] = useState(sharedConnected)
-  const onMessageRef = useRef(onMessage)
-  onMessageRef.current = onMessage
+  const msgRef = useRef(onMessage)
+  const connRef = useRef(onConnected)
+  msgRef.current = onMessage
+  connRef.current = onConnected
 
   useEffect(() => {
     listenerCount++
 
-    const handler = (msg: WsMessage) => onMessageRef.current?.(msg)
-    messageListeners.add(handler)
+    const msgHandler = (event: string, data: unknown) => msgRef.current?.(event, data)
+    messageListeners.add(msgHandler)
 
-    function onConnectChange() {
-      setConnected(sharedConnected)
+    const connHandler = (c: boolean) => {
+      setConnected(c)
+      connRef.current?.(c)
     }
-    connectCallbacks.add(onConnectChange)
+    connectCallbacks.add(connHandler)
+
     start()
 
     return () => {
       listenerCount--
-      messageListeners.delete(handler)
-      connectCallbacks.delete(onConnectChange)
+      messageListeners.delete(msgHandler)
+      connectCallbacks.delete(connHandler)
       if (listenerCount === 0) stop()
     }
   }, [])

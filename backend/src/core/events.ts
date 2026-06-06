@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import { Signal, ApprovalRequest, TradeRecord } from '../types.js'
+import { Signal, ApprovalRequest, TradeRecord, BotSettings } from '../types.js'
 
 interface EventMap {
   signal_generated: [Signal]
@@ -8,8 +8,10 @@ interface EventMap {
   trade_executed: [TradeRecord]
   approval_requested: [ApprovalRequest]
   portfolio_updated: []
+  settings_updated: [BotSettings]
   stop_loss_hit: [{ positionId: number; coin: string; price: number }]
   take_profit_hit: [{ positionId: number; coin: string; price: number }]
+  pipeline_run_requested: [{ symbol: string; cycle_id: string }]
   error: [Error]
 }
 

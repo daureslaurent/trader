@@ -11,22 +11,51 @@ export interface ResearchResult {
   coin: string
   headlines: string[]
   articles: ArticleContent[]
-  sentiment: 'positive' | 'negative' | 'neutral'
   summary: string
 }
 
+// Common full names for better search coverage
+const COIN_NAMES: Record<string, string> = {
+  BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana', BNB: 'BNB',
+  XRP: 'XRP Ripple', ADA: 'Cardano', DOGE: 'Dogecoin', AVAX: 'Avalanche',
+  DOT: 'Polkadot', LINK: 'Chainlink', MATIC: 'Polygon', UNI: 'Uniswap',
+  LTC: 'Litecoin', ATOM: 'Cosmos', NEAR: 'NEAR Protocol', APT: 'Aptos',
+  ARB: 'Arbitrum', OP: 'Optimism', INJ: 'Injective', SUI: 'Sui',
+}
+
 export async function researchCoin(coin: string): Promise<ResearchResult> {
-  const symbol = coin.replace('/USDT', '')
+  const symbol = coin.replace('/USDC', '')
+  const fullName = COIN_NAMES[symbol] ?? symbol
 
   try {
     const { search } = await import('../scraper/search.js')
-    const results = await search(`${symbol} crypto 2026`, { count: 3 })
 
-    const headlines = results.map((r: { title: string }) => r.title)
+    // Two parallel queries: breaking news from today, deeper coverage from the week
+    const [todayResults, weekResults] = await Promise.allSettled([
+      search(`${fullName} crypto news price`, { count: 5, dateFilter: 'd' }),
+      search(`${symbol} ${fullName} cryptocurrency latest update`, { count: 4, dateFilter: 'w' }),
+    ])
 
-    const topResults = results.slice(0, 3)
+    // Merge and deduplicate by URL — today's results take priority
+    const seen = new Set<string>()
+    const merged: { title: string; url: string }[] = []
+
+    for (const batch of [todayResults, weekResults]) {
+      if (batch.status !== 'fulfilled') continue
+      for (const r of batch.value as { title: string; url: string }[]) {
+        if (!seen.has(r.url)) {
+          seen.add(r.url)
+          merged.push(r)
+        }
+      }
+    }
+
+    const headlines = merged.map(r => r.title)
+
+    // Fetch article content in parallel, cap at 6 to stay within extractor budget
+    const toFetch = merged.slice(0, 6)
     const articleResults = await Promise.allSettled(
-      topResults.map(async (r: { title: string; url: string }) => ({
+      toFetch.map(async r => ({
         title: r.title,
         url: r.url,
         content: await fetchPageText(r.url),
@@ -40,38 +69,17 @@ export async function researchCoin(coin: string): Promise<ResearchResult> {
       }
     }
 
-    const summaryParts = [...headlines]
-    if (articles.length > 0) {
-      summaryParts.push('')
-      summaryParts.push('--- Article Details ---')
-      for (const a of articles) {
-        summaryParts.push(`\n${a.title}\n${a.content.substring(0, 500)}...`)
-      }
-    }
-
     logger.debug('Research results', {
       coin,
       headlineCount: headlines.length,
       articleCount: articles.length,
     })
 
-    return {
-      coin,
-      headlines,
-      articles,
-      sentiment: 'neutral',
-      summary: summaryParts.join('. '),
-    }
+    return { coin, headlines, articles, summary: headlines.join('. ') }
   } catch (err) {
     logger.warn(`Research failed for ${symbol}`, {
       error: err instanceof Error ? err.message : String(err),
     })
-    return {
-      coin,
-      headlines: [],
-      articles: [],
-      sentiment: 'neutral',
-      summary: 'Research unavailable.',
-    }
+    return { coin, headlines: [], articles: [], summary: 'Research unavailable.' }
   }
 }

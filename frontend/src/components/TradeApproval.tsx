@@ -1,34 +1,81 @@
-interface TradeApprovalProps {
-  tradeId: number
-  coin: string
-  side: string
-  quantity: number
-  reason: string
-  confidence: number
-  onApprove: (id: number) => void
-  onReject: (id: number) => void
+import { useState } from 'react'
+import { ApprovalRequest } from '../types'
+import { Button } from './ui/Button'
+import { Badge } from './ui/Badge'
+import { Card } from './ui/Card'
+import { fmtUSD, fmt } from '../lib/utils'
+
+interface Props {
+  request: ApprovalRequest
+  onAction: () => void
 }
 
-export default function TradeApproval({
-  tradeId, coin, side, quantity, reason, confidence, onApprove, onReject,
-}: TradeApprovalProps) {
+export function TradeApproval({ request, onAction }: Props) {
+  const [busy, setBusy] = useState<'approve' | 'reject' | null>(null)
+
+  async function submit(action: 'approve' | 'reject') {
+    setBusy(action)
+    await fetch(`/api/trade/${action}/${request.tradeId}`, { method: 'POST' }).catch(() => {})
+    onAction()
+  }
+
+  const isBuy = request.side === 'BUY'
+  const total = request.quantity * request.estimatedPrice
+  const pctConf = Math.round(request.confidence * 100)
+
   return (
-    <div className="border border-yellow-500/30 bg-yellow-950/20 rounded-lg p-4 mb-4">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-yellow-400 font-bold">⚠ Approval Needed</span>
-        <span className="text-sm text-gray-400">#{tradeId}</span>
+    <Card className="border-warn/20">
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div className="flex items-center gap-2">
+          <Badge variant={isBuy ? 'buy' : 'sell'}>{request.side}</Badge>
+          <span className="text-sm font-semibold text-foreground">{request.coin.replace('/USDC', '')}</span>
+        </div>
+        <span className="text-xs text-muted tabular-nums">Conf. {pctConf}%</span>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-sm mb-3">
-        <div><span className="text-gray-400">Action:</span> <span className={side === 'BUY' ? 'text-green-400' : 'text-red-400'}>{side}</span></div>
-        <div><span className="text-gray-400">Coin:</span> {coin}</div>
-        <div><span className="text-gray-400">Qty:</span> {quantity}</div>
-        <div><span className="text-gray-400">Confidence:</span> {(confidence * 100).toFixed(0)}%</div>
+
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div>
+          <p className="text-xs text-muted mb-0.5">Quantity</p>
+          <p className="text-sm font-semibold tabular-nums">{fmt(request.quantity, 6)}</p>
+        </div>
+        <div>
+          <p className="text-xs text-muted mb-0.5">Price</p>
+          <p className="text-sm font-semibold tabular-nums">{fmtUSD(request.estimatedPrice)}</p>
+        </div>
+        <div>
+          <p className="text-xs text-muted mb-0.5">Total</p>
+          <p className="text-sm font-semibold tabular-nums">{fmtUSD(total)}</p>
+        </div>
       </div>
-      <p className="text-sm text-gray-300 mb-3">{reason}</p>
+
+      {request.reason && (
+        <p className="text-xs text-muted italic mb-4 leading-relaxed border-l-2 border-border pl-3">
+          {request.reason}
+        </p>
+      )}
+
       <div className="flex gap-2">
-        <button onClick={() => onApprove(tradeId)} className="px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded text-sm font-medium">Approve</button>
-        <button onClick={() => onReject(tradeId)} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded text-sm font-medium">Reject</button>
+        <Button
+          variant="success"
+          size="sm"
+          loading={busy === 'approve'}
+          disabled={busy !== null}
+          onClick={() => submit('approve')}
+          className="flex-1"
+        >
+          Approve
+        </Button>
+        <Button
+          variant="danger"
+          size="sm"
+          loading={busy === 'reject'}
+          disabled={busy !== null}
+          onClick={() => submit('reject')}
+          className="flex-1"
+        >
+          Reject
+        </Button>
       </div>
-    </div>
+    </Card>
   )
 }

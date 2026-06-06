@@ -10,7 +10,7 @@ export async function render(ctx: any) {
 
   const lines = ['🧠 Recent Decisions', '']
   for (const d of decisions) {
-    const coin = (d.coin as string).replace('/USDT', '')
+    const coin = (d.coin as string).replace('/USDC', '')
     const pct = (Number(d.confidence) * 100).toFixed(0)
     const reason = (d.reason as string).length > 60 ? (d.reason as string).slice(0, 57) + '...' : d.reason
     lines.push(`${actionEmoji(d.action as string)} ${coin} → ${d.action}  ${pct}% — ${reason}`)

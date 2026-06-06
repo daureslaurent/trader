@@ -1,14 +1,16 @@
-import { initDB, queryAll, queryOne, runSQL, saveDB, getSettings } from './db/index.js'
+import { initDB, queryAll, queryOne, runSQL, saveDB, getSettings, updateSetting } from './db/index.js'
 import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
 import { startAPI } from './api/index.js'
 import { startTelegramBot, sendApprovalMessage, startNotifier } from './telegram/index.js'
 import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trader/index.js'
+import * as priceCache from './market/index.js'
+import cron, { ScheduledTask } from 'node-cron'
 import { researchCoin } from './researcher/index.js'
-import { extractResearch } from './extractor/index.js'
+import { extractResearch, selectArticles } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, closeEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, syncUsdtEntry, calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/index.js'
+import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, closeEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, seedUsdtIfAbsent, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit } from './portfolio/index.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 import { closeBrowser } from './scraper/browser.js'
@@ -16,9 +18,22 @@ import { closeBrowser } from './scraper/browser.js'
 let pendingApprovals: Map<number, Signal> = new Map()
 let approvalTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
 
-const loopAbortController = new AbortController()
+const PIPELINE_TIMEOUT_MS = 60 * 60 * 1000 // 1 hour
 
+let cronTask: ScheduledTask | null = null
 let cycleCounter = 0
+
+function schedulePipeline(expression: string): void {
+  cronTask?.stop()
+  if (!cron.validate(expression)) {
+    logger.error('Invalid cron expression, falling back to hourly', { expression })
+    expression = '0 * * * *'
+  }
+  cronTask = cron.schedule(expression, () => {
+    runPipeline()
+  })
+  logger.info('Pipeline scheduled', { cron: expression })
+}
 
 function logPipelineEvent(
   stage: PipelineStage,
@@ -41,6 +56,92 @@ function logPipelineEvent(
   })
 }
 
+async function runPipeline(): Promise<void> {
+  const runCycleId = `${Date.now().toString(36)}-run`
+
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Pipeline timed out after 1 hour')), PIPELINE_TIMEOUT_MS)
+  )
+
+  try {
+    await Promise.race([tradingLoop(), timeout])
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.message.startsWith('Pipeline timed out')
+    const stage = isTimeout ? 'pipeline_timeout' : 'pipeline_failed'
+    const message = err instanceof Error ? err.message : String(err)
+
+    logPipelineEvent(stage, 'SYSTEM', runCycleId, { error: message })
+    logger.error(isTimeout ? 'Pipeline timed out' : 'Pipeline failed', { error: message })
+  }
+}
+
+type MarketDataItem = { symbol: string; price: number; change24h: number; volume: number }
+type CoinAnalysisResult = {
+  data: MarketDataItem
+  signal: Signal
+  marketCtx: Awaited<ReturnType<typeof getMarketContext>>
+}
+
+async function analyzeCoin(
+  data: MarketDataItem,
+  portfolioState: ReturnType<typeof getPortfolioState>,
+  cycleId: string,
+): Promise<CoinAnalysisResult> {
+  // Research and market context are independent — fetch in parallel
+  logPipelineEvent('research_started', data.symbol, cycleId, { symbol: data.symbol })
+  const [rawResearch, marketCtx] = await Promise.all([
+    researchCoin(data.symbol),
+    getMarketContext(data.symbol, data.price),
+  ])
+  logPipelineEvent('research_completed', data.symbol, cycleId, {
+    symbol: data.symbol,
+    headlines: rawResearch.headlines,
+    articles: rawResearch.articles,
+    summary: rawResearch.summary,
+  })
+
+  logPipelineEvent('extraction_started', data.symbol, cycleId, { symbol: data.symbol, articleCount: rawResearch.articles.length })
+  const extractedResearch = await extractResearch(rawResearch)
+  logPipelineEvent('extraction_completed', data.symbol, cycleId, {
+    symbol: data.symbol,
+    articles: extractedResearch.articles,
+    aggregated_sentiment: extractedResearch.aggregated_sentiment,
+    top_headlines: extractedResearch.top_headlines,
+  })
+
+  logPipelineEvent('selection_started', data.symbol, cycleId, {
+    symbol: data.symbol, articleCount: extractedResearch.articles.length,
+  })
+  const selectedArticles = await selectArticles(data.symbol, extractedResearch.articles)
+  const selectedResearch = { ...extractedResearch, articles: selectedArticles }
+  logPipelineEvent('selection_completed', data.symbol, cycleId, {
+    symbol: data.symbol,
+    selectedCount: selectedArticles.length,
+    totalCount: extractedResearch.articles.length,
+    articles: selectedArticles,
+  })
+
+  logPipelineEvent('analysis_started', data.symbol, cycleId, {
+    symbol: data.symbol, price: data.price, change24h: data.change24h, volume: data.volume,
+    rsi14: marketCtx.rsi14, trend: marketCtx.trend, atr14: marketCtx.atr14,
+    sma7: marketCtx.sma7, sma25: marketCtx.sma25, sma99: marketCtx.sma99,
+    perf7d: marketCtx.perf7d, volatility: marketCtx.volatility,
+  })
+
+  const signal = await analyzeSignal(data.symbol, marketCtx, portfolioState, selectedResearch)
+
+  logPipelineEvent('signal_generated', data.symbol, cycleId, {
+    symbol: data.symbol, action: signal.action, reason: signal.reason, confidence: signal.confidence,
+  })
+
+  runSQL(
+    'INSERT INTO decisions (coin, action, reason, confidence, context) VALUES (?, ?, ?, ?, ?)',
+    [data.symbol, signal.action, signal.reason, signal.confidence, JSON.stringify({ price: data.price, selectedResearch })]
+  )
+
+  return { data, signal, marketCtx }
+}
+
 async function tradingLoop() {
   logger.info('Trading loop started')
 
@@ -54,57 +155,47 @@ async function tradingLoop() {
 
   const marketData = await fetchMarketData(symbols)
   const balance = await fetchBalance()
-  const usdtBalance = balance['USDT']?.total || 0
-  syncUsdtEntry(usdtBalance)
+  const usdtBalance = balance['USDC']?.total || 0
+  if (config.stub) {
+    seedUsdtIfAbsent(usdtBalance)
+  } else {
+    detectExternalWithdrawal(usdtBalance)
+  }
 
   await checkOpenPositions()
 
   const portfolioState = getPortfolioState(marketData, settings)
 
-  for (const data of marketData) {
-    const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
-    try {
-      logPipelineEvent('research_started', data.symbol, cycleId, { symbol: data.symbol })
-      const rawResearch = await researchCoin(data.symbol)
-      logPipelineEvent('research_completed', data.symbol, cycleId, {
-        symbol: data.symbol,
-        headlines: rawResearch.headlines,
-        articles: rawResearch.articles,
-        sentiment: rawResearch.sentiment,
-        summary: rawResearch.summary,
-      })
-
-      logPipelineEvent('extraction_started', data.symbol, cycleId, { symbol: data.symbol, articleCount: rawResearch.articles.length })
-      const extractedResearch = await extractResearch(rawResearch)
-      logPipelineEvent('extraction_completed', data.symbol, cycleId, {
-        symbol: data.symbol,
-        articles: extractedResearch.articles,
-        aggregated_sentiment: extractedResearch.aggregated_sentiment,
-        top_headlines: extractedResearch.top_headlines,
-      })
-
-      const marketCtx = await getMarketContext(data.symbol, data.price)
-      logPipelineEvent('analysis_started', data.symbol, cycleId, {
-        symbol: data.symbol, price: data.price, change24h: data.change24h, volume: data.volume,
-        rsi14: marketCtx.rsi14, trend: marketCtx.trend, atr14: marketCtx.atr14,
-      })
-
-      const signal = await analyzeSignal(data.symbol, marketCtx, portfolioState, extractedResearch)
-
-      logPipelineEvent('signal_generated', data.symbol, cycleId, {
-        symbol: data.symbol, action: signal.action, reason: signal.reason, confidence: signal.confidence,
-      })
-
-      runSQL(
-        'INSERT INTO decisions (coin, action, reason, confidence, context) VALUES (?, ?, ?, ?, ?)',
-        [data.symbol, signal.action, signal.reason, signal.confidence, JSON.stringify({ price: data.price, extractedResearch })]
-      )
-
-      if (signal.action === 'HOLD' || signal.confidence < settings.min_confidence) {
-        logger.debug('Skipping trade', { coin: data.symbol, action: signal.action, confidence: signal.confidence })
-        continue
+  // Phase 1: research + extraction + selection + analysis — parallel across all coins
+  const analysisResults = await Promise.allSettled(
+    marketData.map(async (data): Promise<CoinAnalysisResult> => {
+      const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
+      try {
+        return await analyzeCoin(data, portfolioState, cycleId)
+      } catch (err) {
+        logPipelineEvent('pipeline_error', data.symbol, cycleId, {
+          symbol: data.symbol, error: err instanceof Error ? err.message : String(err),
+          price: data.price, change24h: data.change24h, volume: data.volume,
+        } as Record<string, unknown>)
+        logger.error('Error in pipeline', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
+        throw err
       }
+    })
+  )
 
+  // Phase 2: trade execution is sequential — preserves position count checks and ledger integrity
+  let tradesInitiated = 0
+
+  for (const result of analysisResults) {
+    if (result.status === 'rejected') continue
+    const { data, signal, marketCtx } = result.value
+
+    if (signal.action === 'HOLD' || signal.confidence < settings.min_confidence) {
+      logger.debug('Skipping trade', { coin: data.symbol, action: signal.action, confidence: signal.confidence })
+      continue
+    }
+
+    try {
       if (signal.action === 'BUY') {
         if (portfolioState.openPositionCount >= portfolioState.maxOpenPositions) {
           logger.warn('Max open positions reached, skipping BUY', { coin: data.symbol, openPositions: portfolioState.openPositionCount })
@@ -116,11 +207,13 @@ async function tradingLoop() {
 
         const buySignal: Signal = { ...signal, quantity: qty }
         await handleTradeSignal(buySignal, data.price, marketCtx.atr14, settings)
+        tradesInitiated++
       } else if (signal.action === 'SELL') {
         const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [data.symbol])
         if (existing) {
           const sellSignal: Signal = { ...signal, quantity: (existing.quantity as number) }
           await handleTradeSignal(sellSignal, data.price)
+          tradesInitiated++
           runSQL(
             "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
             [(existing.quantity as number), data.price, (existing.id as number)]
@@ -138,11 +231,7 @@ async function tradingLoop() {
         }
       }
     } catch (err) {
-      logPipelineEvent('pipeline_error', data.symbol, cycleId, {
-        symbol: data.symbol, error: err instanceof Error ? err.message : String(err),
-        price: data.price, change24h: data.change24h, volume: data.volume,
-      } as Record<string, unknown>)
-      logger.error('Error in trading loop', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
+      logger.error('Error in trade execution', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -150,7 +239,7 @@ async function tradingLoop() {
   let snapshotTotal = 0
   const holdings: Record<string, number> = {}
   for (const entry of snapshotEntries) {
-    if (entry.coin === 'USDT') {
+    if (entry.coin === 'USDC') {
       snapshotTotal += entry.quantity
       holdings[entry.coin] = entry.quantity
     } else {
@@ -167,8 +256,36 @@ async function tradingLoop() {
     [snapshotTotal, JSON.stringify(holdings)]
   )
 
-  bus.emit('portfolio_updated')
-  logger.info('Trading loop completed', { totalValue: snapshotTotal })
+  if (tradesInitiated > 0) bus.emit('portfolio_updated')
+  logger.info('Trading loop completed', { totalValue: snapshotTotal, tradesInitiated })
+}
+
+async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<void> {
+  logger.info('Manual pipeline started', { symbol, cycleId })
+  const settings = getSettings()
+
+  const marketData = await fetchMarketData([symbol])
+  const data = marketData[0]
+  if (!data) {
+    logPipelineEvent('pipeline_failed', symbol, cycleId, { error: 'Failed to fetch market data for ' + symbol })
+    return
+  }
+
+  const balance = await fetchBalance()
+  const usdtBalance = balance['USDC']?.total || 0
+  if (config.stub) seedUsdtIfAbsent(usdtBalance)
+
+  const portfolioState = getPortfolioState(marketData, settings)
+
+  try {
+    const result = await analyzeCoin(data, portfolioState, cycleId)
+    logger.info('Manual pipeline completed', { symbol, action: result.signal.action })
+  } catch (err) {
+    logPipelineEvent('pipeline_error', symbol, cycleId, {
+      symbol, error: err instanceof Error ? err.message : String(err),
+    })
+    logger.error('Manual pipeline error', { symbol, error: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 async function handleTradeSignal(signal: Signal, price: number, atr?: number, settings?: any) {
@@ -336,33 +453,59 @@ bus.on('trade_rejected', (tradeId: number) => {
   }
 })
 
-export async function runLoop(intervalMs: number, signal: AbortSignal) {
-  while (!signal.aborted) {
-    await tradingLoop()
-    await new Promise(r => setTimeout(r, intervalMs))
-  }
-}
-
 let server: ReturnType<typeof startAPI> | undefined
 
 async function start() {
   logger.info('Starting CryptoBot...')
   await initDB()
+
+  // Env var seeds the DB setting on every startup so .env stays authoritative
+  if (config.pipelineCron) {
+    updateSetting('pipeline_cron', config.pipelineCron)
+  }
+
   server = startAPI()
   startTelegramBot()
   startNotifier()
 
+  // Start price cache and subscribe to known coins
+  priceCache.start()
   const settings = getSettings()
-  const intervalMs = settings.interval_minutes * 60 * 1000
+  const initialCoins = [
+    ...settings.watchlist,
+    ...(getOpenEntries() as unknown as { coin: string }[]).filter(e => e.coin !== 'USDC').map(e => e.coin),
+  ]
+  if (initialCoins.length > 0) priceCache.subscribe([...new Set(initialCoins)])
 
-  runLoop(intervalMs, loopAbortController.signal)
+  schedulePipeline(settings.pipeline_cron)
 
-  logger.info(`CryptoBot running. Loop every ${settings.interval_minutes} minutes.`)
+  // Run once immediately at startup, then cron takes over
+  runPipeline()
+
+  logger.info(`CryptoBot running. Pipeline cron: ${settings.pipeline_cron}`)
 }
+
+// Reschedule when the frontend saves new settings
+bus.on('settings_updated', (updated) => {
+  if (updated.pipeline_cron) schedulePipeline(updated.pipeline_cron)
+})
+
+bus.on('pipeline_run_requested', ({ symbol, cycle_id }) => {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Pipeline timed out after 1 hour')), PIPELINE_TIMEOUT_MS)
+  )
+  Promise.race([runSingleCoinPipeline(symbol, cycle_id), timeout]).catch(err => {
+    const isTimeout = err instanceof Error && err.message.startsWith('Pipeline timed out')
+    const stage = isTimeout ? 'pipeline_timeout' : 'pipeline_failed'
+    logPipelineEvent(stage, symbol, cycle_id, { error: err instanceof Error ? err.message : String(err) })
+    logger.error(isTimeout ? 'Manual pipeline timed out' : 'Manual pipeline failed', { symbol, error: String(err) })
+  })
+})
 
 async function shutdown(signal: string) {
   logger.info(`Shutting down (${signal})`)
-  loopAbortController.abort()
+  cronTask?.stop()
+  priceCache.stop()
   try { await closeBrowser() } catch {}
   saveDB()
   if (server) server.close()

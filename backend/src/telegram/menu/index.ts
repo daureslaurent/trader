@@ -95,7 +95,7 @@ export class MenuController {
       const text = ctx.message.text.trim()
       const parts = text.split(' ').filter(Boolean)
       if (parts.length < 3) {
-        return ctx.reply('Usage: /set <key> <value>\nExample: /set interval_minutes 30')
+        return ctx.reply('Usage: /set <key> <value>\nExample: /set pipeline_cron "0 */2 * * *"')
       }
       const key = parts[1]
       const value = parts.slice(2).join(' ')
@@ -116,7 +116,7 @@ export class MenuController {
 
     this.bot.action(/^setting:edit:(.+)$/, async (ctx) => {
       const labels: Record<string, string> = {
-        interval_minutes: 'Interval (min)',
+        pipeline_cron: 'Pipeline Cron',
         min_confidence: 'Min Confidence',
         max_position_size_usd: 'Max Position ($)',
         stop_loss_atr: 'Stop Loss ATR',

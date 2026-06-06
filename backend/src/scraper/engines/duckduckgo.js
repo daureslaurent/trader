@@ -1,11 +1,13 @@
 import { createPage } from '../browser.js';
 import { sanitizeResult } from './base.js';
 
-export async function search(query, count = 10) {
+export async function search(query, count = 10, dateFilter = '') {
   const page = await createPage();
 
   try {
-    const url = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+    let url = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+    if (dateFilter) url += `&df=${encodeURIComponent(dateFilter)}`;
+
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 15000 });
     await page.waitForSelector('article[data-testid="result"]', { timeout: 10000 });
 

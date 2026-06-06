@@ -47,8 +47,10 @@ export const config = {
   },
   telegram: {
     botToken: opt('TELEGRAM_BOT_TOKEN', ''),
+    chatId: opt('TELEGRAM_CHAT_ID', ''),
   },
   approvalTimeoutMs: num('APPROVAL_TIMEOUT_MINUTES', 5) * 60 * 1000,
   port: num('PORT', 3000),
   approvalsEnabled: process.argv.includes('--approval'),
+  pipelineCron: opt('PIPELINE_CRON', ''),
 }

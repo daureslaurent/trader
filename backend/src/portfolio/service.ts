@@ -2,7 +2,7 @@ import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { MarketData, PortfolioEntry, PortfolioState, BotSettings } from '../types.js'
 
-const USDT_COIN = 'USDT'
+const USDT_COIN = 'USDC'
 
 export function getOpenEntries(): PortfolioEntry[] {
   return queryAll("SELECT * FROM portfolio_entries WHERE status = 'OPEN' ORDER BY created_at ASC") as unknown as PortfolioEntry[]
@@ -16,13 +16,71 @@ export function getUsdtEntry(): PortfolioEntry | null {
   return queryOne("SELECT * FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [USDT_COIN]) as PortfolioEntry | null
 }
 
-export function syncUsdtEntry(usdtBalance: number): void {
+export function seedUsdtIfAbsent(amount: number): void {
+  if (getUsdtEntry()) return
+  const today = new Date().toISOString().split('T')[0]
+  addEntry(USDT_COIN, amount, 1.0, today, 'manual')
+  logger.info('USDC entry seeded', { amount })
+}
+
+// Compares the real Binance USDC balance against the local ledger.
+// Only acts when a local entry already exists — never auto-seeds.
+// If Binance < local, an external withdrawal happened — reduce local accordingly.
+// Deposits must be done explicitly via the deposit endpoint.
+export function detectExternalWithdrawal(binanceUsdt: number): void {
   const existing = getUsdtEntry()
-  if (existing) {
-    runSQL("UPDATE portfolio_entries SET quantity = ? WHERE id = ?", [usdtBalance, existing.id])
+  if (!existing) return
+  if (binanceUsdt < existing.quantity) {
+    const withdrawn = existing.quantity - binanceUsdt
+    logger.info('External USDC withdrawal detected', { withdrawn, localBefore: existing.quantity, binanceNow: binanceUsdt })
+    reduceEntryQuantity(existing.id, withdrawn)
+  }
+}
+
+export function depositUsdt(amount: number): number {
+  const entry = getUsdtEntry()
+  if (entry) {
+    increaseEntryQuantity(entry.id, amount)
+    return entry.quantity + amount
   } else {
     const today = new Date().toISOString().split('T')[0]
-    addEntry(USDT_COIN, usdtBalance, 1.0, today, 'manual')
+    addEntry(USDT_COIN, amount, 1.0, today, 'manual')
+    return amount
+  }
+}
+
+export function withdrawUsdt(amount: number): { ok: boolean; balance: number; error?: string } {
+  const entry = getUsdtEntry()
+  if (!entry) return { ok: false, balance: 0, error: 'No USDC balance' }
+  if (entry.quantity < amount) return { ok: false, balance: entry.quantity, error: 'Insufficient balance' }
+  reduceEntryQuantity(entry.id, amount)
+  return { ok: true, balance: entry.quantity - amount }
+}
+
+export function getEntryByCoin(coin: string): PortfolioEntry | null {
+  return queryOne("SELECT * FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC LIMIT 1", [coin]) as PortfolioEntry | null
+}
+
+export function updatePortfolioForTrade(
+  fromCoin: string,
+  fromAmount: number,
+  toCoin: string,
+  toAmount: number,
+  toPrice: number,
+  buyTradeId: number,
+): void {
+  const fromEntry = fromCoin === USDT_COIN ? getUsdtEntry() : getEntryByCoin(fromCoin)
+  if (!fromEntry) throw new Error(`updatePortfolioForTrade: no open entry for ${fromCoin}`)
+  if (fromEntry.quantity < fromAmount) throw new Error(`updatePortfolioForTrade: insufficient balance for ${fromCoin}`)
+
+  reduceEntryQuantity(fromEntry.id, fromAmount)
+
+  const toEntry = toCoin === USDT_COIN ? getUsdtEntry() : getEntryByCoin(toCoin)
+  if (toEntry) {
+    increaseEntryQuantity(toEntry.id, toAmount)
+  } else {
+    const today = new Date().toISOString().split('T')[0]
+    addEntry(toCoin, toAmount, toPrice, today, 'trade', buyTradeId)
   }
 }
 
@@ -150,6 +208,40 @@ export function getPortfolioState(
     openPositionCount: positions.length,
     maxOpenPositions: settings.max_open_positions,
     targetAllocationPct,
+  }
+}
+
+export interface CoinPortfolioContext {
+  currentQuantity: number
+  avgBuyPrice: number | null
+  recentTrades: { side: 'BUY' | 'SELL'; quantity: number; price: number; date: string }[]
+}
+
+export function getCoinPortfolioContext(coin: string): CoinPortfolioContext {
+  const entries = queryAll(
+    "SELECT quantity, buy_price FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'",
+    [coin]
+  ) as { quantity: number; buy_price: number }[]
+
+  const currentQuantity = entries.reduce((sum, e) => sum + e.quantity, 0)
+  const avgBuyPrice = currentQuantity > 0
+    ? entries.reduce((sum, e) => sum + e.buy_price * e.quantity, 0) / currentQuantity
+    : null
+
+  const trades = queryAll(
+    "SELECT side, quantity, price, created_at FROM trades WHERE coin = ? AND status = 'EXECUTED' ORDER BY created_at DESC LIMIT 5",
+    [coin]
+  ) as { side: string; quantity: number; price: number; created_at: string }[]
+
+  return {
+    currentQuantity,
+    avgBuyPrice,
+    recentTrades: trades.map(t => ({
+      side: t.side as 'BUY' | 'SELL',
+      quantity: t.quantity,
+      price: t.price,
+      date: t.created_at.split('T')[0] ?? t.created_at.split(' ')[0] ?? t.created_at,
+    })),
   }
 }
 

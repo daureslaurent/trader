@@ -12,6 +12,7 @@ export interface ExtractedArticle {
     volume_trend?: 'increasing' | 'decreasing' | 'stable' | null
   }
   preliminary_signal?: 'BUY' | 'SELL' | 'HOLD'
+  from_cache?: boolean
 }
 
 export interface ExtractedResearch {

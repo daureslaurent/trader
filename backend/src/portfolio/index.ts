@@ -38,7 +38,12 @@ export {
   getOpenEntries,
   getCoinEntries,
   getUsdtEntry,
-  syncUsdtEntry,
+  getEntryByCoin,
+  seedUsdtIfAbsent,
+  detectExternalWithdrawal,
+  depositUsdt,
+  withdrawUsdt,
+  updatePortfolioForTrade,
   getAllEntries,
   getEntryById,
   addEntry,
@@ -50,7 +55,9 @@ export {
   updateEntry,
   getPortfolioState,
   enrichPortfolioEntriesWithPrices,
+  getCoinPortfolioContext,
 } from './service.js'
+export type { CoinPortfolioContext } from './service.js'
 
 export { getMarketContext } from './market.js'
 export { buildAnalysisPrompt } from './prompts.js'

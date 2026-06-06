@@ -1,34 +1,34 @@
 import { Signal } from '../types.js'
-import { MarketData, AccountBalance, TradeResult, BalanceInfo } from './types.js'
+import { MarketData, AccountBalance, TradeResult, CoinTradeResult, BalanceInfo } from './types.js'
 import { logger } from '../core/logger.js'
 
 const FAKE_PRICES: Record<string, number> = {
-  'BTC/USDT': 67500,
-  'ETH/USDT': 3450,
-  'SOL/USDT': 145,
-  'BNB/USDT': 580,
-  'XRP/USDT': 0.52,
-  'DOGE/USDT': 0.12,
-  'ADA/USDT': 0.38,
-  'AVAX/USDT': 28,
-  'DOT/USDT': 6.50,
-  'LINK/USDT': 14,
-  'MATIC/USDT': 0.55,
-  'UNI/USDT': 7.20,
-  'SHIB/USDT': 0.000023,
-  'LTC/USDT': 72,
-  'ATOM/USDT': 8.10,
-  'ETC/USDT': 22,
-  'XLM/USDT': 0.095,
-  'FIL/USDT': 4.20,
-  'TRX/USDT': 0.13,
-  'APT/USDT': 8.50,
+  'BTC/USDC': 67500,
+  'ETH/USDC': 3450,
+  'SOL/USDC': 145,
+  'BNB/USDC': 580,
+  'XRP/USDC': 0.52,
+  'DOGE/USDC': 0.12,
+  'ADA/USDC': 0.38,
+  'AVAX/USDC': 28,
+  'DOT/USDC': 6.50,
+  'LINK/USDC': 14,
+  'MATIC/USDC': 0.55,
+  'UNI/USDC': 7.20,
+  'SHIB/USDC': 0.000023,
+  'LTC/USDC': 72,
+  'ATOM/USDC': 8.10,
+  'ETC/USDC': 22,
+  'XLM/USDC': 0.095,
+  'FIL/USDC': 4.20,
+  'TRX/USDC': 0.13,
+  'APT/USDC': 8.50,
 }
 
 const DEFAULT_PRICE = 10
 
 export async function fetchMarketData(symbols: string[]): Promise<MarketData[]> {
-  logger.info('Stub: fetching market data', { count: symbols.length })
+  logger.info('🛸 Binance fetchTickers', { symbols })
   return symbols.map((s) => ({
     symbol: s,
     price: FAKE_PRICES[s] || DEFAULT_PRICE,
@@ -38,9 +38,9 @@ export async function fetchMarketData(symbols: string[]): Promise<MarketData[]> 
 }
 
 export async function fetchBalance(): Promise<AccountBalance> {
-  logger.info('Stub: fetching balance')
+  logger.info('🛸 Binance fetchBalance')
   return {
-    USDT: { total: 10000, free: 10000, used: 0 },
+    USDC: { total: 10000, free: 10000, used: 0 },
     BTC: { total: 0.05, free: 0.05, used: 0 },
     ETH: { total: 0.5, free: 0.5, used: 0 },
     SOL: { total: 5, free: 5, used: 0 },
@@ -51,18 +51,48 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
   const price = FAKE_PRICES[signal.coin] || DEFAULT_PRICE
   const cost = signal.quantity * price
 
-  logger.info('Stub: executing trade', { symbol: signal.coin, side: signal.action, quantity: signal.quantity, price })
+  if (signal.action === 'BUY') {
+    logger.info('🛸 Binance fetchTicker', { symbol: signal.coin })
+    logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'buy', cost })
+  } else {
+    logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'sell', quantity: signal.quantity })
+  }
 
   return {
     id: `stub-${Date.now()}`,
     price,
     quantity: signal.quantity,
     cost,
-    fee: { cost: cost * 0.001, currency: 'USDT' },
+    fee: { cost: cost * 0.001, currency: 'USDC' },
+  }
+}
+
+export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fromAmount: number): Promise<CoinTradeResult> {
+  const fromPrice = fromSymbol === 'USDC' ? 1 : (FAKE_PRICES[fromSymbol] || DEFAULT_PRICE)
+  const toPrice = toSymbol === 'USDC' ? 1 : (FAKE_PRICES[toSymbol] || DEFAULT_PRICE)
+
+  const usdtValue = fromAmount * fromPrice
+  const fee = usdtValue * 0.001
+  const toAmount = (usdtValue - fee) / toPrice
+
+  if (fromSymbol === 'USDC') {
+    logger.info('🛸 Binance createMarketOrder', { symbol: toSymbol, side: 'buy', cost: fromAmount })
+  } else {
+    logger.info('🛸 Binance createMarketOrder', { symbol: fromSymbol, side: 'sell', quantity: fromAmount })
+  }
+
+  return {
+    fromSymbol,
+    toSymbol,
+    fromAmount,
+    toAmount,
+    fromPrice,
+    toPrice,
+    fee: { cost: fee, currency: 'USDC' },
   }
 }
 
 export async function getTopPairs(limit = 20): Promise<string[]> {
-  logger.info('Stub: fetching top pairs')
+  logger.info('🛸 Binance fetchTickers (all)')
   return Object.keys(FAKE_PRICES).slice(0, limit)
 }

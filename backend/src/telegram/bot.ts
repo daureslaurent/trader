@@ -15,6 +15,12 @@ export interface BotContext extends Context {
 }
 
 let bot: Telegraf<BotContext> | null = null
+// Resolved chat ID: prefer env var, fall back to the first chat that messages the bot
+let resolvedChatId: string = config.telegram.chatId
+
+export function getChatId(): string {
+  return resolvedChatId
+}
 
 export function startTelegramBot() {
   if (!config.telegram.botToken) {
@@ -25,6 +31,15 @@ export function startTelegramBot() {
   bot = new Telegraf<BotContext>(config.telegram.botToken)
 
   bot.use(session({ defaultSession: (): MenuSession => ({ menuStack: ['main'], pagination: {} }) }))
+
+  // Auto-learn chat ID from the first incoming message if not set via env
+  bot.use((ctx, next) => {
+    if (!resolvedChatId && ctx.chat?.id) {
+      resolvedChatId = String(ctx.chat.id)
+      logger.info('Telegram chat ID learned from incoming message', { chatId: resolvedChatId })
+    }
+    return next()
+  })
 
   bot.catch((err) => {
     logger.error('Telegram bot error', { error: err instanceof Error ? err.message : String(err) })
@@ -54,7 +69,7 @@ export function startTelegramBot() {
 }
 
 export function sendApprovalMessage(req: ApprovalRequest): void {
-  if (!bot) return
+  if (!bot || !resolvedChatId) return
   const msg = [
     `⚠️ Trade Approval Needed`,
     ``,
@@ -66,7 +81,9 @@ export function sendApprovalMessage(req: ApprovalRequest): void {
     ``,
     `Tap /approve ${req.tradeId} or /reject ${req.tradeId}`,
   ].join('\n')
-  bot.telegram.sendMessage(config.telegram.chatId, msg).catch(() => {})
+  bot.telegram.sendMessage(resolvedChatId, msg).catch((err) => {
+    logger.warn('Telegram approval message failed', { error: err.message })
+  })
 }
 
 export function getBot() {

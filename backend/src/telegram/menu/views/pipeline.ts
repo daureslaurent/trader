@@ -21,7 +21,7 @@ export async function render(ctx: any) {
   const lines = ['🔬 Pipeline Cycles', '']
   const buttons: ReturnType<typeof Markup.button.callback>[] = []
   for (const c of cycles) {
-    const coin = (c.coin as string).replace('/USDT', '')
+    const coin = (c.coin as string).replace('/USDC', '')
     let status
     if (c.has_error) status = '🔴 ERROR'
     else if (c.has_signal) status = '✅ Complete'
@@ -47,7 +47,7 @@ export async function renderCycle(ctx: any, cycleId: string) {
     return { text: 'Cycle not found.', buttons: [] }
   }
 
-  const coin = (events[0].coin as string).replace('/USDT', '')
+  const coin = (events[0].coin as string).replace('/USDC', '')
   const lines = [`🔬 Pipeline — ${coin}`, '']
 
   for (const e of events) {

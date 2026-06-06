@@ -5,7 +5,7 @@ export async function render(ctx: any) {
   const settings = getSettings()
   const lines = ['⚙️ Settings', '']
   lines.push(`Watchlist: ${settings.watchlist.join(', ') || '(empty)'}`)
-  lines.push(`Interval: ${settings.interval_minutes} min`)
+  lines.push(`Cron: ${settings.pipeline_cron}`)
   lines.push(`Min Confidence: ${(settings.min_confidence * 100).toFixed(0)}%`)
   lines.push(`Max Position: $${settings.max_position_size_usd}`)
   lines.push(`${settings.approval_required ? '✅' : '❌'} Approval Required`)
@@ -17,7 +17,7 @@ export async function render(ctx: any) {
   const editButtons = [
     Markup.button.callback('✏️ Edit Watchlist', 'setting:edit:watchlist'),
     Markup.button.callback('✏️ Toggle Approval', 'setting:toggle:approval_required'),
-    Markup.button.callback('✏️ Edit Interval', 'setting:edit:interval_minutes'),
+    Markup.button.callback('✏️ Edit Cron', 'setting:edit:pipeline_cron'),
   ]
 
   return {

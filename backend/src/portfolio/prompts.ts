@@ -1,5 +1,6 @@
 import { MarketContext, PortfolioState, BotSettings } from '../types.js'
 import { ExtractedResearch } from '../extractor/index.js'
+import { CoinPortfolioContext } from './service.js'
 
 export function buildAnalysisPrompt(
   coin: string,
@@ -7,6 +8,7 @@ export function buildAnalysisPrompt(
   portfolio: PortfolioState,
   settings: BotSettings,
   research: ExtractedResearch,
+  coinCtx: CoinPortfolioContext,
 ): { system: string; user: string } {
   const now = new Date().toISOString().split('T')[0]
 
@@ -21,14 +23,23 @@ export function buildAnalysisPrompt(
         return `- ${p.coin}: ${(p.allocationPct * 100).toFixed(1)}% of portfolio, bought at $${p.entryPrice.toFixed(2)}, now $${p.currentPrice.toFixed(2)}, delta: ${deltaSign}${p.deltaPct.toFixed(1)}%`
       }).join('\n')
 
+  const coinHoldingLine = coinCtx.currentQuantity > 0 && coinCtx.avgBuyPrice !== null
+    ? `Holding ${coinCtx.currentQuantity} ${coin} @ avg $${coinCtx.avgBuyPrice.toFixed(4)} (delta: ${((market.price - coinCtx.avgBuyPrice) / coinCtx.avgBuyPrice * 100).toFixed(1)}%)`
+    : `No current position in ${coin}`
+
+  const recentTradesLine = coinCtx.recentTrades.length === 0
+    ? 'No prior trades on this coin'
+    : coinCtx.recentTrades
+        .map(t => `${t.date} ${t.side} ${t.quantity} @ $${t.price}`)
+        .join('\n')
+
   const system = `You are an autonomous crypto portfolio manager. You manage a portfolio with discipline and patience. Date: ${now}.
 
 KEY RULES:
-- Only BUY if confidence > ${settings.min_confidence} AND the coin fits portfolio diversification
+- Only BUY if confidence is MEDIUM or HIGH AND the coin fits portfolio diversification
 - Only SELL if: negative catalyst, OR position exceeds target allocation meaningfully
 - Prefer HOLD over uncertain trades. Missing a move is better than taking a bad trade.
 - Medium-term horizon: decisions play out over days to weeks
-- Your confidence score directly scales position size. A confidence of 0.6 means a 60%-sized position, 1.0 means full-sized.
 
 TECHNICAL THRESHOLDS:
 - RSI < 30: oversold (potential bounce zone)
@@ -46,18 +57,28 @@ PORTFOLIO STATE:
 OPEN POSITIONS:
 ${positionsList}
 
+THIS COIN — LOCAL PORTFOLIO:
+${coinHoldingLine}
+Recent trades:
+${recentTradesLine}
+
 RISK ASSESSMENT FOR THIS TRADE:
 - Stop-loss would be ${slDistancePct.toFixed(1)}% below entry (${slDistancePct < 3 ? 'tight — higher whip risk' : 'reasonable distance'})
 - Take-profit would be ${tpDistancePct.toFixed(1)}% above entry
 - Implied risk/reward ratio: 1:${impliedRR.toFixed(1)}
 - Volatility: ${market.volatility} — ${market.volatility === 'high' ? 'expect wider swings, reduce position sizing' : market.volatility === 'low' ? 'tight ranges, smaller relative moves' : 'normal trading conditions'}
 
-OUTPUT FORMAT — respond with ONLY a JSON object:
+OUTPUT FORMAT — respond with ONLY a JSON object, no markdown:
 {
   "action": "BUY" | "SELL" | "HOLD",
-  "confidence": 0.0-1.0,
+  "confidence": "HIGH" | "MEDIUM" | "LOW",
   "reason": "step-by-step reasoning: market setup → technical setup → news analysis → portfolio fit → risk assessment → decision"
-}`
+}
+
+CONFIDENCE LEVELS:
+- HIGH: multiple confirming factors, clear catalyst, strong conviction
+- MEDIUM: moderate signal, some uncertainty, reasonable risk/reward
+- LOW: weak or conflicting signals — prefer HOLD instead`
 
   const articlesText = research.articles.length > 0
     ? research.articles.map(a =>

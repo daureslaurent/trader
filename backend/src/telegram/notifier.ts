@@ -6,14 +6,15 @@ import { getBot, getChatId } from './bot.js'
 
 function send(text: string) {
   const bot = getBot()
-  const id = getChatId()
-  if (!bot || !id) return
-  bot.telegram.sendMessage(id, text).catch((err) => {
+  const chatId = getChatId()
+  if (!bot || !chatId) return
+  bot.telegram.sendMessage(chatId, text).catch((err) => {
     logger.warn('Telegram send failed', { error: err.message })
   })
 }
 
 export function startNotifier() {
+  send('✅ CryptoBot started — monitoring markets')
 
   bus.on('trade_executed', (trade: any) => {
     const emoji = trade.side === 'BUY' ? '🟢' : '🔴'

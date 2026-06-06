@@ -3,33 +3,48 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ReferenceLine, ResponsiveContainer,
 } from 'recharts'
-
-interface ChartPoint {
-  coin: string
-  action: string
-  confidence: number
-  value: number
-  created_at: string
-}
+import { Card, CardHeader } from '../components/ui/Card'
+import { ChartPoint } from '../types'
+import { formatDate } from '../lib/utils'
 
 interface ChartRow {
   created_at: string
   [coin: string]: number | string
 }
 
-const COLORS = ['#22c55e', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
+interface ApiPoint extends ChartPoint {
+  action: string
+  confidence: number
+}
+
+const THEME_COLORS = [
+  'rgb(var(--accent-rgb))',
+  'rgb(var(--sell-rgb))',
+  '#3b82f6',
+  '#f59e0b',
+  '#8b5cf6',
+  '#ec4899',
+  '#14b8a6',
+  '#f97316',
+]
+
+const TOOLTIP_STYLE = {
+  backgroundColor: 'var(--surface-elevated)',
+  border: '1px solid var(--border-color)',
+  borderRadius: '12px',
+  fontSize: '12px',
+  color: 'var(--foreground)',
+}
 
 export default function Charts() {
-  const [data, setData] = useState<ChartPoint[]>([])
+  const [data, setData] = useState<ApiPoint[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/chart')
-      .then((r) => r.json())
-      .then(setData)
-      .catch(() => {})
+    fetch('/api/chart').then(r => r.json()).then(d => { setData(d); setLoading(false) }).catch(() => setLoading(false))
   }, [])
 
-  const coins = [...new Set(data.map((d) => d.coin))].sort()
+  const coins = [...new Set(data.map(d => d.coin))].sort()
 
   const rows: ChartRow[] = Object.values(
     data.reduce<Record<string, ChartRow>>((acc, pt) => {
@@ -37,52 +52,82 @@ export default function Charts() {
       acc[pt.created_at][pt.coin] = pt.value
       return acc
     }, {})
-  )
+  ).sort((a, b) => new Date(a.created_at as string).getTime() - new Date(b.created_at as string).getTime())
 
-  const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr + 'Z')
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-  }
-
-  const tooltipFormatter = (value: number, name: string) => {
-    const pt = data.find((d) => d.coin === name && d.value === value)
-    const label = pt ? `${value.toFixed(2)} (${pt.action} @ ${(pt.confidence * 100).toFixed(0)}%)` : value.toFixed(2)
-    return [label, name] as [string, string]
+  function tooltipFormatter(value: number, name: string): [string, string] {
+    const pt = data.find(d => d.coin === name && d.value === value)
+    const label = pt ? `${value.toFixed(2)} — ${pt.action} (${Math.round(pt.confidence * 100)}%)` : value.toFixed(2)
+    return [label, name.replace('/USDC', '')]
   }
 
   return (
-    <div className="bg-gray-900 rounded-lg p-4">
-      <h2 className="text-lg font-semibold text-green-400 mb-4">LLM Value Over Time</h2>
-      {data.length === 0 ? (
-        <p className="text-gray-500">No decisions recorded yet.</p>
-      ) : (
-        <ResponsiveContainer width="100%" height={500}>
-          <LineChart data={rows}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="created_at" tickFormatter={formatDate} stroke="#9ca3af" tick={{ fontSize: 11 }} />
-            <YAxis domain={[-1, 1]} stroke="#9ca3af" tick={{ fontSize: 11 }} />
-            <Tooltip
-              contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
-              labelFormatter={formatDate}
-              formatter={tooltipFormatter}
-            />
-            <Legend />
-            <ReferenceLine y={0} stroke="#4b5563" strokeDasharray="5 5" />
-            {coins.map((coin, i) => (
-              <Line
-                key={coin}
-                type="monotone"
-                dataKey={coin}
-                name={coin}
-                stroke={COLORS[i % COLORS.length]}
-                dot={false}
-                strokeWidth={2}
-                connectNulls
-              />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-      )}
+    <div className="space-y-6 animate-fade-in">
+      <Card noPad>
+        <div className="px-5 pt-5 pb-2">
+          <CardHeader
+            title="Analyst Signal Over Time"
+            subtitle="LLM confidence values per coin across pipeline cycles"
+          />
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center h-64">
+            <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : data.length === 0 ? (
+          <div className="flex items-center justify-center h-64 text-sm text-muted">
+            No pipeline cycles recorded yet.
+          </div>
+        ) : (
+          <div className="px-2 pb-4">
+            <ResponsiveContainer width="100%" height={480}>
+              <LineChart data={rows} margin={{ top: 10, right: 20, bottom: 10, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" />
+                <XAxis
+                  dataKey="created_at"
+                  tickFormatter={formatDate}
+                  stroke="var(--muted-fg)"
+                  tick={{ fontSize: 11, fill: 'var(--muted-fg)' }}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis
+                  domain={[-1, 1]}
+                  stroke="var(--muted-fg)"
+                  tick={{ fontSize: 11, fill: 'var(--muted-fg)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={36}
+                />
+                <Tooltip
+                  contentStyle={TOOLTIP_STYLE}
+                  labelFormatter={formatDate}
+                  formatter={tooltipFormatter}
+                  cursor={{ stroke: 'var(--border-color)', strokeWidth: 1 }}
+                />
+                <Legend
+                  wrapperStyle={{ fontSize: '12px', color: 'var(--muted-fg)' }}
+                  formatter={v => v.replace('/USDC', '')}
+                />
+                <ReferenceLine y={0} stroke="var(--border-color)" strokeDasharray="4 4" />
+                {coins.map((coin, i) => (
+                  <Line
+                    key={coin}
+                    type="monotone"
+                    dataKey={coin}
+                    name={coin}
+                    stroke={THEME_COLORS[i % THEME_COLORS.length]}
+                    dot={false}
+                    strokeWidth={2}
+                    connectNulls
+                    activeDot={{ r: 4, strokeWidth: 0 }}
+                  />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </Card>
     </div>
   )
 }

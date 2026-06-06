@@ -41,7 +41,7 @@ export interface PortfolioSnapshot {
 
 export interface BotSettings {
   watchlist: string[]
-  interval_minutes: number
+  pipeline_cron: string
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
@@ -49,6 +49,7 @@ export interface BotSettings {
   take_profit_atr: number
   max_risk_per_trade: number
   max_open_positions: number
+  cache_ttl_hours: number
 }
 
 export interface ApprovalRequest {
@@ -67,9 +68,13 @@ export type PipelineStage =
   | 'research_completed'
   | 'extraction_started'
   | 'extraction_completed'
+  | 'selection_started'
+  | 'selection_completed'
   | 'analysis_started'
   | 'signal_generated'
   | 'pipeline_error'
+  | 'pipeline_timeout'
+  | 'pipeline_failed'
 
 export interface PipelineEvent {
   id: number
