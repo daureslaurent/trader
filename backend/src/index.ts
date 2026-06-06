@@ -506,9 +506,6 @@ async function start() {
   schedulePipeline(settings.pipeline_cron)
   scheduleDiscovery(settings.discover_cron)
 
-  // Run once immediately at startup, then cron takes over
-  runPipeline()
-
   logger.info(`CryptoBot running. Pipeline cron: ${settings.pipeline_cron}`)
 }
 
