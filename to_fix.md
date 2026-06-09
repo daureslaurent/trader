@@ -9,15 +9,15 @@
 | **P2** | Medium | Correctness or UX issues |
 | **P3** | Low | Type hygiene, minor refactors |
 
-**Recommended order:** P0 first (all before real funds), then P1, then P2/P3. Within P0: #2 → rest (many fixes need transactions).
+**Recommended order:** P0 first (all before real funds), then P1, then P2/P3. Within P0: #3 → rest (many fixes need transactions).
 
 ### Dependency Graph
 
 ```
-#2 (transactions) ──blocks── #6 (debounced save) ──improves── #12 (OCO delay)
-                    ──blocks── #13d (USDC crash window)
-#1 (LLM split)     ──affects── #14 (order book placement)
-#12 (OCO delay)    ──mitigates── #13 (faster detection = less wrong state)
+#3 (transactions)  ──blocks── #8 (debounced save) ──improves── #9 (OCO delay)
+                    ──blocks── #6d (USDC crash window)
+#1 (LLM split)     ──affects── #15 (order book placement)
+#9 (OCO delay)     ──mitigates── #6 (faster detection = less wrong state)
 ```
 
 ---
@@ -111,9 +111,127 @@ Alternative (cheaper): Replace agents 1 and 4 with deterministic rules. Market r
 
 ---
 
-## [P0] #2. No Transaction Atomicity
+## [P1] #2. Position Monitor LLM Asks for Absolute Prices and Has No Churn Protection
 
-**Affects:** #6, #13d (these fixes depend on transactions existing)
+The position monitor (`backend/src/monitor/service.ts`) has its own set of LLM-specific issues beyond the general "too many tasks" problem covered in #1.
+
+### 2a. Asks the LLM for absolute USD prices
+
+The monitor prompt (`backend/src/monitor/prompts.ts:110-118`) asks the LLM to output `new_stop_loss` and `new_take_profit` as absolute USD prices:
+
+```json
+{
+  "action": "ADJUST",
+  "new_stop_loss": 1.1650,
+  "new_take_profit": null
+}
+```
+
+LLMs are notoriously bad at outputting precise floating-point numbers at the correct decimal scale. This is why `rescalePrice()` exists (`backend/src/monitor/service.ts:58-68`) — a heuristic that tries powers of 10 until the price looks reasonable.
+
+**Why it's unreliable:**
+- A coin at $0.0035 and a coin at $35.00 need very different decimal scales
+- The prompt warns "Example: if Current = $1.1787, a valid stop is 1.1500 — NOT 11500" — telling the LLM what NOT to do is a weak constraint
+- `rescalePrice()` assumes the correct scale is within 5 orders of magnitude from the reference (0.5× to 1.5×). For an OTM coin at $0.00001 with SL at $0.000009, this could mis-scale
+- The check `ratio >= 0.1 && ratio <= 5` skips rescaling for values within 10%-500% of reference — too wide to catch obvious errors
+
+**Fix:** Change the interface to ask for **percentages** instead of absolute prices:
+
+```json
+{
+  "action": "ADJUST",
+  "confidence": 0.8,
+  "reasoning": "...",
+  "new_stop_loss_pct": -3.5,
+  "new_take_profit_pct": 8.0
+}
+```
+
+Then compute `newStopLoss = currentPrice * (1 + new_stop_loss_pct / 100)` in code. This eliminates the decimal-scale problem entirely. `rescalePrice()` can be removed.
+
+### 2b. No ADJUST churn protection
+
+If the LLM proposes `ADJUST` every monitor cycle with tiny SL/TP changes (e.g., trailing SL up by 0.1%), each one triggers an OCO cancel + replace (`replaceProtection` in `portfolio/service.ts:374-401`). This costs Binance API weight and, more importantly, means the position goes briefly unprotected between the cancel and the new placement.
+
+`validateSlTpAdjustment` (`portfolio/risk.ts:96`) has a `same()` function that treats values within ~0.0001% as unchanged, but the LLM can easily propose changes larger than this threshold.
+
+**Fix:** Add a debounce/cooldown to ADJUST proposals:
+- Track the last time an ADJUST was applied for each coin
+- Reject new ADJUST proposals within N hours of the last one (configurable, default 24h)
+- Alternative: require the new SL/TP to be at least X% different from current before accepting (e.g., SL must move ≥ 0.5%)
+
+### 2c. Wrong position age for multi-entry builds
+
+The monitor query (`backend/src/monitor/service.ts:260-269`) uses `MIN(buy_date)`:
+
+```sql
+SELECT
+  coin,
+  SUM(quantity) AS quantity,
+  SUM(quantity * buy_price) / SUM(quantity) AS avg_buy_price,
+  MIN(buy_date) AS earliest_date
+FROM portfolio_entries WHERE status = 'OPEN' AND coin != 'USDC'
+GROUP BY coin
+```
+
+Then `ageHours` is computed from `earliest_date` (line 309):
+
+```ts
+const ageMs = Date.now() - new Date(entry.earliest_date + 'T00:00:00Z').getTime()
+const ageHours = ageMs / (1000 * 60 * 60)
+```
+
+If a position was partially reduced (e.g., a REDUCE or partial SL hit), then later re-added (averaging down or adding on pullback), `MIN(buy_date)` returns the **original** entry date — making the position look much older than it is. This feeds into the LLM prompt as `ageHours`, which the LLM uses for horizon-sensitive decisions. A position opened yesterday with a add today looks like "3 months old" from the MIN, so the LLM treats it as a long-term hold.
+
+**Fix:** Use a weighted average of buy dates instead of MIN:
+
+```sql
+MIN(buy_date) AS earliest_date
+```
+→
+```sql
+SUM(quantity * julianday(buy_date)) / SUM(quantity) AS avg_date_jd
+```
+
+Then convert `avg_date_jd` back to a date in code. Or simply use `MAX(buy_date)` (the most recent entry), which better represents the position's current cost basis.
+
+### 2d. No retry on LLM API errors (only parse errors retried)
+
+The retry loop in `monitorCoin()` (`backend/src/monitor/service.ts:99-129`) only retries on parse errors:
+
+```ts
+try {
+  raw = parseReview(content)
+} catch (err) {
+  if (attempt === 0) { continue }
+  throw err
+}
+```
+
+If `llmChat` itself throws (network error, API down, timeout), the exception propagates out of the for loop entirely — no retry. The caller's `.catch()` at line 357 logs the error and returns null, skipping the review entirely.
+
+**Fix:** Wrap the `llmChat` call in the try/catch too, or add a try/catch around the entire for-loop body.
+
+### 2e. Cascading CLOSE/REDUCE with no rejection memory
+
+The prompt includes the last 3 reviews (line 88-90):
+
+```ts
+const history = queryAll(
+  'SELECT * FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 3',
+  [ctx.coin],
+)
+```
+
+But the history only contains the review data (action, confidence, reasoning, market_data at the time). It does **not** include whether the action was acted upon or rejected. If the LLM recommends CLOSE, the human rejects it, next cycle the LLM sees the same position in a similar state and recommends CLOSE again.
+
+**Fix:** Add an `outcome` field to `position_reviews` (`applied`, `rejected`, `expired`, `ignored`). Include it in the history context so the LLM can see "last time I recommended CLOSE but it was rejected because...".
+
+---
+
+## [P0] #3. No Transaction Atomicity
+
+**Affects:** #8, #6d (these fixes depend on transactions existing)
 
 Trade execution in `submitTrade()` (`backend/src/index.ts:527-601`) performs 3-4 separate database writes:
 
@@ -137,7 +255,7 @@ The OCO-reconcile exit path (`closePositionFromExit` in `portfolio/service.ts:30
 
 ---
 
-## [P0] #3. Partial Fill Leads to Overspend on Buys
+## [P0] #4. Partial Fill Leads to Overspend on Buys
 
 In `backend/src/trader/service.ts`, the buy path (`executeTrade`) uses:
 
@@ -151,7 +269,7 @@ If the IOC fills 40% at the limit price, the fallback market order (`createMarke
 
 ---
 
-## [P0] #4. Negative Stop-Loss Possible
+## [P0] #5. Negative Stop-Loss Possible
 
 In `backend/src/portfolio/risk.ts:48`:
 
@@ -172,9 +290,9 @@ return Math.max(raw, entryPrice * 0.01)
 
 ---
 
-## [P0] #5. USDC Not Credited Back to Portfolio After OCO Exit
+## [P0] #6. USDC Not Credited Back to Portfolio After OCO Exit
 
-**Depends on:** #2 (transaction fix would prevent crash-window data loss in item d)
+**Depends on:** #3 (transaction fix would prevent crash-window data loss in item d)
 
 When an OCO fills on Binance and `closePositionFromExit()` (`backend/src/portfolio/service.ts:301-336`) runs, it attempts to credit the proceeds back to the USDC portfolio entry:
 
@@ -212,13 +330,13 @@ For the SL leg, `o.average` reports the average fill price of the stop-limit ord
 
 **d) Coin entries closed before USDC is credited (crash window)**
 
-`closePositionFromExit` closes coin entries first (line 316), then credits USDC (line 320). A crash between these two steps leaves the portfolio in an inconsistent state — the coin is no longer held but USDC was never replenished. Same root cause as issue #2.
+`closePositionFromExit` closes coin entries first (line 316), then credits USDC (line 320). A crash between these two steps leaves the portfolio in an inconsistent state — the coin is no longer held but USDC was never replenished. Same root cause as issue #3.
 
-**Fix:** Same as #2 — wrap in a SQL transaction.
+**Fix:** Same as #3 — wrap in a SQL transaction.
 
 ---
 
-## [P1] #6. No `pipeline_completed` Event
+## [P1] #7. No `pipeline_completed` Event
 
 The `tradingLoop()` function (`backend/src/index.ts:214-382`) emits `portfolio_updated` on line 380 but never emits a terminal pipeline event. The frontend has no way to know a full cycle finished — it only sees individual per-coin `signal_generated` and `trade_executed` events.
 
@@ -237,9 +355,9 @@ Also broadcast it via `broadcast('pipeline_completed', { ... })` so the frontend
 
 ---
 
-## [P1] #7. Debounced Save Risk
+## [P1] #8. Debounced Save Risk
 
-**Depends on:** #2 (transaction API provides a clean hook to trigger sync saves)
+**Depends on:** #3 (transaction API provides a clean hook to trigger sync saves)
 
 `backend/src/db/connection.ts:90-93` debounces `saveDB()` by 2 seconds. If the process crashes (SIGKILL, power loss), up to 2 seconds of trades, positions, and portfolio entries are lost.
 
@@ -263,7 +381,7 @@ Implementation: Add a `saveDB(name?: string)` call at the end of `runSQL` when t
 
 ---
 
-## [P1] #8. OCO Fill Detection Has Up-to-2-Minute Delay
+## [P1] #9. OCO Fill Detection Has Up-to-2-Minute Delay
 
 `reconcileOpenPositions()` (`backend/src/portfolio/service.ts:430`) runs every 2 minutes via `POSITION_CHECK_INTERVAL_MS` (`backend/src/index.ts:46`). When an OCO leg fills on Binance (SL or TP hit), the bot does **not** receive a callback or webhook — it only discovers the fill on the next reconciliation cycle.
 
@@ -283,12 +401,6 @@ Implementation: Add a `saveDB(name?: string)` call at the end of `runSQL` when t
 | **Webhook from Binance** — Binance can POST to a callback URL | High | Real-time | High (needs public endpoint + auth) | Not recommended |
 
 Recommended approach: Do "shorten interval" first (5-min change), then "Binance WebSocket user stream" as a proper fix. The bot already stores the API key/secret — create a listenKey on startup, subscribe to the user data stream, and emit `oco_filled` events on `executionReport` for OCO legs.
-
----
-
-## [P1] #9. Negative Stop-Loss Unreachable
-
-Same as #4. Duplicate entry — keep only #4.
 
 ---
 
