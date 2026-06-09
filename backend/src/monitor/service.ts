@@ -230,6 +230,7 @@ async function monitorCoin(
     trend: ctx.trend,
     volatility: ctx.volatility,
     change24h: Math.round(ctx.change24h * 100) / 100,
+    horizon: ctx.horizon,
   })
 
   // Guard: if the position closed while the LLM was thinking (race with OCO reconciler),
@@ -244,8 +245,8 @@ async function monitorCoin(
   }
 
   const { lastInsertRowid } = runSQL(
-    'INSERT INTO position_reviews (coin, action, confidence, reasoning, reduce_to_pct, new_stop_loss, new_take_profit, market_data, cycle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [ctx.coin, raw.action, confidence, raw.reasoning, reduceToPct, newStopLoss, newTakeProfit, marketData, cycleId],
+    'INSERT INTO position_reviews (coin, action, confidence, reasoning, reduce_to_pct, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, market_data, cycle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [ctx.coin, raw.action, confidence, raw.reasoning, reduceToPct, ctx.stopLoss ?? null, ctx.takeProfit ?? null, newStopLoss, newTakeProfit, marketData, cycleId],
   )
 
   const review: PositionReview = {
@@ -255,6 +256,8 @@ async function monitorCoin(
     confidence,
     reasoning: raw.reasoning,
     reduce_to_pct: reduceToPct,
+    old_stop_loss: ctx.stopLoss ?? null,
+    old_take_profit: ctx.takeProfit ?? null,
     new_stop_loss: newStopLoss,
     new_take_profit: newTakeProfit,
     market_data: marketData,

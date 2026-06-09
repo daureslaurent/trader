@@ -185,6 +185,12 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     }
   })
 
+  migrate(trading, 'trading', 7, (db) => {
+    for (const col of ['old_stop_loss', 'old_take_profit']) {
+      try { db.run(`ALTER TABLE position_reviews ADD COLUMN ${col} REAL`) } catch { /* already exists */ }
+    }
+  })
+
   // ── Settings seeds (idempotent — INSERT OR IGNORE) ────────────────────────
   const seeds = [
     ['default_horizon', 'auto'],

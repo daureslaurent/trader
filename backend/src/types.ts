@@ -217,6 +217,8 @@ export interface PositionReview {
   confidence: number
   reasoning: string
   reduce_to_pct: number | null
+  old_stop_loss: number | null
+  old_take_profit: number | null
   new_stop_loss: number | null
   new_take_profit: number | null
   market_data: string

@@ -319,6 +319,11 @@ function ReviewList({ reviews, holdings, closingCoin, onClose }: {
                     {mdata.trend}
                   </span>
                 )}
+                {mdata.horizon && (
+                  <span className="text-xs px-1.5 py-0.5 rounded border font-medium bg-surface-hover text-muted border-border">
+                    {mdata.horizon}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {(review.action === 'CLOSE' || review.action === 'REDUCE') && hasHolding && (
@@ -351,16 +356,32 @@ function ReviewList({ reviews, holdings, closingCoin, onClose }: {
 
             {review.action === 'ADJUST' && (review.new_stop_loss != null || review.new_take_profit != null) && (
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                {review.new_stop_loss != null && (
-                  <span className="px-2 py-0.5 rounded-md bg-sell/10 text-sell border border-sell/20 tabular-nums">
-                    SL → {fmtUSD(review.new_stop_loss)}
-                  </span>
-                )}
-                {review.new_take_profit != null && (
-                  <span className="px-2 py-0.5 rounded-md bg-buy/10 text-buy border border-buy/20 tabular-nums">
-                    TP → {fmtUSD(review.new_take_profit)}
-                  </span>
-                )}
+                {review.new_stop_loss != null && (() => {
+                  const deltaPct = review.old_stop_loss && review.old_stop_loss !== 0
+                    ? ((review.new_stop_loss - review.old_stop_loss) / Math.abs(review.old_stop_loss)) * 100
+                    : null
+                  return (
+                    <span className="px-2 py-0.5 rounded-md bg-sell/10 text-sell border border-sell/20 tabular-nums">
+                      SL → {fmtUSD(review.new_stop_loss)}
+                      {deltaPct != null && (
+                        <span className="ml-1 opacity-70">({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)</span>
+                      )}
+                    </span>
+                  )
+                })()}
+                {review.new_take_profit != null && (() => {
+                  const deltaPct = review.old_take_profit && review.old_take_profit !== 0
+                    ? ((review.new_take_profit - review.old_take_profit) / Math.abs(review.old_take_profit)) * 100
+                    : null
+                  return (
+                    <span className="px-2 py-0.5 rounded-md bg-buy/10 text-buy border border-buy/20 tabular-nums">
+                      TP → {fmtUSD(review.new_take_profit)}
+                      {deltaPct != null && (
+                        <span className="ml-1 opacity-70">({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)</span>
+                      )}
+                    </span>
+                  )
+                })()}
               </div>
             )}
 

@@ -34,6 +34,9 @@ export default function Trade() {
   const [result, setResult] = useState<TradeResult | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // Extra coins from watchlist / portfolio not in QUICK_COINS
+  const [extraCoins, setExtraCoins] = useState<string[]>([])
+
   // Signal + history state
   const [decisions, setDecisions] = useState<Decision[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
@@ -50,10 +53,20 @@ export default function Trade() {
   const base = symbol.replace('/USDC', '')
 
   function loadData() {
-    fetch('/api/portfolio').then(r => r.json()).then(data => {
-      const entries: PortfolioEntry[] = data.entries ?? []
+    Promise.all([
+      fetch('/api/portfolio').then(r => r.json()),
+      fetch('/api/settings').then(r => r.json()),
+    ]).then(([portfolioData, settingsData]) => {
+      const entries: PortfolioEntry[] = portfolioData.entries ?? []
       setUsdtBalance(entries.find(e => e.coin === 'USDC')?.quantity ?? 0)
       setCoinBalance(entries.find(e => e.coin === symbol)?.quantity ?? 0)
+
+      const wlCoins: string[] = (settingsData.watchlist ?? []).map((s: string) => s.replace('/USDC', ''))
+      const portfolioCoins: string[] = entries
+        .filter(e => e.coin !== 'USDC' && e.coin.includes('/'))
+        .map(e => e.coin.replace('/USDC', ''))
+      const extra = [...new Set([...wlCoins, ...portfolioCoins])].filter(c => !QUICK_COINS.includes(c))
+      setExtraCoins(extra)
     }).catch(() => {})
     fetch('/api/trades').then(r => r.json()).then(setTrades).catch(() => {})
     fetch('/api/decisions').then(r => r.json()).then(setDecisions).catch(() => {})
@@ -214,6 +227,24 @@ export default function Trade() {
                 </button>
               ))}
             </div>
+            {extraCoins.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1.5 border-t border-border/40">
+                {extraCoins.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => { setCoinInput(c); commitCoin(c) }}
+                    className={cn(
+                      'px-2.5 py-1 text-xs font-medium rounded-lg border transition-all duration-150',
+                      symbol === `${c}/USDC`
+                        ? 'bg-accent/10 border-accent/40 text-accent'
+                        : 'bg-surface-elevated border-border text-muted hover:text-foreground',
+                    )}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Price display */}
