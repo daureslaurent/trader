@@ -8,6 +8,7 @@ import { cn } from '../lib/utils'
 interface SettingsData {
   watchlist: string[]
   pipeline_cron: string
+  default_horizon: 'auto' | 'short' | 'medium' | 'long'
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
@@ -16,7 +17,16 @@ interface SettingsData {
   max_risk_per_trade: number
   max_open_positions: number
   cache_ttl_hours: number
-  fee_rate: number
+  monitor_auto_run: boolean
+  monitor_cron: string
+  monitor_adjust_sltp: boolean
+  monitor_auto_approve: boolean
+  monitor_sl_pct_short: number
+  monitor_sl_pct_medium: number
+  monitor_sl_pct_long: number
+  monitor_tp_pct_short: number
+  monitor_tp_pct_medium: number
+  monitor_tp_pct_long: number
 }
 
 const CRON_PRESETS = [
@@ -69,6 +79,50 @@ export default function Settings() {
     setSaved(false)
   }
 
+  async function toggleMonitorAutoRun() {
+    if (!settings) return
+    const next = !settings.monitor_auto_run
+    set('monitor_auto_run', next)
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_auto_run: next }),
+    }).catch(() => {})
+  }
+
+  async function toggleMonitorAdjust() {
+    if (!settings) return
+    const next = !settings.monitor_adjust_sltp
+    set('monitor_adjust_sltp', next)
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_adjust_sltp: next }),
+    }).catch(() => {})
+  }
+
+  async function toggleMonitorAutoApprove() {
+    if (!settings) return
+    const next = !settings.monitor_auto_approve
+    set('monitor_auto_approve', next)
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_auto_approve: next }),
+    }).catch(() => {})
+  }
+
+  async function toggleApproval() {
+    if (!settings) return
+    const next = !settings.approval_required
+    set('approval_required', next)
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approval_required: next }),
+    }).catch(() => {})
+  }
+
   async function save(e: FormEvent) {
     e.preventDefault()
     setSaving(true)
@@ -100,6 +154,46 @@ export default function Settings() {
       {/* Trading */}
       <Card>
         <CardHeader title="Trading" subtitle="Core bot behavior" />
+
+        {/* Horizon selector */}
+        <div className="py-4 border-b border-border">
+          <p className="text-sm font-medium text-foreground mb-1">Trading horizon</p>
+          <p className="text-xs text-muted mb-3">
+            Controls how the analyst LLM sizes stop-loss / take-profit and how aggressively the position monitor acts.
+          </p>
+          <div className="grid grid-cols-4 gap-2">
+            {([
+              { id: 'auto',   label: 'Auto',   hint: 'LLM decides' },
+              { id: 'short',  label: 'Short',  hint: 'Days–weeks' },
+              { id: 'medium', label: 'Medium', hint: 'Weeks–months' },
+              { id: 'long',   label: 'Long',   hint: 'Months–years' },
+            ] as const).map(({ id, label, hint }) => {
+              const active = settings.default_horizon === id
+              const color = id === 'auto'
+                ? active ? 'bg-surface-hover border-foreground/30 text-foreground' : 'border-border text-muted hover:border-foreground/20 hover:text-foreground'
+                : id === 'short'
+                ? active ? 'bg-sell/10 border-sell/40 text-sell' : 'border-border text-muted hover:border-sell/30 hover:text-foreground'
+                : id === 'medium'
+                ? active ? 'bg-accent/10 border-accent/40 text-accent' : 'border-border text-muted hover:border-accent/30 hover:text-foreground'
+                : active ? 'bg-buy/10 border-buy/40 text-buy' : 'border-border text-muted hover:border-buy/30 hover:text-foreground'
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => set('default_horizon', id)}
+                  className={cn(
+                    'flex flex-col items-center gap-1 px-3 py-3 rounded-xl border text-sm font-semibold transition-all duration-150',
+                    color,
+                  )}
+                >
+                  {label}
+                  <span className="text-[10px] font-normal opacity-70">{hint}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
         <Row label="Watchlist" hint="Comma-separated pairs — e.g. BTC, ETH, SOL">
           <Input
             type="text"
@@ -148,7 +242,7 @@ export default function Settings() {
         <Row label="Require approval" hint="Pause for human approval before executing">
           <label className="relative inline-flex items-center gap-3 cursor-pointer">
             <div
-              onClick={() => set('approval_required', !settings.approval_required)}
+              onClick={toggleApproval}
               className={cn(
                 'w-10 h-6 rounded-full transition-colors duration-200 flex items-center px-0.5',
                 settings.approval_required ? 'bg-accent' : 'bg-surface-elevated border border-border',
@@ -186,9 +280,149 @@ export default function Settings() {
         <Row label="Take profit (ATR ×)" hint="Take profit distance in ATR multiples">
           <Input type="number" step="0.1" min="0" value={settings.take_profit_atr} onChange={e => set('take_profit_atr', parseFloat(e.target.value) || 0)} />
         </Row>
-        <Row label="Fee rate" hint="Exchange fee per trade (e.g. 0.001 = 0.1%) — used in break-even and position sizing">
-          <Input type="number" step="0.0001" min="0" max="0.1" value={settings.fee_rate ?? 0.001} onChange={e => set('fee_rate', parseFloat(e.target.value) || 0)} />
+      </Card>
+
+      {/* Position Monitor */}
+      <Card>
+        <CardHeader title="Position Monitor" subtitle="Automatically review open positions on a schedule" />
+        <Row label="Auto-run" hint="Periodically run the monitor to check positions">
+          <label className="relative inline-flex items-center gap-3 cursor-pointer">
+            <div
+              onClick={toggleMonitorAutoRun}
+              className={cn(
+                'w-10 h-6 rounded-full transition-colors duration-200 flex items-center px-0.5',
+                settings.monitor_auto_run ? 'bg-accent' : 'bg-surface-elevated border border-border',
+              )}
+            >
+              <div className={cn(
+                'w-5 h-5 bg-foreground rounded-full shadow transition-transform duration-200',
+                settings.monitor_auto_run ? 'translate-x-4' : 'translate-x-0',
+                !settings.monitor_auto_run && 'opacity-50',
+              )} />
+            </div>
+            <span className="text-sm text-muted">{settings.monitor_auto_run ? 'On' : 'Off'}</span>
+          </label>
         </Row>
+        {settings.monitor_auto_run && (
+          <div className="flex items-start justify-between gap-6 py-4 border-b border-border last:border-0">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-foreground">Monitor schedule</p>
+              <p className="text-xs text-muted mt-0.5">
+                Cron expression — currently: <span className="text-accent font-mono">{describeCron(settings.monitor_cron)}</span>
+              </p>
+            </div>
+            <div className="w-64 shrink-0 space-y-2">
+              <div className="flex flex-wrap gap-1">
+                {CRON_PRESETS.map(p => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => set('monitor_cron', p.value)}
+                    className={cn(
+                      'px-2 py-1 text-xs rounded-lg border transition-all duration-150',
+                      settings.monitor_cron === p.value
+                        ? 'bg-accent/10 border-accent/40 text-accent'
+                        : 'bg-surface-elevated border-border text-muted hover:text-foreground',
+                    )}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <Input
+                type="text"
+                value={settings.monitor_cron}
+                onChange={e => set('monitor_cron', e.target.value)}
+                placeholder="0 */4 * * *"
+                error={!isValidCron(settings.monitor_cron) ? 'Invalid cron expression' : undefined}
+              />
+            </div>
+          </div>
+        )}
+        <Row label="Adapt SL/TP" hint="Let the monitor LLM tighten stops / adjust take-profit on open positions (risk-checked)">
+          <label className="relative inline-flex items-center gap-3 cursor-pointer">
+            <div
+              onClick={toggleMonitorAdjust}
+              className={cn(
+                'w-10 h-6 rounded-full transition-colors duration-200 flex items-center px-0.5',
+                settings.monitor_adjust_sltp ? 'bg-accent' : 'bg-surface-elevated border border-border',
+              )}
+            >
+              <div className={cn(
+                'w-5 h-5 bg-foreground rounded-full shadow transition-transform duration-200',
+                settings.monitor_adjust_sltp ? 'translate-x-4' : 'translate-x-0',
+                !settings.monitor_adjust_sltp && 'opacity-50',
+              )} />
+            </div>
+            <span className="text-sm text-muted">{settings.monitor_adjust_sltp ? 'On' : 'Off'}</span>
+          </label>
+        </Row>
+        {settings.monitor_adjust_sltp && (
+          <Row label="Auto-approve adjustments" hint="Apply SL/TP changes immediately without waiting for manual approval, even when approval mode is on">
+            <label className="relative inline-flex items-center gap-3 cursor-pointer">
+              <div
+                onClick={toggleMonitorAutoApprove}
+                className={cn(
+                  'w-10 h-6 rounded-full transition-colors duration-200 flex items-center px-0.5',
+                  settings.monitor_auto_approve ? 'bg-accent' : 'bg-surface-elevated border border-border',
+                )}
+              >
+                <div className={cn(
+                  'w-5 h-5 bg-foreground rounded-full shadow transition-transform duration-200',
+                  settings.monitor_auto_approve ? 'translate-x-4' : 'translate-x-0',
+                  !settings.monitor_auto_approve && 'opacity-50',
+                )} />
+              </div>
+              <span className="text-sm text-muted">{settings.monitor_auto_approve ? 'On' : 'Off'}</span>
+            </label>
+          </Row>
+        )}
+
+        {/* Per-horizon SL/TP configuration */}
+        <div className="py-4">
+          <p className="text-sm font-medium text-foreground mb-1">Horizon SL/TP targets</p>
+          <p className="text-xs text-muted mb-4">
+            Stop-loss and take-profit percentages from entry price the monitor LLM uses as guidance per investment horizon.
+          </p>
+          <div className="grid grid-cols-3 gap-3">
+            {(['short', 'medium', 'long'] as const).map(h => {
+              const slKey = `monitor_sl_pct_${h}` as keyof SettingsData
+              const tpKey = `monitor_tp_pct_${h}` as keyof SettingsData
+              return (
+                <div key={h} className="bg-surface-elevated rounded-xl p-3 space-y-3">
+                  <p className={cn(
+                    'text-xs font-semibold uppercase tracking-wide',
+                    h === 'short' ? 'text-sell' : h === 'medium' ? 'text-accent' : 'text-buy',
+                  )}>
+                    {h}
+                  </p>
+                  <div>
+                    <label className="text-xs text-muted mb-1 block">Stop loss (%)</label>
+                    <Input
+                      type="number"
+                      step="0.5"
+                      min="0.5"
+                      max="50"
+                      value={settings[slKey] as number}
+                      onChange={e => set(slKey, parseFloat(e.target.value) || 0)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted mb-1 block">Take profit (%)</label>
+                    <Input
+                      type="number"
+                      step="0.5"
+                      min="0.5"
+                      max="200"
+                      value={settings[tpKey] as number}
+                      onChange={e => set(tpKey, parseFloat(e.target.value) || 0)}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
       </Card>
 
       {/* Appearance */}

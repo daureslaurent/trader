@@ -1,7 +1,29 @@
 import { ArticleContent } from '../researcher/index.js'
 import { ExtractedArticle } from './types.js'
+import { config } from '../config/index.js'
 
-const MAX_ARTICLE_CHARS = 1200
+export function buildChallengePrompt(
+  coin: string,
+  article: ArticleContent,
+): { system: string; user: string } {
+  const system = `You are a relevance filter for cryptocurrency research. Your only job is to decide whether an article is specifically about the given coin's price, market performance, fundamentals, or trading outlook.
+
+Return ONLY a JSON object: { "relevant": true } or { "relevant": false }`
+
+  const content = article.content.length > config.extractor.maxChallengeChars
+    ? article.content.slice(0, config.extractor.maxChallengeChars) + '…'
+    : article.content
+
+  const user = `Coin: ${coin}
+
+Title: ${article.title}
+Content:
+${content}
+
+Is this article specifically about ${coin}? Return { "relevant": true } or { "relevant": false, "reason": "one sentence why not" }.`
+
+  return { system, user }
+}
 
 export function buildSingleArticlePrompt(
   coin: string,
@@ -23,8 +45,8 @@ Guidelines:
 - Only flag SELL for concrete negative developments (hacks, regulatory actions, missed milestones)
 - Default to HOLD for neutral, mixed, or speculative content`
 
-  const content = article.content.length > MAX_ARTICLE_CHARS
-    ? article.content.slice(0, MAX_ARTICLE_CHARS) + '…'
+  const content = article.content.length > config.extractor.maxArticleChars
+    ? article.content.slice(0, config.extractor.maxArticleChars) + '…'
     : article.content
 
   const user = `Coin: ${coin}

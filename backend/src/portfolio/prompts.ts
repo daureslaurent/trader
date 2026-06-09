@@ -1,7 +1,7 @@
 import { MarketContext, PortfolioState, BotSettings } from '../types.js'
 import { ExtractedResearch } from '../extractor/index.js'
 import { CoinPortfolioContext } from './service.js'
-import { calculateBreakEven } from './risk.js'
+import { OrderBookAnalysis } from '../trader/types.js'
 
 export function buildAnalysisPrompt(
   coin: string,
@@ -10,117 +10,195 @@ export function buildAnalysisPrompt(
   settings: BotSettings,
   research: ExtractedResearch,
   coinCtx: CoinPortfolioContext,
+  orderBook: OrderBookAnalysis | null = null,
 ): { system: string; user: string } {
   const now = new Date().toISOString().split('T')[0]
 
-  const feeRate = settings.fee_rate ?? 0.001
-  const feeRatePct = (feeRate * 100).toFixed(3)
-  const roundTripFeePct = (feeRate * 2 * 100).toFixed(3)
-  const breakEvenPrice = calculateBreakEven(market.price, feeRate)
-  const breakEvenPct = ((breakEvenPrice - market.price) / market.price * 100).toFixed(3)
-
+  const horizon = settings.default_horizon
   const slDistancePct = ((settings.stop_loss_atr * market.atr14) / market.price) * 100
   const tpDistancePct = ((settings.take_profit_atr * market.atr14) / market.price) * 100
   const impliedRR = settings.take_profit_atr / settings.stop_loss_atr
 
-  const positionsList = portfolio.positions.length === 0
+  // Per-horizon SL/TP targets (only used when horizon is not 'auto')
+  const horizonSlPct = horizon === 'short' ? settings.monitor_sl_pct_short
+    : horizon === 'long' ? settings.monitor_sl_pct_long
+    : settings.monitor_sl_pct_medium
+  const horizonTpPct = horizon === 'short' ? settings.monitor_tp_pct_short
+    : horizon === 'long' ? settings.monitor_tp_pct_long
+    : settings.monitor_tp_pct_medium
+
+  // ── Portfolio context ────────────────────────────────────────────────────
+
+  const openSlots = portfolio.maxOpenPositions - portfolio.openPositionCount
+  const otherPositions = portfolio.positions.filter(p => p.coin !== coin)
+  const otherPositionsList = otherPositions.length === 0
     ? 'None'
-    : portfolio.positions.map(p => {
-        const deltaSign = p.deltaPct > 0 ? '+' : ''
-        return `- ${p.coin}: ${(p.allocationPct * 100).toFixed(1)}% of portfolio, bought at $${p.entryPrice.toFixed(2)}, now $${p.currentPrice.toFixed(2)}, delta: ${deltaSign}${p.deltaPct.toFixed(1)}%`
-      }).join('\n')
+    : otherPositions.map(p => `- ${p.coin.replace('/USDC', '')}: ${(p.allocationPct * 100).toFixed(1)}%`).join('\n')
 
-  const coinHoldingLine = coinCtx.currentQuantity > 0 && coinCtx.avgBuyPrice !== null
-    ? `Holding ${coinCtx.currentQuantity} ${coin} @ avg $${coinCtx.avgBuyPrice.toFixed(4)} (delta: ${((market.price - coinCtx.avgBuyPrice) / coinCtx.avgBuyPrice * 100).toFixed(1)}%)`
-    : `No current position in ${coin}`
+  // ── Current coin position ────────────────────────────────────────────────
 
-  const recentTradesLine = coinCtx.recentTrades.length === 0
-    ? 'No prior trades on this coin'
-    : coinCtx.recentTrades
-        .map(t => `${t.date} ${t.side} ${t.quantity} @ $${t.price}`)
-        .join('\n')
+  const isHolding = coinCtx.currentQuantity > 0 && coinCtx.avgBuyPrice != null
+  const coinPositionBlock = isHolding
+    ? (() => {
+        const avg = coinCtx.avgBuyPrice!
+        const costBasis = coinCtx.currentQuantity * avg
+        const currentValue = coinCtx.currentQuantity * market.price
+        const unrealizedUsd = currentValue - costBasis
+        const unrealizedPct = ((market.price - avg) / avg * 100)
+        const sign = unrealizedPct >= 0 ? '+' : ''
+        return `Status: HOLDING
+Quantity: ${coinCtx.currentQuantity}
+Avg cost: $${avg.toFixed(4)}
+Cost basis: $${costBasis.toFixed(2)}
+Current value: $${currentValue.toFixed(2)}
+Unrealized P&L: ${sign}$${unrealizedUsd.toFixed(2)} (${sign}${unrealizedPct.toFixed(2)}%)`
+      })()
+    : 'Status: NO POSITION'
 
-  const system = `You are an autonomous crypto portfolio manager. You manage a portfolio with discipline and patience. Date: ${now}.
+  const recentTradesBlock = coinCtx.recentTrades.length === 0
+    ? 'None'
+    : coinCtx.recentTrades.map(t => `${t.date} ${t.side} ${t.quantity} @ $${t.price}`).join('\n')
 
-KEY RULES:
-- Only BUY if confidence is MEDIUM or HIGH AND the coin fits portfolio diversification
-- Only SELL if: negative catalyst, OR position exceeds target allocation meaningfully
-- Prefer HOLD over uncertain trades. Missing a move is better than taking a bad trade.
-- Medium-term horizon: decisions play out over days to weeks
+  // ── Market structure ─────────────────────────────────────────────────────
 
-TECHNICAL THRESHOLDS:
-- RSI < 30: oversold (potential bounce zone)
-- RSI > 70: overbought (potential top zone)
-- SMA(7) > SMA(25) > SMA(99): bullish alignment
-- SMA(7) < SMA(25) < SMA(99): bearish alignment
-- High ATR relative to price = wide stop-loss needed, each position carries more risk
+  const smaAlignment = market.sma7 > market.sma25 && market.sma25 > (market.sma99 ?? 0)
+    ? 'BULLISH (SMA7 > SMA25 > SMA99)'
+    : market.sma7 < market.sma25 && market.sma25 < (market.sma99 ?? Infinity)
+      ? 'BEARISH (SMA7 < SMA25 < SMA99)'
+      : 'MIXED'
+
+  const rsiLabel = market.rsi14 < 30 ? 'oversold — potential bounce'
+    : market.rsi14 > 70 ? 'overbought — caution'
+    : 'neutral'
+
+  // ── Articles ─────────────────────────────────────────────────────────────
+
+  const articlesText = research.articles.length === 0
+    ? 'No article data available.'
+    : research.articles.map(a => {
+        const sig = a.preliminary_signal ? ` [${a.preliminary_signal}]` : ''
+        const pts = a.key_points.slice(0, 2).map(k => `  → ${k}`).join('\n')
+        return `• ${a.title}${sig}
+  Relevance: ${Math.round(a.relevance_score * 100)}% | Sentiment: ${a.sentiment}
+  ${a.summary}${pts ? '\n' + pts : ''}`
+      }).join('\n\n')
+
+  // ── Prompts ───────────────────────────────────────────────────────────────
+
+  const HORIZON_CONTEXT: Record<'short' | 'medium' | 'long', string> = {
+    short: `SHORT (days to weeks) — fast in, fast out.
+  - Target quick momentum moves; exit on any trend weakness.
+  - Tight stops acceptable; smaller TP to cash in quickly.
+  - Avoid opening if the setup requires patience.`,
+    medium: `MEDIUM (weeks to months) — standard swing trading.
+  - Hold through minor pullbacks if trend and RSI are intact.
+  - Standard risk management; SL below SMA25, TP at clear resistance.
+  - Balance protection vs. normal market noise.`,
+    long: `LONG (months to years) — patient conviction positions.
+  - Only BUY strong fundamental + technical confluences.
+  - Wide stops to survive normal volatility; don't over-trade.
+  - Minor dips in an uptrend are noise — only exit on macro reversals.`,
+  }
+
+  const horizonSection = horizon === 'auto'
+    ? ''
+    : `TRADING HORIZON: ${horizon.toUpperCase()}
+${HORIZON_CONTEXT[horizon]}
+
+`
+
+  const system = `You are an autonomous crypto portfolio manager making BUY / SELL / HOLD decisions. Date: ${now}.
+
+${horizonSection}DECISION RULES:
+- BUY: only if confidence is MEDIUM or HIGH, a free slot exists, and the setup is clearly favourable
+- SELL: only if there is a negative catalyst, the position is seriously overextended, or a stop-loss is imminent
+- HOLD: default when signals are mixed or conviction is low — missing a move beats taking a bad trade
+- Never add to a losing position unless the thesis has materially improved
+- Never SELL a coin you are not holding
+
+TECHNICAL SIGNALS:
+- RSI < 30 → oversold (watch for reversal); RSI > 70 → overbought (watch for rejection)
+- BULLISH alignment: SMA7 > SMA25 > SMA99 | BEARISH: SMA7 < SMA25 < SMA99
+- High ATR → wide stop required → each position carries more dollar risk
 
 PORTFOLIO STATE:
 - Total value: $${portfolio.totalValueUsd.toFixed(2)}
-- Open positions: ${portfolio.openPositionCount} / ${portfolio.maxOpenPositions}
-- Target allocation per coin: ${(portfolio.targetAllocationPct * 100).toFixed(1)}%
-- Diversification score: ${portfolio.diversificationScore.toFixed(2)} (0=poor, 1=perfect)
+- Slots: ${portfolio.openPositionCount} open / ${portfolio.maxOpenPositions} max (${openSlots} free)
+- Target per coin: ${(portfolio.targetAllocationPct * 100).toFixed(1)}%
+- Diversification score: ${portfolio.diversificationScore.toFixed(2)} (0=concentrated, 1=perfect)
 
-OPEN POSITIONS:
-${positionsList}
+OTHER OPEN POSITIONS:
+${otherPositionsList}
 
-THIS COIN — LOCAL PORTFOLIO:
-${coinHoldingLine}
+THIS COIN — ${coin.replace('/USDC', '')}:
+${coinPositionBlock}
+
 Recent trades:
-${recentTradesLine}
+${recentTradesBlock}
 
-FEE CONTEXT:
-- Exchange fee rate: ${feeRatePct}% per trade
-- Round-trip cost (buy + sell): ${roundTripFeePct}% of position value
-- Break-even sell price if buying now: $${breakEvenPrice.toFixed(4)} (+${breakEvenPct}% above current price)
-- Factor fees into expected gain — a ${roundTripFeePct}% move up just breaks even
+RISK REFERENCE:
+- ATR(14): $${market.atr14} | Volatility: ${market.volatility}
+- ATR-based stop-loss: ${slDistancePct.toFixed(1)}% below entry (risk/reward 1:${impliedRR.toFixed(1)})
 
-RISK ASSESSMENT FOR THIS TRADE:
-- Stop-loss would be ${slDistancePct.toFixed(1)}% below entry (${slDistancePct < 3 ? 'tight — higher whip risk' : 'reasonable distance'})
-- Take-profit would be ${tpDistancePct.toFixed(1)}% above entry
-- Implied risk/reward ratio: 1:${impliedRR.toFixed(1)}
-- Volatility: ${market.volatility} — ${market.volatility === 'high' ? 'expect wider swings, reduce position sizing' : market.volatility === 'low' ? 'tight ranges, smaller relative moves' : 'normal trading conditions'}
+${horizon === 'auto' ? `STOP-LOSS / TAKE-PROFIT GUIDELINES (for BUY only):
+- Calibrate freely to the actual volatility regime:
+  - Low volatility / tight range: SL 1.5–3%, TP 3–6%
+  - Normal volatility: SL 3–5%, TP 6–12%
+  - High volatility / momentum: SL 5–10%, TP 10–20%
+- Minimum ratio: TP must be at least 1.5× SL (risk/reward ≥ 1.5)
+- Anchor to technical levels when visible (recent swing low for SL, resistance for TP)
+- If uncertain, widen slightly rather than being too tight` : `STOP-LOSS / TAKE-PROFIT FOR ${horizon.toUpperCase()} HORIZON (for BUY only):
+- Configured targets: SL ${horizonSlPct.toFixed(1)}% below entry, TP ${horizonTpPct.toFixed(1)}% above entry
+- These are the owner's preferences — use them as your base, then adjust for volatility:
+  - Low volatility: tighten SL by up to 30%, reduce TP proportionally
+  - High volatility: widen SL up to 50% to avoid whipsaws, widen TP accordingly
+  - Always ensure TP ≥ 1.5× SL (risk/reward ≥ 1.5)
+- Anchor to technical levels when visible (recent swing low for SL, resistance for TP)`}
 
-OUTPUT FORMAT — respond with ONLY a JSON object, no markdown:
+OUTPUT — JSON only, no markdown:
 {
   "action": "BUY" | "SELL" | "HOLD",
   "confidence": "HIGH" | "MEDIUM" | "LOW",
-  "reason": "step-by-step reasoning: market setup → technical setup → news analysis → portfolio fit → risk assessment → decision"
+  "reason": "concise chain: structure → technicals → news → position fit → decision",
+  "stop_loss_pct": <number, only for BUY — % below entry price to place stop>,
+  "take_profit_pct": <number, only for BUY — % above entry price to place target>
 }
 
-CONFIDENCE LEVELS:
-- HIGH: multiple confirming factors, clear catalyst, strong conviction
-- MEDIUM: moderate signal, some uncertainty, reasonable risk/reward
-- LOW: weak or conflicting signals — prefer HOLD instead`
+CONFIDENCE:
+- HIGH: multiple confirming factors, clear catalyst
+- MEDIUM: moderate signal, reasonable risk/reward
+- LOW: weak or conflicting — prefer HOLD`
 
-  const articlesText = research.articles.length > 0
-    ? research.articles.map(a =>
-        `\n--- ${a.title} ---\nRelevance: ${a.relevance_score}\nSentiment: ${a.sentiment}\nSummary: ${a.summary}\nKey Points: ${a.key_points.join(', ')}`
-      ).join('\n')
-    : 'No article data available.'
+  const orderBookSection = orderBook
+    ? `ORDER BOOK (live depth snapshot):
+- Best bid: $${orderBook.bestBid.toFixed(4)} | Best ask: $${orderBook.bestAsk.toFixed(4)}
+- Spread: ${orderBook.spreadPct.toFixed(4)}% | Liquidity: ${orderBook.liquidityScore.toUpperCase()}
+- VWAP to fill position: $${orderBook.vwap.toFixed(4)}
+- Price impact: ${orderBook.priceImpactPct.toFixed(4)}%
+- Suggested limit: $${orderBook.suggestedLimitPrice.toFixed(4)}
+
+`
+    : ''
 
   const user = `ANALYZE: ${coin}
 
-MARKET DATA:
+MARKET:
 - Price: $${market.price}
-- 24h Change: ${market.change24h > 0 ? '+' : ''}${market.change24h}%
-- Volume: $${market.volume}
-- RSI(14): ${market.rsi14} (${market.rsi14 < 30 ? 'oversold' : market.rsi14 > 70 ? 'overbought' : 'neutral'})
-- SMA(7): $${market.sma7}
-- SMA(25): $${market.sma25}
-- SMA(99): $${market.sma99}
-- Trend: ${market.trend} ${market.trend === 'uptrend' ? '(SMA7 > SMA25)' : market.trend === 'downtrend' ? '(SMA7 < SMA25)' : '(SMAs flat)'}
-- ATR(14): $${market.atr14}
-- 7d Performance: ${market.perf7d > 0 ? '+' : ''}${market.perf7d}%
+- 24h: ${market.change24h > 0 ? '+' : ''}${market.change24h}% | 7d: ${market.perf7d > 0 ? '+' : ''}${market.perf7d}%
+- Volume: $${market.volume.toLocaleString()}
+- RSI(14): ${market.rsi14.toFixed(1)} — ${rsiLabel}
+- SMA alignment: ${smaAlignment}
+- SMA7: $${market.sma7} | SMA25: $${market.sma25}${market.sma99 ? ` | SMA99: $${market.sma99}` : ''}
+- ATR(14): $${market.atr14} | Trend: ${market.trend} | Volatility: ${market.volatility}
 
-NEWS:
-Aggregated Sentiment: ${research.aggregated_sentiment}
-Top Headlines: ${research.top_headlines.join('. ')}
+${orderBookSection}NEWS (sentiment: ${research.aggregated_sentiment}):
+Headlines: ${research.top_headlines.slice(0, 5).join(' | ')}
 
-Articles:${articlesText}
+Articles:
+${articlesText}
 
-Decide: BUY, SELL, or HOLD for ${coin}?
-Chain: market setup → technical analysis → news catalysts → portfolio fit → risk/reward → final decision`
+Decide BUY / SELL / HOLD for ${coin}.
+Reasoning chain: market structure → technical setup → order book liquidity → news catalysts → current position → portfolio fit → decision`
 
   return { system, user }
 }

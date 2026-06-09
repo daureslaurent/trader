@@ -2,10 +2,11 @@ import ccxt, { Exchange } from 'ccxt'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { Signal } from '../types.js'
-import { MarketData, AccountBalance, TradeResult, CoinTradeResult } from './types.js'
+import { MarketData, AccountBalance, TradeResult, CoinTradeResult, OrderBook, OrderBookAnalysis } from './types.js'
 import { TradeError } from '../core/errors.js'
 
 let exchange: Exchange
+let marketsLoaded = false
 
 export function getExchange(): Exchange {
   if (!exchange) {
@@ -18,19 +19,97 @@ export function getExchange(): Exchange {
   return exchange
 }
 
+async function ensureMarkets(): Promise<void> {
+  const ex = getExchange()
+  if (!marketsLoaded) {
+    await ex.loadMarkets()
+    marketsLoaded = true
+  }
+}
+
+// ── Order book ────────────────────────────────────────────────────────────────
+
+export async function fetchOrderBook(symbol: string, depth = 20): Promise<OrderBook> {
+  const ex = getExchange()
+  logger.info('🛸 Binance fetchOrderBook', { symbol, depth })
+  const book = await ex.fetchOrderBook(symbol, depth)
+  return {
+    symbol,
+    bids: (book.bids as [number, number][]).slice(0, depth),
+    asks: (book.asks as [number, number][]).slice(0, depth),
+    timestamp: book.timestamp ?? Date.now(),
+  }
+}
+
+/**
+ * Walk the ask side of the order book to find the VWAP for buying `targetQty`
+ * coins, and derive execution metadata for the LLM prompt and order placement.
+ */
+export function analyzeOrderBook(book: OrderBook, targetQty: number): OrderBookAnalysis {
+  const bestAsk = book.asks[0]?.[0] ?? 0
+  const bestBid = book.bids[0]?.[0] ?? 0
+  const midPrice = bestAsk > 0 && bestBid > 0 ? (bestAsk + bestBid) / 2 : bestAsk || bestBid
+
+  const spreadPct = midPrice > 0 ? ((bestAsk - bestBid) / midPrice) * 100 : 0
+
+  let remaining = targetQty
+  let totalQty = 0
+  let weightedSum = 0
+
+  for (const [price, qty] of book.asks) {
+    if (remaining <= 0) break
+    const take = Math.min(qty, remaining)
+    totalQty += take
+    weightedSum += price * take
+    remaining -= take
+  }
+
+  // If order book doesn't have enough depth, extrapolate using the last ask level
+  if (remaining > 0 && book.asks.length > 0) {
+    const lastPrice = book.asks[book.asks.length - 1][0]
+    totalQty += remaining
+    weightedSum += lastPrice * remaining
+  }
+
+  const vwap = totalQty > 0 ? weightedSum / totalQty : bestAsk
+  const fillQty = Math.min(totalQty, targetQty)
+  const priceImpactPct = bestAsk > 0 ? ((vwap - bestAsk) / bestAsk) * 100 : 0
+  const suggestedLimitPrice = vwap * 1.001
+
+  const liquidityScore: 'high' | 'medium' | 'low' =
+    priceImpactPct < 0.1 ? 'high' : priceImpactPct < 0.5 ? 'medium' : 'low'
+
+  return { bestBid, bestAsk, midPrice, spreadPct, vwap, fillQty, priceImpactPct, suggestedLimitPrice, liquidityScore }
+}
+
 export async function fetchMarketData(symbols: string[]): Promise<MarketData[]> {
   const ex = getExchange()
-  logger.info('🛸 Binance fetchTickers', { symbols })
-  const tickers = await ex.fetchTickers(symbols)
-  return symbols.map((s) => {
-    const t = tickers[s]
-    return {
-      symbol: s,
-      price: t?.last ?? 0,
-      change24h: t?.percentage ?? 0,
-      volume: t?.quoteVolume ?? 0,
-    }
-  })
+
+  // Try batch first; fall back to per-symbol if Binance rejects the batch
+  // (happens when any symbol in the list is invalid/delisted)
+  try {
+    logger.info('Binance fetchTickers batch', { symbols })
+    const tickers = await ex.fetchTickers(symbols)
+    return symbols.map((s) => {
+      const t = tickers[s]
+      return { symbol: s, price: t?.last ?? 0, change24h: t?.percentage ?? 0, volume: t?.quoteVolume ?? 0 }
+    })
+  } catch (batchErr) {
+    logger.warn('Batch ticker fetch failed, falling back to per-symbol', {
+      error: (batchErr as Error).message,
+      symbols,
+    })
+    const results = await Promise.allSettled(symbols.map(s => ex.fetchTicker(s)))
+    return symbols.map((s, i) => {
+      const r = results[i]
+      if (r.status === 'fulfilled') {
+        const t = r.value
+        return { symbol: s, price: t?.last ?? 0, change24h: t?.percentage ?? 0, volume: t?.quoteVolume ?? 0 }
+      }
+      logger.warn('Ticker fetch failed for symbol', { symbol: s, error: (r.reason as Error)?.message })
+      return { symbol: s, price: 0, change24h: 0, volume: 0 }
+    })
+  }
 }
 
 export async function fetchBalance(): Promise<AccountBalance> {
@@ -57,50 +136,77 @@ function fillPrice(order: { price?: number | null; average?: number | null; cost
   return 0
 }
 
-// Normalise all fees to a USDC-equivalent amount.
-// CCXT may report fee in base currency (e.g. BTC on a BUY) or quote (USDC on a SELL).
-function extractFeeUsdc(order: any, fillPriceValue: number): { cost: number; currency: string } {
-  const rawFees: { cost?: number; currency?: string }[] = []
-  if (Array.isArray(order.fees) && order.fees.length > 0) {
-    rawFees.push(...order.fees)
-  } else if (order.fee && order.fee.cost != null) {
-    rawFees.push(order.fee)
-  }
-
-  let totalUsdc = 0
-  for (const f of rawFees) {
-    if (!f.cost) continue
-    const cur = (f.currency ?? '').toUpperCase()
-    if (cur === 'USDC' || cur === 'USDT' || cur === '') {
-      totalUsdc += f.cost
-    } else {
-      // Base-currency fee (e.g. BTC) — convert to USDC using fill price
-      totalUsdc += f.cost * fillPriceValue
-    }
-  }
-  return { cost: totalUsdc, currency: 'USDC' }
-}
-
 export async function executeTrade(signal: Signal): Promise<TradeResult> {
   const ex = getExchange()
   const symbol = signal.coin
 
   try {
     if (signal.action === 'BUY') {
-      logger.info('🛸 Binance fetchTicker', { symbol })
-      const ticker = await ex.fetchTicker(symbol)
-      const cost = signal.quantity * (ticker.last || 1)
-      logger.info('🛸 Binance createMarketOrder', { symbol, side: 'buy', cost })
-      const order = await ex.createMarketOrderWithCost(symbol, 'buy', cost)
-      const price = fillPrice(order)
-      const fee = extractFeeUsdc(order, price)
-      return { id: order.id, price, quantity: order.amount || 0, cost: order.cost || cost, fee }
+      await ensureMarkets()
+
+      // Fetch order book and analyze depth for our order size
+      const book = await fetchOrderBook(symbol, 20)
+      const analysis = analyzeOrderBook(book, signal.quantity)
+
+      logger.info('Order book analysis', {
+        symbol,
+        bestAsk: analysis.bestAsk,
+        vwap: analysis.vwap,
+        priceImpact: `${analysis.priceImpactPct.toFixed(4)}%`,
+        liquidity: analysis.liquidityScore,
+        suggestedLimitPrice: analysis.suggestedLimitPrice,
+      })
+
+      // Round quantity and price to Binance's required precision (lot size / tick size)
+      const rawQty   = signal.quantity
+      const rawPrice = analysis.suggestedLimitPrice
+      const qty   = parseFloat(ex.amountToPrecision(symbol, rawQty))
+      const price = parseFloat(ex.priceToPrecision(symbol, rawPrice))
+
+      if (qty <= 0) {
+        throw new TradeError(`Order quantity rounds to zero after precision adjustment for ${symbol}`)
+      }
+
+      logger.info('🛸 Binance createLimitOrder IOC', { symbol, side: 'buy', qty, price })
+
+      try {
+        const order = await ex.createLimitBuyOrder(symbol, qty, price, { timeInForce: 'IOC' })
+        const filled = order.filled ?? 0
+        const actualPrice = fillPrice(order)
+
+        if (filled > 0) {
+          if (filled < qty * 0.95) {
+            logger.warn('IOC limit order partially filled — accepting partial fill', {
+              symbol, requested: qty, filled, pct: `${((filled / qty) * 100).toFixed(1)}%`,
+            })
+          } else {
+            logger.info('IOC limit order fully filled', { symbol, qty: filled, price: actualPrice })
+          }
+          return { id: order.id, price: actualPrice, quantity: filled, cost: order.cost || actualPrice * filled }
+        }
+
+        // IOC expired unfilled (price moved past our limit) — fall back to market
+        logger.warn('IOC limit order not filled, falling back to market order', {
+          symbol, limitPrice: price, bestAsk: analysis.bestAsk,
+        })
+      } catch (ioErr) {
+        logger.warn('IOC limit order rejected, falling back to market order', {
+          symbol, error: (ioErr as Error).message,
+        })
+      }
+
+      // Market fallback
+      const cost = signal.quantity * analysis.bestAsk
+      logger.info('🛸 Binance createMarketOrderWithCost (fallback)', { symbol, cost })
+      const mkt = await ex.createMarketOrderWithCost(symbol, 'buy', cost)
+      const mktPrice = fillPrice(mkt)
+      return { id: mkt.id, price: mktPrice, quantity: mkt.amount || 0, cost: mkt.cost || cost }
+
     } else {
       logger.info('🛸 Binance createMarketOrder', { symbol, side: 'sell', quantity: signal.quantity })
       const order = await ex.createMarketSellOrder(symbol, signal.quantity)
       const price = fillPrice(order)
-      const fee = extractFeeUsdc(order, price)
-      return { id: order.id, price, quantity: order.amount || signal.quantity, cost: order.cost || (price * signal.quantity), fee }
+      return { id: order.id, price, quantity: order.amount || signal.quantity, cost: order.cost || (price * signal.quantity) }
     }
   } catch (err) {
     throw new TradeError(`Trade failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`)
@@ -122,8 +228,7 @@ export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fro
       const order = await ex.createMarketOrderWithCost(toSymbol, 'buy', fromAmount)
       const toPrice = fillPrice(order)
       const toAmount = order.amount || (toPrice > 0 ? fromAmount / toPrice : 0)
-      const fee = extractFeeUsdc(order, toPrice)
-      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice: 1, toPrice, fee }
+      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice: 1, toPrice }
     }
 
     if (toBase === 'USDC') {
@@ -131,8 +236,7 @@ export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fro
       const order = await ex.createMarketSellOrder(fromSymbol, fromAmount)
       const fromPrice = fillPrice(order)
       const toAmount = order.cost || (fromPrice * fromAmount)
-      const fee = extractFeeUsdc(order, fromPrice)
-      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice, toPrice: 1, fee }
+      return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice, toPrice: 1 }
     }
 
     throw new TradeError(`Trade requires one side to be USDC (got ${fromSymbol}→${toSymbol})`)

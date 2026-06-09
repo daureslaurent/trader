@@ -6,6 +6,9 @@ export interface Signal {
   quantity: number
   reason: string
   confidence: number
+  horizon?: 'short' | 'medium' | 'long'
+  stop_loss_pct?: number   // % below entry price (LLM-decided)
+  take_profit_pct?: number // % above entry price (LLM-decided)
 }
 
 export interface TradeRecord {
@@ -44,6 +47,8 @@ export interface PortfolioSnapshot {
 export interface BotSettings {
   watchlist: string[]
   pipeline_cron: string
+  /** Trading horizon the bot uses for new positions. 'auto' = LLM decides SL/TP freely. */
+  default_horizon: 'auto' | 'short' | 'medium' | 'long'
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
@@ -52,14 +57,25 @@ export interface BotSettings {
   max_risk_per_trade: number
   max_open_positions: number
   cache_ttl_hours: number
-  fee_rate: number
   discover_cron: string
   discover_min_score: number
   discover_top_n: number
   discover_auto_add: boolean
   discover_min_volume_usd: number
-  discoverer_base_url: string
-  discoverer_model: string
+  monitor_auto_run: boolean
+  monitor_cron: string
+  monitor_adjust_sltp: boolean
+  monitor_auto_approve: boolean
+  /** Per-horizon stop-loss distance as % below entry price */
+  monitor_sl_pct_short: number
+  monitor_sl_pct_medium: number
+  monitor_sl_pct_long: number
+  /** Per-horizon take-profit distance as % above entry price */
+  monitor_tp_pct_short: number
+  monitor_tp_pct_medium: number
+  monitor_tp_pct_long: number
+  /** Stop-limit buffer for the SL leg of exchange-side OCO orders, in % below the trigger. */
+  oco_sl_buffer_pct: number
 }
 
 export interface DiscoveryResult {
@@ -104,6 +120,9 @@ export type PipelineStage =
   | 'pipeline_error'
   | 'pipeline_timeout'
   | 'pipeline_failed'
+  | 'pipeline_cancelled'
+  | 'trade_executed'
+  | 'trade_skipped'
   | 'discovery_started'
   | 'discovery_candidates_found'
   | 'discovery_evaluating'
@@ -170,6 +189,65 @@ export interface RiskConfig {
   maxOpenPositions: number
 }
 
+export interface PositionReview {
+  id: number
+  coin: string
+  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+  confidence: number
+  reasoning: string
+  reduce_to_pct: number | null
+  new_stop_loss: number | null
+  new_take_profit: number | null
+  market_data: string
+  cycle_id: string
+  created_at: string
+}
+
+export interface PositionAdjustment {
+  id: number
+  position_id: number
+  coin: string
+  old_stop_loss: number | null
+  old_take_profit: number | null
+  new_stop_loss: number | null
+  new_take_profit: number | null
+  reasoning: string | null
+  confidence: number | null
+  status: 'PENDING' | 'APPLIED' | 'REJECTED' | 'EXPIRED'
+  cycle_id: string | null
+  created_at: string
+}
+
+/** Bus payload describing a monitor-proposed SL/TP change to an open position. */
+export interface SlTpAdjustmentProposal {
+  positionId: number
+  coin: string
+  oldStopLoss: number | null
+  oldTakeProfit: number | null
+  newStopLoss: number | null
+  newTakeProfit: number | null
+  reasoning: string
+  confidence: number
+  cycleId: string
+}
+
+export interface LLMCall {
+  id: number
+  module: string
+  model: string
+  base_url: string
+  system_prompt?: string
+  user_prompt?: string
+  response: string | null
+  error: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  duration_ms: number
+  coin: string | null
+  cycle_id: string | null
+  created_at: string
+}
+
 export interface PositionRecord {
   id: number
   coin: string
@@ -181,5 +259,11 @@ export interface PositionRecord {
   current_sl: number
   status: string
   pnl: number | null
+  horizon: 'short' | 'medium' | 'long'
+  oco_order_list_id: string | null
+  oco_sl_order_id: string | null
+  oco_tp_order_id: string | null
+  oco_status: 'NONE' | 'ACTIVE' | 'FAILED'
+  oco_synced_at: string | null
   created_at: string
 }

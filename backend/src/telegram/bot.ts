@@ -1,9 +1,10 @@
-import { Telegraf, session, Context } from 'telegraf'
+import { Telegraf, Markup, session, Context } from 'telegraf'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
 import { ApprovalRequest } from '../types.js'
 import { MenuController } from './menu/index.js'
+import { formatCurrency, formatTime, confidenceBar, esc } from './components/formatting.js'
 
 export interface MenuSession {
   menuStack: string[]
@@ -15,7 +16,6 @@ export interface BotContext extends Context {
 }
 
 let bot: Telegraf<BotContext> | null = null
-// Resolved chat ID: prefer env var, fall back to the first chat that messages the bot
 let resolvedChatId: string = config.telegram.chatId
 
 export function getChatId(): string {
@@ -50,16 +50,37 @@ export function startTelegramBot() {
 
   bot.command('approve', (ctx) => {
     const id = parseInt(ctx.message.text.split(' ')[1], 10)
-    if (!id) return ctx.reply('Usage: /approve <trade_id>')
+    if (!id) return ctx.reply('Usage: /approve &lt;trade_id&gt;', { parse_mode: 'HTML' })
     bus.emit('trade_approved', id)
-    ctx.reply(`Trade ${id} approved.`)
+    ctx.reply(`✅ Trade #${id} approved.`)
   })
 
   bot.command('reject', (ctx) => {
     const id = parseInt(ctx.message.text.split(' ')[1], 10)
-    if (!id) return ctx.reply('Usage: /reject <trade_id>')
+    if (!id) return ctx.reply('Usage: /reject &lt;trade_id&gt;', { parse_mode: 'HTML' })
     bus.emit('trade_rejected', id)
-    ctx.reply(`Trade ${id} rejected.`)
+    ctx.reply(`❌ Trade #${id} rejected.`)
+  })
+
+  bot.command('run', (ctx) => {
+    const parts = ctx.message.text.trim().split(/\s+/)
+    const raw = parts[1]
+    if (!raw) {
+      return ctx.reply(
+        '▶️ Usage: /run &lt;SYMBOL&gt;\nExample: <code>/run BTC/USDC</code>',
+        { parse_mode: 'HTML' }
+      )
+    }
+    const symbol = raw.toUpperCase()
+    const cycleId = `${Date.now().toString(36)}-manual`
+    bus.emit('pipeline_run_requested', { symbol, cycle_id: cycleId })
+    ctx.reply(`▶️ Pipeline started for <code>${esc(symbol)}</code>`, { parse_mode: 'HTML' })
+  })
+
+  bot.command('discover', (ctx) => {
+    const cycleId = `${Date.now().toString(36)}-discovery`
+    bus.emit('discovery_run_requested', { cycle_id: cycleId })
+    ctx.reply('🔍 Discovery pipeline started.')
   })
 
   bot.launch().then(() => logger.info('Telegram bot started'))
@@ -70,18 +91,31 @@ export function startTelegramBot() {
 
 export function sendApprovalMessage(req: ApprovalRequest): void {
   if (!bot || !resolvedChatId) return
-  const msg = [
-    `⚠️ Trade Approval Needed`,
+
+  const side = req.side === 'BUY' ? '🟢 BUY' : '🔴 SELL'
+  const coin = esc(req.coin.replace('/USDC', ''))
+  const total = formatCurrency(req.estimatedPrice * req.quantity)
+  const confidence = (req.confidence * 100).toFixed(0)
+  const bar = confidenceBar(req.confidence)
+  const expires = formatTime(req.expiresAt)
+
+  const text = [
+    `⚠️ <b>Trade Approval Needed</b>`,
     ``,
-    `${req.side} ${req.quantity} ${req.coin}`,
-    `Est: $${req.estimatedPrice.toFixed(2)}`,
-    `Reason: ${req.reason}`,
-    `Confidence: ${(req.confidence * 100).toFixed(0)}%`,
-    `Expires: ${new Date(req.expiresAt).toLocaleTimeString()}`,
-    ``,
-    `Tap /approve ${req.tradeId} or /reject ${req.tradeId}`,
+    `${side} <b>${req.quantity.toFixed(6)}</b> ${coin}`,
+    `Price: ${formatCurrency(req.estimatedPrice)}   Total: <b>${total}</b>`,
+    `Confidence: <code>${bar}</code> ${confidence}%`,
+    `Reason: <i>${esc(req.reason)}</i>`,
+    `Expires: ${expires}`,
   ].join('\n')
-  bot.telegram.sendMessage(resolvedChatId, msg).catch((err) => {
+
+  bot.telegram.sendMessage(resolvedChatId, text, {
+    parse_mode: 'HTML',
+    reply_markup: Markup.inlineKeyboard([[
+      Markup.button.callback(`✅ Approve #${req.tradeId}`, `approve:${req.tradeId}`),
+      Markup.button.callback(`❌ Reject #${req.tradeId}`, `reject:${req.tradeId}`),
+    ]]).reply_markup,
+  }).catch((err) => {
     logger.warn('Telegram approval message failed', { error: err.message })
   })
 }

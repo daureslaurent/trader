@@ -1,8 +1,16 @@
 import { MarketContext } from '../types.js'
+import { ExtractedArticle } from '../extractor/types.js'
+
+export interface DiscoveryResearch {
+  headlines: string[]
+  aggregated_sentiment: 'positive' | 'negative' | 'neutral'
+  articles: ExtractedArticle[]
+}
 
 export function buildDiscoveryPrompt(
   symbol: string,
   market: MarketContext,
+  research?: DiscoveryResearch,
 ): { system: string; user: string } {
   const system = `You are a quantitative crypto trading assistant evaluating whether a coin is worth adding to an automated trading bot's watchlist.
 
@@ -20,12 +28,25 @@ Return ONLY valid JSON with this exact schema:
 }
 
 Scoring guide:
-- 0.80–1.00: Strong candidate — high liquidity, clear trend, favorable RSI, good setup
+- 0.80–1.00: Strong candidate — high liquidity, clear trend, favorable RSI, positive news sentiment, good setup
 - 0.60–0.80: Good candidate — meets most criteria with minor concerns
-- 0.40–0.60: Marginal — lacks trend clarity or has notable risks
-- 0.00–0.40: Not recommended — too volatile, low volume, overbought, or poor setup`
+- 0.40–0.60: Marginal — lacks trend clarity, mixed news, or notable risks
+- 0.00–0.40: Not recommended — too volatile, low volume, overbought, negative news, or poor setup`
 
   const coin = symbol.replace('/USDC', '')
+
+  let researchSection = ''
+  if (research) {
+    const headlines = research.headlines.slice(0, 5)
+    const articles = research.articles.filter(a => a.relevance_score >= 0.3).slice(0, 3)
+    researchSection = `
+News sentiment: ${research.aggregated_sentiment}
+${headlines.length > 0 ? `Recent headlines:\n${headlines.map(h => `- ${h}`).join('\n')}` : 'No recent headlines.'}
+${articles.length > 0 ? `\nKey articles:\n${articles.map(a =>
+  `- [${a.sentiment.toUpperCase()}] ${a.title}${a.summary ? `: ${a.summary}` : ''}`
+).join('\n')}` : ''}`
+  }
+
   const user = `Evaluate ${coin} (${symbol}) for the trading watchlist:
 
 Price: $${market.price.toFixed(6)}
@@ -36,7 +57,7 @@ RSI-14: ${market.rsi14.toFixed(1)}
 Trend: ${market.trend}
 Volatility: ${market.volatility}
 SMA7: $${market.sma7.toFixed(6)} | SMA25: $${market.sma25.toFixed(6)} | SMA99: $${market.sma99.toFixed(6)}
-ATR-14: $${market.atr14.toFixed(6)}`
+ATR-14: $${market.atr14.toFixed(6)}${researchSection}`
 
   return { system, user }
 }

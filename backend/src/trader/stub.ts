@@ -1,7 +1,7 @@
 import { Signal } from '../types.js'
-import { MarketData, AccountBalance, TradeResult, CoinTradeResult, BalanceInfo } from './types.js'
+import { MarketData, AccountBalance, TradeResult, CoinTradeResult, BalanceInfo, OcoLevels, OcoResult, OcoCancelResult, OcoFetchResult, OrderBook } from './types.js'
 import { logger } from '../core/logger.js'
-import { getSettings } from '../db/index.js'
+import { getPrice } from '../market/priceCache.js'
 
 const FAKE_PRICES: Record<string, number> = {
   'BTC/USDC': 67500,
@@ -49,47 +49,23 @@ export async function fetchBalance(): Promise<AccountBalance> {
 }
 
 export async function executeTrade(signal: Signal): Promise<TradeResult> {
-  const feeRate = getSettings().fee_rate
   const price = FAKE_PRICES[signal.coin] || DEFAULT_PRICE
-  const grossCost = signal.quantity * price
+  const cost = signal.quantity * price
 
   if (signal.action === 'BUY') {
     logger.info('🛸 Binance fetchTicker', { symbol: signal.coin })
-    logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'buy', cost: grossCost })
-    // BUY: fee charged from received coins — you get fewer coins for the same USDC spend
-    const feeCostUsdc = grossCost * feeRate
-    const netQuantity = signal.quantity * (1 - feeRate)
-    return {
-      id: `stub-${Date.now()}`,
-      price,
-      quantity: netQuantity,
-      cost: grossCost,
-      fee: { cost: feeCostUsdc, currency: 'USDC' },
-    }
+    logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'buy', cost })
+    return { id: `stub-${Date.now()}`, price, quantity: signal.quantity, cost }
   } else {
     logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'sell', quantity: signal.quantity })
-    // SELL: fee charged from received USDC — you get less USDC for the same coins sold
-    const grossUsdc = signal.quantity * price
-    const feeCostUsdc = grossUsdc * feeRate
-    const netUsdc = grossUsdc - feeCostUsdc
-    return {
-      id: `stub-${Date.now()}`,
-      price,
-      quantity: signal.quantity,
-      cost: netUsdc,
-      fee: { cost: feeCostUsdc, currency: 'USDC' },
-    }
+    return { id: `stub-${Date.now()}`, price, quantity: signal.quantity, cost }
   }
 }
 
 export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fromAmount: number): Promise<CoinTradeResult> {
-  const feeRate = getSettings().fee_rate
   const fromPrice = fromSymbol === 'USDC' ? 1 : (FAKE_PRICES[fromSymbol] || DEFAULT_PRICE)
   const toPrice = toSymbol === 'USDC' ? 1 : (FAKE_PRICES[toSymbol] || DEFAULT_PRICE)
-
-  const usdcValue = fromAmount * fromPrice
-  const feeCostUsdc = usdcValue * feeRate
-  const toAmount = (usdcValue - feeCostUsdc) / toPrice
+  const toAmount = (fromAmount * fromPrice) / toPrice
 
   if (fromSymbol === 'USDC') {
     logger.info('🛸 Binance createMarketOrder', { symbol: toSymbol, side: 'buy', cost: fromAmount })
@@ -97,18 +73,73 @@ export async function executeCoinTrade(fromSymbol: string, toSymbol: string, fro
     logger.info('🛸 Binance createMarketOrder', { symbol: fromSymbol, side: 'sell', quantity: fromAmount })
   }
 
-  return {
-    fromSymbol,
-    toSymbol,
-    fromAmount,
-    toAmount,
-    fromPrice,
-    toPrice,
-    fee: { cost: feeCostUsdc, currency: 'USDC' },
-  }
+  return { fromSymbol, toSymbol, fromAmount, toAmount, fromPrice, toPrice }
 }
 
 export async function getTopPairs(limit = 20): Promise<string[]> {
   logger.info('🛸 Binance fetchTickers (all)')
   return Object.keys(FAKE_PRICES).slice(0, limit)
+}
+
+// ── Order book stub ──────────────────────────────────────────────────────────
+
+export async function fetchOrderBook(symbol: string, depth = 20): Promise<OrderBook> {
+  logger.info('🛸 Binance fetchOrderBook (stub)', { symbol, depth })
+  const mid = FAKE_PRICES[symbol] || DEFAULT_PRICE
+  const spread = mid * 0.001 // 0.1% spread
+  const levels = Array.from({ length: depth }, (_, i) => i)
+  return {
+    symbol,
+    bids: levels.map(i => [mid - spread * (i + 1), 1 + Math.random()] as [number, number]),
+    asks: levels.map(i => [mid + spread * (i + 1), 1 + Math.random()] as [number, number]),
+    timestamp: Date.now(),
+  }
+}
+
+// ── Simulated exchange-side OCO ──────────────────────────────────────────────
+// Mirrors the real module's contract using an in-memory store. `fetchOco`
+// compares the (drifting) cached price against the stored levels so dev mode
+// exercises the same place → reconcile → fill code path without Binance.
+
+interface StubOco { symbol: string; quantity: number; stopLoss: number; takeProfit: number; bufferPct: number }
+const stubOcoStore = new Map<string, StubOco>()
+let stubOcoSeq = 0
+
+export async function placeOco(symbol: string, quantity: number, levels: OcoLevels): Promise<OcoResult> {
+  if (levels.takeProfit == null) throw new Error(`Stub OCO requires take-profit for ${symbol}`)
+  const orderListId = `stub-oco-${++stubOcoSeq}`
+  stubOcoStore.set(orderListId, { symbol, quantity, stopLoss: levels.stopLoss, takeProfit: levels.takeProfit, bufferPct: levels.bufferPct })
+  logger.info('🛸 Binance OCO place (stub)', { symbol, quantity, stopLoss: levels.stopLoss, takeProfit: levels.takeProfit, orderListId })
+  return { orderListId, slOrderId: `${orderListId}-sl`, tpOrderId: `${orderListId}-tp`, status: 'ACTIVE' }
+}
+
+export async function cancelOco(symbol: string, orderListId: string): Promise<OcoCancelResult> {
+  const existed = stubOcoStore.delete(orderListId)
+  logger.info('🛸 Binance OCO cancel (stub)', { symbol, orderListId, existed })
+  return existed ? 'cancelled' : 'already-gone'
+}
+
+export async function updateOco(symbol: string, orderListId: string, quantity: number, levels: OcoLevels): Promise<OcoResult> {
+  await cancelOco(symbol, orderListId)
+  return placeOco(symbol, quantity, levels)
+}
+
+export async function fetchOco(
+  symbol: string,
+  oco: { orderListId: string; slOrderId: string | null; tpOrderId: string | null },
+): Promise<OcoFetchResult> {
+  const stored = stubOcoStore.get(oco.orderListId)
+  if (!stored) return { status: 'CANCELED', filledLeg: null, fillPrice: null, fillQty: null, fee: null }
+
+  const price = getPrice(symbol)?.price
+  if (price == null) return { status: 'OPEN', filledLeg: null, fillPrice: null, fillQty: null, fee: null }
+
+  const fill = (fillPrice: number, leg: 'SL' | 'TP'): OcoFetchResult => {
+    stubOcoStore.delete(oco.orderListId)
+    return { status: 'FILLED', filledLeg: leg, fillPrice, fillQty: stored.quantity, fee: null }
+  }
+
+  if (price <= stored.stopLoss) return fill(stored.stopLoss * (1 - stored.bufferPct / 100), 'SL')
+  if (price >= stored.takeProfit) return fill(stored.takeProfit, 'TP')
+  return { status: 'OPEN', filledLeg: null, fillPrice: null, fillQty: null, fee: null }
 }

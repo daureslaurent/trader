@@ -1,3 +1,5 @@
+export type ArticleSkipReason = 'captcha' | 'cloudflare' | 'irrelevant'
+
 export interface ExtractedArticle {
   title: string
   url: string
@@ -12,12 +14,14 @@ export interface ExtractedArticle {
     volume_trend?: 'increasing' | 'decreasing' | 'stable' | null
   }
   preliminary_signal?: 'BUY' | 'SELL' | 'HOLD'
+  skip_reason?: ArticleSkipReason
   from_cache?: boolean
 }
 
 export interface ExtractedResearch {
   coin: string
   articles: ExtractedArticle[]
+  skipped_articles: ExtractedArticle[]
   aggregated_sentiment: 'positive' | 'negative' | 'neutral'
   top_headlines: string[]
 }

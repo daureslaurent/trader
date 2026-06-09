@@ -15,24 +15,25 @@ export function calculatePositionSize(
   confidence: number,
   balanceUsd: number,
   settings: BotSettings,
+  availableUsdc?: number,
 ): number {
   const risk = parseSettings(settings)
-  const feeRate = settings.fee_rate ?? 0.001
 
   const targetRisk = balanceUsd * risk.maxRiskPerTrade
   const riskAdjusted = targetRisk * Math.max(confidence, 0.1)
 
-  // Effective price paid per coin including the buy-side fee
-  // (fee is charged from received coins, so effective cost = price / (1 - feeRate))
-  const effectivePrice = price / (1 - feeRate)
-
   let qty: number
   if (atr <= 0 || risk.stopLossAtrMultiplier <= 0) {
-    qty = Math.min(riskAdjusted / effectivePrice, settings.max_position_size_usd / effectivePrice)
+    qty = Math.min(riskAdjusted / price, settings.max_position_size_usd / price)
   } else {
     const volAdjusted = riskAdjusted / (atr * risk.stopLossAtrMultiplier)
-    const maxQty = settings.max_position_size_usd / effectivePrice
+    const maxQty = settings.max_position_size_usd / price
     qty = Math.min(volAdjusted, maxQty)
+  }
+
+  // Cap to what we can actually afford with the current USDC balance
+  if (availableUsdc !== undefined && availableUsdc > 0) {
+    qty = Math.min(qty, availableUsdc / price)
   }
 
   return qty
@@ -56,18 +57,71 @@ export function calculateTakeProfit(
   return entryPrice + (atr * risk.takeProfitAtrMultiplier)
 }
 
-// Minimum sell price to cover both the buy-side and sell-side fees (round-trip break-even).
-// buy_fee is charged on received coins: effective_entry = entry / (1 - feeRate)
-// sell_fee is charged on proceeds: break_even_sell = effective_entry / (1 - feeRate)
-export function calculateBreakEven(entryPrice: number, feeRate: number): number {
-  return entryPrice / Math.pow(1 - feeRate, 2)
-}
-
 export function checkPosition(currentPrice: number, position: PositionRecord): 'HOLD' | 'SL_HIT' | 'TP_HIT' {
   if (position.status !== 'OPEN') return 'HOLD'
   if (position.take_profit && currentPrice >= position.take_profit) return 'TP_HIT'
   if (currentPrice <= position.stop_loss) return 'SL_HIT'
   return 'HOLD'
+}
+
+export interface SlTpProposal {
+  currentPrice: number
+  oldStopLoss: number | null
+  oldTakeProfit: number | null
+  proposedStopLoss: number | null
+  proposedTakeProfit: number | null
+}
+
+export interface SlTpValidation {
+  stopLoss: number | null
+  takeProfit: number | null
+  changed: boolean
+  notes: string[]
+}
+
+/**
+ * Apply the bot's risk rules to a proposed SL/TP change for a LONG position.
+ * Risk discipline takes precedence over the LLM:
+ *  - Stop-loss may only be TIGHTENED (raised), never loosened, and must stay below price.
+ *  - Take-profit must stay above the current price.
+ * Returns the risk-approved levels and whether anything materially changed.
+ */
+export function validateSlTpAdjustment(p: SlTpProposal): SlTpValidation {
+  const notes: string[] = []
+  let stopLoss = p.oldStopLoss
+  let takeProfit = p.oldTakeProfit
+  let changed = false
+
+  // Treat values within ~0.0001% as unchanged to avoid no-op churn.
+  const same = (a: number, b: number) => Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b), 1) * 1e-6
+
+  if (p.proposedStopLoss != null && p.proposedStopLoss > 0 &&
+      !(p.oldStopLoss != null && same(p.proposedStopLoss, p.oldStopLoss))) {
+    const sl = p.proposedStopLoss
+    if (sl >= p.currentPrice) {
+      notes.push('Ignored stop-loss ≥ current price (would trigger immediately)')
+    } else if (p.oldStopLoss != null && sl < p.oldStopLoss) {
+      notes.push('Ignored stop-loss loosening — stops may only be tightened')
+    } else {
+      stopLoss = sl
+      changed = true
+      notes.push(`Stop-loss tightened to ${sl}`)
+    }
+  }
+
+  if (p.proposedTakeProfit != null && p.proposedTakeProfit > 0 &&
+      !(p.oldTakeProfit != null && same(p.proposedTakeProfit, p.oldTakeProfit))) {
+    const tp = p.proposedTakeProfit
+    if (tp <= p.currentPrice) {
+      notes.push('Ignored take-profit ≤ current price')
+    } else {
+      takeProfit = tp
+      changed = true
+      notes.push(`Take-profit set to ${tp}`)
+    }
+  }
+
+  return { stopLoss, takeProfit, changed, notes }
 }
 
 export { parseSettings }

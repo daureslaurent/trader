@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
+import { llmChat } from '../core/llm.js'
 import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { getTopPairs, fetchMarketData } from '../trader/index.js'
@@ -9,9 +10,19 @@ import { broadcast } from '../api/ws.js'
 import { DiscoveryResult } from '../types.js'
 import { buildDiscoveryPrompt } from './prompts.js'
 import { LLMError } from '../core/errors.js'
+import { config } from '../config/index.js'
+import { isTradeable } from '../core/tradeable.js'
+import { researchCoin } from '../researcher/index.js'
+import { extractResearch, selectArticles, ExtractorLLMConfig } from '../extractor/index.js'
 
 function makeClient(baseURL: string): OpenAI {
   return new OpenAI({ baseURL, apiKey: 'ollama' })
+}
+
+const discovererExtractorConfig: ExtractorLLMConfig = {
+  client: makeClient(config.discovererExtractor.baseURL),
+  model: config.discovererExtractor.model,
+  maxTokens: config.discovererExtractor.maxTokens,
 }
 
 let running = false
@@ -47,29 +58,58 @@ async function evaluateCandidate(
   logDiscoveryEvent('discovery_evaluating', symbol, cycleId, { symbol, price, volume })
 
   try {
-    const marketCtx = await getMarketContext(symbol, price)
-    const { system, user } = buildDiscoveryPrompt(symbol, marketCtx)
+    // Market context and research run in parallel
+    logDiscoveryEvent('discovery_researching', symbol, cycleId, { symbol })
+    const [marketCtx, rawResearch] = await Promise.all([
+      getMarketContext(symbol, price),
+      researchCoin(symbol),
+    ])
+    logDiscoveryEvent('discovery_researched', symbol, cycleId, {
+      symbol,
+      articleCount: rawResearch.articles.length,
+      headlines: rawResearch.headlines,
+    })
 
-    const settings = getSettings()
-    const client = makeClient(settings.discoverer_base_url)
-    logger.info('Request LLM', { module: 'discoverer', coin: symbol, model: settings.discoverer_model })
-    const resp = await client.chat.completions.create({
-      model: settings.discoverer_model,
+    logDiscoveryEvent('discovery_extracting', symbol, cycleId, {
+      symbol,
+      articleCount: rawResearch.articles.length,
+    })
+    const extractedResearch = await extractResearch(rawResearch, discovererExtractorConfig)
+    const selectedArticles = await selectArticles(symbol, extractedResearch.articles, discovererExtractorConfig)
+    logDiscoveryEvent('discovery_extracted', symbol, cycleId, {
+      symbol,
+      articleCount: selectedArticles.length,
+      aggregated_sentiment: extractedResearch.aggregated_sentiment,
+    })
+
+    const research = {
+      headlines: rawResearch.headlines,
+      aggregated_sentiment: extractedResearch.aggregated_sentiment,
+      articles: selectedArticles,
+    }
+
+    const { system, user } = buildDiscoveryPrompt(symbol, marketCtx, research)
+
+    const scorerClient = makeClient(config.discoverer.baseURL)
+    logger.info('Request LLM', { module: 'discoverer', coin: symbol, model: config.discoverer.model })
+    const resp = await llmChat(scorerClient, {
+      model: config.discoverer.model,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
       temperature: 0.2,
-      max_tokens: 512,
+      max_tokens: config.discoverer.maxTokens,
       response_format: { type: 'json_object' },
-    })
+    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId })
 
     const content = resp.choices[0]?.message?.content ?? ''
     if (!content.trim()) throw new LLMError('Empty response')
 
     let parsed: Record<string, unknown>
     try {
-      parsed = JSON.parse(content)
+      const stripped = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+      parsed = JSON.parse(stripped)
     } catch {
       throw new LLMError(`JSON parse failed: ${content.substring(0, 200)}`)
     }
@@ -121,23 +161,32 @@ export async function runDiscovery(cycleId: string): Promise<void> {
   try {
     const settings = getSettings()
 
+    const watchlist = settings.watchlist
+
     logDiscoveryEvent('discovery_started', 'DISCOVERY', cycleId, {
       top_n: settings.discover_top_n,
       min_volume_usd: settings.discover_min_volume_usd,
+      watchlist,
     })
 
     const topPairs = await getTopPairs(settings.discover_top_n)
 
-    const watchlist = settings.watchlist
     const portfolioEntries = getOpenEntries() as unknown as { coin: string }[]
-    const excluded = new Set([...watchlist, ...portfolioEntries.map(e => e.coin)])
 
-    const candidates = topPairs.filter(s => !excluded.has(s))
+    // Normalize to base currency so BTC/USDC and BTC both match
+    const toBase = (s: string) => (s.includes('/') ? s.split('/')[0] : s).toUpperCase()
+    const excludedBases = new Set([
+      ...watchlist.map(toBase),
+      ...portfolioEntries.map(e => toBase(e.coin)),
+    ])
+
+    const candidates = topPairs.filter(s => !excludedBases.has(toBase(s)) && isTradeable(s))
+    const excludedCount = topPairs.length - candidates.length
 
     logDiscoveryEvent('discovery_candidates_found', 'DISCOVERY', cycleId, {
       total_pairs: topPairs.length,
       candidates: candidates.length,
-      excluded: excluded.size,
+      excluded: excludedCount,
     })
 
     if (candidates.length === 0) {
@@ -159,41 +208,48 @@ export async function runDiscovery(cycleId: string): Promise<void> {
 
     // Evaluate in batches of 5 to avoid overwhelming the LLM
     const BATCH_SIZE = 5
-    const discoveries: { symbol: string; score: number; reasoning: string; marketData: Record<string, unknown> }[] = []
+    const newWatchlist = [...watchlist]
+    let autoAdded = 0
+    let totalDiscovered = 0
 
     for (let i = 0; i < volumeFiltered.length; i += BATCH_SIZE) {
       const batch = volumeFiltered.slice(i, i + BATCH_SIZE)
-      const results = await Promise.allSettled(
-        batch.map(d => evaluateCandidate(d.symbol, d.price, d.change24h, d.volume, cycleId))
+      await Promise.allSettled(
+        batch.map(async (d) => {
+          const result = await evaluateCandidate(d.symbol, d.price, d.change24h, d.volume, cycleId)
+          if (result === null) return
+
+          const shouldAutoAdd = settings.discover_auto_add && result.score >= settings.discover_min_score
+          const status = shouldAutoAdd ? 'auto_added' : 'pending'
+          const marketDataJson = JSON.stringify(result.marketData)
+          const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 19)
+
+          const { lastInsertRowid } = runSQL(
+            'INSERT INTO coin_discoveries (coin, score, reasoning, market_data, status, cycle_id) VALUES (?, ?, ?, ?, ?, ?)',
+            [d.symbol, result.score, result.reasoning, marketDataJson, status, cycleId]
+          )
+          totalDiscovered++
+
+          if (shouldAutoAdd && !newWatchlist.includes(d.symbol)) {
+            newWatchlist.push(d.symbol)
+            autoAdded++
+            logger.info('Auto-added to watchlist via discovery', { coin: d.symbol, score: result.score })
+          }
+
+          const discoveryResult = {
+            id: Number(lastInsertRowid),
+            coin: d.symbol,
+            score: result.score,
+            reasoning: result.reasoning,
+            market_data: marketDataJson,
+            status,
+            cycle_id: cycleId,
+            created_at: createdAt,
+          }
+          bus.emit('coin_discovered', discoveryResult)
+          broadcast('coin_discovered', discoveryResult)
+        })
       )
-      for (let j = 0; j < results.length; j++) {
-        const r = results[j]
-        if (r.status === 'fulfilled' && r.value !== null) {
-          discoveries.push({ symbol: batch[j].symbol, ...r.value })
-        }
-      }
-    }
-
-    // Persist results and optionally auto-add to watchlist
-    const newWatchlist = [...watchlist]
-    let autoAdded = 0
-
-    for (const d of discoveries) {
-      const shouldAutoAdd = settings.discover_auto_add && d.score >= settings.discover_min_score
-      runSQL(
-        'INSERT INTO coin_discoveries (coin, score, reasoning, market_data, status, cycle_id) VALUES (?, ?, ?, ?, ?, ?)',
-        [d.symbol, d.score, d.reasoning, JSON.stringify(d.marketData), shouldAutoAdd ? 'auto_added' : 'pending', cycleId]
-      )
-
-      if (shouldAutoAdd && !newWatchlist.includes(d.symbol)) {
-        newWatchlist.push(d.symbol)
-        autoAdded++
-        logger.info('Auto-added to watchlist via discovery', { coin: d.symbol, score: d.score })
-      }
-
-      const discoveryPayload = { coin: d.symbol, score: d.score, reasoning: d.reasoning, auto_added: shouldAutoAdd }
-      bus.emit('coin_discovered', discoveryPayload)
-      broadcast('coin_discovered', discoveryPayload)
     }
 
     if (autoAdded > 0) {
@@ -203,13 +259,13 @@ export async function runDiscovery(cycleId: string): Promise<void> {
 
     logDiscoveryEvent('discovery_completed', 'DISCOVERY', cycleId, {
       evaluated: volumeFiltered.length,
-      discovered: discoveries.length,
+      discovered: totalDiscovered,
       auto_added: autoAdded,
     })
 
     logger.info('Discovery pipeline completed', {
       evaluated: volumeFiltered.length,
-      discovered: discoveries.length,
+      discovered: totalDiscovered,
       autoAdded,
     })
   } catch (err) {

@@ -1,6 +1,12 @@
 import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
-import { MarketData, PortfolioEntry, PortfolioState, BotSettings } from '../types.js'
+import { bus } from '../core/events.js'
+import { broadcast } from '../api/ws.js'
+import { getPrice } from '../market/index.js'
+import { checkPosition } from './risk.js'
+import { recordPositionClose } from './slTpHistory.js'
+import { clearReviewsForCoin } from '../monitor/index.js'
+import { MarketData, PortfolioEntry, PortfolioState, BotSettings, PositionRecord } from '../types.js'
 
 const USDT_COIN = 'USDC'
 
@@ -246,6 +252,234 @@ export function getCoinPortfolioContext(coin: string): CoinPortfolioContext {
       price: t.price,
       date: t.created_at.split('T')[0] ?? t.created_at.split(' ')[0] ?? t.created_at,
     })),
+  }
+}
+
+// ── Exchange-side OCO lifecycle ──────────────────────────────────────────────
+// The bot places a real OCO sell on Binance for every open position so the
+// exchange enforces SL/TP even when the bot is offline. These helpers place,
+// reconcile, and (when the exchange can't protect a position) fall back to a
+// software stop. See trader/oco.ts for the exchange API.
+
+function getBotPositionById(id: number): PositionRecord | null {
+  return queryOne("SELECT * FROM positions WHERE id = ?", [id]) as unknown as PositionRecord | null
+}
+
+function getOpenBotPositions(): PositionRecord[] {
+  return queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as unknown as PositionRecord[]
+}
+
+function persistOco(positionId: number, oco: { orderListId: string; slOrderId: string | null; tpOrderId: string | null; status: 'NONE' | 'ACTIVE' | 'FAILED' }): void {
+  runSQL(
+    "UPDATE positions SET oco_order_list_id = ?, oco_sl_order_id = ?, oco_tp_order_id = ?, oco_status = ?, oco_synced_at = datetime('now') WHERE id = ?",
+    [oco.orderListId || null, oco.slOrderId, oco.tpOrderId, oco.status, positionId]
+  )
+}
+
+function setOcoStatus(positionId: number, status: 'NONE' | 'ACTIVE' | 'FAILED'): void {
+  runSQL("UPDATE positions SET oco_status = ?, oco_synced_at = datetime('now') WHERE id = ?", [status, positionId])
+}
+
+export interface PositionExit {
+  positionId: number
+  coin: string
+  status: 'CLOSED' | 'SL_HIT' | 'TP_HIT'
+  fillPrice: number
+  fillQty: number
+  reason: string
+}
+
+/**
+ * Pure bookkeeping for a position that has already exited (sold). Records the
+ * SELL trade, closes the position + ledger entries, credits net USDC proceeds,
+ * and broadcasts. Idempotent — bails if the position is no longer OPEN, so
+ * overlapping reconcile passes can't double-close.
+ *
+ * The actual exchange sell must already have happened (OCO fill on the exchange,
+ * or a market sell issued by the caller). This function never trades.
+ */
+export function closePositionFromExit(exit: PositionExit): boolean {
+  const closed = runSQL(
+    "UPDATE positions SET status = ?, pnl = (quantity * (? - entry_price)) WHERE id = ? AND status = 'OPEN'",
+    [exit.status, exit.fillPrice, exit.positionId]
+  )
+  if (closed.changes === 0) return false // already closed by a concurrent pass
+
+  recordPositionClose(exit.positionId, exit.fillPrice)
+  clearReviewsForCoin(exit.coin)
+
+  // Close the local ledger entries for the coin (full exit).
+  const entries = queryAll(
+    "SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
+    [exit.coin]
+  ) as { id: number }[]
+  for (const e of entries) closeEntry(e.id)
+
+  const proceeds = exit.fillPrice * exit.fillQty
+  const usdtEntry = getUsdtEntry()
+  if (usdtEntry) increaseEntryQuantity(usdtEntry.id, proceeds)
+
+  runSQL(
+    "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
+    [exit.coin, exit.fillQty, exit.fillPrice, proceeds]
+  )
+
+  const pnl = (getBotPositionById(exit.positionId)?.pnl) ?? null
+  if (exit.status === 'SL_HIT') broadcast('stop_loss_hit', { coin: exit.coin, price: exit.fillPrice, pnl })
+  else if (exit.status === 'TP_HIT') broadcast('take_profit_hit', { coin: exit.coin, price: exit.fillPrice, pnl })
+  const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
+  if (trade) broadcast('trade_executed', trade)
+
+  bus.emit('portfolio_updated')
+  logger.info('Position closed from exit', { coin: exit.coin, status: exit.status, fillPrice: exit.fillPrice, reason: exit.reason })
+  return true
+}
+
+/**
+ * Place (or replace) exchange-side OCO protection for an open position. On
+ * failure the position is marked FAILED and the software fallback in
+ * reconcileOpenPositions() keeps it protected. Safe to call repeatedly.
+ */
+export async function placeProtection(positionId: number): Promise<void> {
+  const pos = getBotPositionById(positionId)
+  if (!pos || pos.status !== 'OPEN') return
+  if (pos.take_profit == null) {
+    // OCO needs both legs; without a TP we rely on the software stop.
+    setOcoStatus(positionId, 'FAILED')
+    logger.warn('No take-profit set — OCO skipped, software stop active', { coin: pos.coin, positionId })
+    return
+  }
+
+  const trader = await import('../trader/index.js')
+  const bufferPct = getSettings().oco_sl_buffer_pct
+  try {
+    const res = await trader.placeOco(pos.coin, pos.quantity, {
+      stopLoss: pos.current_sl,
+      takeProfit: pos.take_profit,
+      bufferPct,
+    })
+    persistOco(positionId, res)
+    logger.info('OCO protection placed', { coin: pos.coin, positionId, orderListId: res.orderListId, stopLoss: pos.current_sl, takeProfit: pos.take_profit })
+  } catch (err) {
+    setOcoStatus(positionId, 'FAILED')
+    logger.error('OCO placement failed — software fallback active', { coin: pos.coin, positionId, error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/**
+ * Replace a position's OCO after its SL/TP levels change (cancel + place; Binance
+ * Spot has no native modify). Falls back to a fresh placement if nothing is live.
+ * Reads the current levels from the DB, so callers should persist new levels first.
+ */
+export async function replaceProtection(positionId: number): Promise<void> {
+  const pos = getBotPositionById(positionId)
+  if (!pos || pos.status !== 'OPEN') return
+  if (pos.oco_status !== 'ACTIVE' || !pos.oco_order_list_id) {
+    await placeProtection(positionId)
+    return
+  }
+  if (pos.take_profit == null) {
+    await cancelProtection(positionId)
+    setOcoStatus(positionId, 'FAILED')
+    return
+  }
+  const trader = await import('../trader/index.js')
+  const bufferPct = getSettings().oco_sl_buffer_pct
+  try {
+    const res = await trader.updateOco(pos.coin, pos.oco_order_list_id, pos.quantity, {
+      stopLoss: pos.current_sl,
+      takeProfit: pos.take_profit,
+      bufferPct,
+    })
+    persistOco(positionId, res)
+    if (res.status === 'FAILED') logger.error('OCO replace failed — software fallback active', { coin: pos.coin, positionId })
+    else logger.info('OCO protection replaced', { coin: pos.coin, positionId, orderListId: res.orderListId, stopLoss: pos.current_sl, takeProfit: pos.take_profit })
+  } catch (err) {
+    setOcoStatus(positionId, 'FAILED')
+    logger.error('OCO replace failed — software fallback active', { coin: pos.coin, positionId, error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+/**
+ * Cancel a position's OCO before the bot issues its own market sell (analyst
+ * exit, manual close). Otherwise Binance rejects the sell — the coins are locked
+ * in the open OCO. Idempotent and best-effort.
+ */
+export async function cancelProtection(positionId: number): Promise<void> {
+  const pos = getBotPositionById(positionId)
+  if (!pos || pos.oco_status !== 'ACTIVE' || !pos.oco_order_list_id) return
+  const trader = await import('../trader/index.js')
+  try {
+    await trader.cancelOco(pos.coin, pos.oco_order_list_id)
+  } catch (err) {
+    logger.warn('Failed to cancel OCO before sell', { coin: pos.coin, positionId, error: err instanceof Error ? err.message : String(err) })
+  }
+  setOcoStatus(positionId, 'NONE')
+}
+
+let reconciling = false
+
+/**
+ * Reconcile every open position with the exchange:
+ *  1. ACTIVE OCO → check whether a leg filled (exchange closed the position) and
+ *     record the close, or detect a manual Binance cancel and re-protect.
+ *  2. Unprotected (NONE/FAILED) → place a fresh OCO; if that fails, run a
+ *     software stop so the position is never silently unprotected.
+ * Replaces the old market-sell polling loop. Re-entrancy guarded.
+ */
+export async function reconcileOpenPositions(): Promise<void> {
+  if (reconciling) return
+  reconciling = true
+  try {
+    const positions = getOpenBotPositions()
+    if (positions.length === 0) return
+    const trader = await import('../trader/index.js')
+
+    for (const pos of positions) {
+      try {
+        if (pos.oco_status === 'ACTIVE' && pos.oco_order_list_id) {
+          const oco = await trader.fetchOco(pos.coin, {
+            orderListId: pos.oco_order_list_id,
+            slOrderId: pos.oco_sl_order_id,
+            tpOrderId: pos.oco_tp_order_id,
+          })
+          if (oco.status === 'OPEN') continue
+          if (oco.status === 'FILLED' && oco.filledLeg) {
+            closePositionFromExit({
+              positionId: pos.id,
+              coin: pos.coin,
+              status: oco.filledLeg === 'SL' ? 'SL_HIT' : 'TP_HIT',
+              fillPrice: oco.fillPrice ?? (oco.filledLeg === 'SL' ? pos.current_sl : (pos.take_profit ?? pos.entry_price)),
+              fillQty: oco.fillQty ?? pos.quantity,
+              reason: oco.filledLeg === 'SL' ? 'Stop loss (OCO)' : 'Take profit (OCO)',
+            })
+            continue
+          }
+          // CANCELED on the exchange while still open (manual cancel) → re-protect.
+          logger.warn('OCO cancelled on exchange, re-placing protection', { coin: pos.coin, positionId: pos.id })
+          setOcoStatus(pos.id, 'NONE')
+          pos.oco_status = 'NONE'
+        }
+
+        // Needs protection (NONE / FAILED / just-cancelled).
+        await placeProtection(pos.id)
+
+        // If protection still couldn't be placed, enforce the stop in software.
+        const refreshed = getBotPositionById(pos.id)
+        if (refreshed && refreshed.status === 'OPEN' && refreshed.oco_status !== 'ACTIVE') {
+          const price = getPrice(pos.coin)?.price
+          if (price) {
+            const hit = checkPosition(price, refreshed)
+            if (hit === 'SL_HIT') bus.emit('stop_loss_hit', { positionId: pos.id, coin: pos.coin, price })
+            else if (hit === 'TP_HIT') bus.emit('take_profit_hit', { positionId: pos.id, coin: pos.coin, price })
+          }
+        }
+      } catch (err) {
+        logger.warn('Failed to reconcile position', { coin: pos.coin, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+  } finally {
+    reconciling = false
   }
 }
 

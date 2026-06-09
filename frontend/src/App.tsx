@@ -12,6 +12,7 @@ import Logs from './pages/Logs'
 import Settings from './pages/Settings'
 import Charts from './pages/Charts'
 import LLM from './pages/LLM'
+import LLMDebug from './pages/LLMDebug'
 import CacheView from './pages/CacheView'
 import Discover from './pages/Discover'
 
@@ -25,6 +26,7 @@ const PAGE_TITLES: Record<Page, string> = {
   cache: 'Article Cache',
   settings: 'Settings',
   discover: 'Discover Coins',
+  'llm-debug': 'LLM Debug',
 }
 
 let toastId = 0
@@ -102,6 +104,16 @@ function AppInner() {
     } else if (event === 'trade_rejected') {
       pendingRef.current = Math.max(0, pendingRef.current - 1)
       setPendingCount(pendingRef.current)
+    } else if (event === 'adjustment_requested') {
+      const r = data as { coin: string }
+      pendingRef.current += 1
+      setPendingCount(pendingRef.current)
+      addToast('warning', `SL/TP change needs approval: ${r.coin.replace('/USDC', '')}`)
+    } else if (event === 'adjustment_resolved') {
+      pendingRef.current = Math.max(0, pendingRef.current - 1)
+      setPendingCount(pendingRef.current)
+      const r = data as { status: string }
+      if (r.status === 'APPLIED') addToast('success', 'Position SL/TP updated')
     } else if (event === 'coin_discovered') {
       const d = data as { coin: string; score: number; auto_added: boolean }
       const coin = d.coin.replace('/USDC', '')
@@ -159,6 +171,7 @@ function AppInner() {
           {page === 'logs' && <Logs />}
           {page === 'cache' && <CacheView />}
           {page === 'discover' && <Discover />}
+          {page === 'llm-debug' && <LLMDebug />}
           {page === 'settings' && <Settings />}
         </main>
       </div>

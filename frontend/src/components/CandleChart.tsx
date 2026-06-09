@@ -1,0 +1,536 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine,
+  ResponsiveContainer,
+} from 'recharts'
+import type { Decision, Trade, SlTpEvent } from '../types'
+import { fmtUSD, fmt, cn } from '../lib/utils'
+import { usePrices } from '../hooks/usePrices'
+
+export interface Candle {
+  time: number   // epoch seconds
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const
+type Timeframe = (typeof TIMEFRAMES)[number]
+
+// Per-timeframe refresh cadence (ms) — matches the backend cache TTL roughly.
+const REFRESH_MS: Record<Timeframe, number> = {
+  '1m': 15_000, '5m': 30_000, '15m': 60_000,
+  '1h': 60_000, '4h': 120_000, '1d': 300_000,
+}
+
+interface Signal {
+  action: 'BUY' | 'SELL' | 'HOLD'
+  confidence: number
+  reason: string
+}
+
+interface TradeMark {
+  id: number
+  side: 'BUY' | 'SELL'
+  price: number
+  quantity: number
+}
+
+interface ChartDatum extends Candle {
+  range: [number, number]   // [low, high] — drives the floating bar
+  signal?: Signal
+  trades?: TradeMark[]
+  sl?: number | null        // active stop-loss at this candle's time
+  tp?: number | null        // active take-profit at this candle's time
+}
+
+function fmtPrice(n: number): string {
+  if (n >= 1) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (n >= 0.01) return n.toFixed(4)
+  return n.toExponential(2)
+}
+
+function fmtAxisTime(time: number, tf: Timeframe): string {
+  const d = new Date(time * 1000)
+  if (tf === '1d') return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+  if (tf === '4h' || tf === '1h') return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit' })
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function parseTime(s: string): number {
+  return Math.floor(new Date(s.includes('T') ? s : s + 'Z').getTime() / 1000)
+}
+
+function clampIdx(i: number, len: number): number {
+  return Math.min(Math.max(i, 0), len - 1)
+}
+
+// Custom candle shape: high–low wick + open–close body, colored by direction.
+function Candlestick(props: any) {
+  const { x, y, width, height, payload } = props
+  const { open, close, high, low } = payload as ChartDatum
+  if (high === low || width == null) return null
+
+  const ratio = height / (high - low)
+  const isUp = close >= open
+  const color = isUp ? 'rgb(var(--buy-rgb))' : 'rgb(var(--sell-rgb))'
+
+  const cx = x + width / 2
+  const bodyTop = y + (high - Math.max(open, close)) * ratio
+  const bodyBottom = y + (high - Math.min(open, close)) * ratio
+  const bodyH = Math.max(bodyBottom - bodyTop, 1)
+  const bodyW = Math.max(width * 0.6, 1)
+  const bodyX = cx - bodyW / 2
+
+  return (
+    <g stroke={color} fill={color}>
+      <line x1={cx} y1={y} x2={cx} y2={y + height} strokeWidth={1} />
+      <rect x={bodyX} y={bodyTop} width={bodyW} height={bodyH} />
+    </g>
+  )
+}
+
+// Analyst signal marker (BUY ▲ below low, SELL ▼ above high, HOLD • on close).
+function SignalMarker(props: any) {
+  const { cx, cy, action } = props
+  if (cx == null || cy == null) return null
+  const s = 5
+  if (action === 'BUY') {
+    const y = cy + 9
+    return <path d={`M${cx},${y - s} L${cx - s},${y + s} L${cx + s},${y + s} Z`}
+      fill="rgb(var(--buy-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
+  }
+  if (action === 'SELL') {
+    const y = cy - 9
+    return <path d={`M${cx},${y + s} L${cx - s},${y - s} L${cx + s},${y - s} Z`}
+      fill="rgb(var(--sell-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
+  }
+  return <circle cx={cx} cy={cy} r={3} fill="rgb(var(--warn-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
+}
+
+// Executed-trade marker: filled badge at the fill price with B / S label.
+function TradeMarker(props: any) {
+  const { cx, cy, side } = props
+  if (cx == null || cy == null) return null
+  const color = side === 'BUY' ? 'rgb(var(--buy-rgb))' : 'rgb(var(--sell-rgb))'
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={7} fill={color} stroke="var(--surface-card)" strokeWidth={1.5} />
+      <text x={cx} y={cy + 3} textAnchor="middle" fontSize={9} fontWeight={700} fill="#fff">
+        {side === 'BUY' ? 'B' : 'S'}
+      </text>
+    </g>
+  )
+}
+
+// Pulsing live-price dot (radar ping), self-contained SVG animation.
+function LiveDot(props: any) {
+  const { cx, cy, color } = props
+  if (cx == null || cy == null) return null
+  return (
+    <g>
+      <circle cx={cx} cy={cy} fill={color} opacity={0.45}>
+        <animate attributeName="r" values="4;14" dur="1.6s" repeatCount="indefinite" />
+        <animate attributeName="opacity" values="0.45;0" dur="1.6s" repeatCount="indefinite" />
+      </circle>
+      <circle cx={cx} cy={cy} r={3.5} fill={color} stroke="var(--surface-card)" strokeWidth={1} />
+    </g>
+  )
+}
+
+// Colored price tag pinned to the right Y-axis (outside the chart area so it never overlaps candles).
+function LivePriceTag(props: any) {
+  const { viewBox, value, color } = props
+  if (!viewBox) return null
+  const { x, y, width } = viewBox
+  // x + width is the right edge of the chart area = left edge of the Y-axis strip.
+  // Place the tag flush there so it sits in the axis, not on the candles.
+  const w = 54, h = 16
+  const tx = x + width + 1
+  return (
+    <g>
+      <rect x={tx} y={y - h / 2} width={w} height={h} rx={3} fill={color} />
+      <text x={tx + w / 2} y={y + 3.5} textAnchor="middle" fontSize={10} fontWeight={700} fill="var(--surface-base)">
+        {value}
+      </text>
+    </g>
+  )
+}
+
+function CandleTooltip({ active, payload }: { active?: boolean; payload?: { payload: ChartDatum }[] }) {
+  if (!active || !payload?.length) return null
+  const d = payload[0].payload
+  const isUp = d.close >= d.open
+  const chgPct = d.open > 0 ? ((d.close - d.open) / d.open) * 100 : 0
+  const sigColor = d.signal?.action === 'BUY' ? 'text-buy' : d.signal?.action === 'SELL' ? 'text-sell' : 'text-warn'
+  return (
+    <div
+      className="px-3 py-2 rounded-xl border text-xs space-y-1 max-w-[240px]"
+      style={{ backgroundColor: 'var(--surface-elevated)', borderColor: 'var(--border-color)' }}
+    >
+      <p className="text-[11px] text-muted">{new Date(d.time * 1000).toLocaleString()}</p>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 tabular-nums">
+        <span className="text-muted">O <span className="text-foreground">{fmtPrice(d.open)}</span></span>
+        <span className="text-muted">H <span className="text-foreground">{fmtPrice(d.high)}</span></span>
+        <span className="text-muted">L <span className="text-foreground">{fmtPrice(d.low)}</span></span>
+        <span className="text-muted">C <span className="text-foreground">{fmtPrice(d.close)}</span></span>
+      </div>
+      <p className={cn('text-[11px] font-semibold', isUp ? 'text-buy' : 'text-sell')}>
+        {isUp ? '+' : ''}{chgPct.toFixed(2)}%
+      </p>
+      {d.signal && (
+        <div className="pt-1 mt-1 border-t border-border/50 space-y-0.5">
+          <p className={cn('text-[11px] font-bold', sigColor)}>
+            ⬤ {d.signal.action} signal — {Math.round(d.signal.confidence * 100)}%
+          </p>
+          {d.signal.reason && (
+            <p className="text-[11px] text-muted leading-snug line-clamp-3">{d.signal.reason}</p>
+          )}
+        </div>
+      )}
+      {d.trades && d.trades.length > 0 && (
+        <div className="pt-1 mt-1 border-t border-border/50 space-y-0.5">
+          {d.trades.map(t => (
+            <p key={t.id} className={cn('text-[11px] font-semibold', t.side === 'BUY' ? 'text-buy' : 'text-sell')}>
+              {t.side === 'BUY' ? '▲' : '▼'} {t.side} {fmt(t.quantity, 4)} @ {fmtPrice(t.price)}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function CandleChart({ symbol, decisions = [], trades = [] }: {
+  symbol: string
+  decisions?: Decision[]
+  trades?: Trade[]
+}) {
+  const [tf, setTf] = useState<Timeframe>('1h')
+  const [candles, setCandles] = useState<Candle[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [showSl, setShowSl] = useState(true)
+  const [showTp, setShowTp] = useState(true)
+  const [slTpEvents, setSlTpEvents] = useState<SlTpEvent[]>([])
+  const reqId = useRef(0)
+
+  const livePrices = usePrices()
+  const liveSnap = livePrices.get(symbol)
+
+  // SL/TP change history for the coin (refetched when coin changes).
+  useEffect(() => {
+    let cancelled = false
+    const base = symbol.replace('/USDC', '')
+    fetch(`/api/sl-tp/${base}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setSlTpEvents(Array.isArray(d) ? d : []) })
+      .catch(() => { if (!cancelled) setSlTpEvents([]) })
+    return () => { cancelled = true }
+  }, [symbol])
+
+  useEffect(() => {
+    let cancelled = false
+    const id = ++reqId.current
+    const base = symbol.replace('/USDC', '')
+
+    function load(initial: boolean) {
+      if (initial) { setLoading(true); setError(null) }
+      fetch(`/api/ohlcv/${base}?tf=${tf}&limit=150`)
+        .then(r => r.json())
+        .then(data => {
+          if (cancelled || id !== reqId.current) return
+          if (data.error) setError(data.error)
+          else { setCandles(data.candles ?? []); setError(null) }
+        })
+        .catch(() => { if (!cancelled) setError('Failed to load chart data') })
+        .finally(() => { if (!cancelled && initial) setLoading(false) })
+    }
+
+    load(true)
+    const t = setInterval(() => load(false), REFRESH_MS[tf])
+    return () => { cancelled = true; clearInterval(t) }
+  }, [symbol, tf])
+
+  // Candle data enriched with signal + trade markers (independent of live price).
+  const data = useMemo<ChartDatum[]>(() => {
+    if (candles.length === 0) return []
+
+    const step = candles.length > 1 ? candles[1].time - candles[0].time : 3600
+    const firstTime = candles[0].time
+    const lastTime = candles[candles.length - 1].time
+    const inRange = (ts: number) => ts >= firstTime && ts < lastTime + step
+    const candleTimeFor = (ts: number) => candles[clampIdx(Math.floor((ts - firstTime) / step), candles.length)].time
+
+    // Analyst signals — most recent decision wins per candle.
+    const signalByTime = new Map<number, Signal>()
+    decisions
+      .filter(d => d.coin === symbol)
+      .map(d => ({ ...d, ts: parseTime(d.created_at) }))
+      .sort((a, b) => a.ts - b.ts)
+      .forEach(d => {
+        if (!inRange(d.ts)) return
+        signalByTime.set(candleTimeFor(d.ts), { action: d.action, confidence: d.confidence, reason: d.reason })
+      })
+
+    // Executed trades — all of them, grouped by candle.
+    const tradesByTime = new Map<number, TradeMark[]>()
+    trades
+      .filter(t => t.coin === symbol && t.status === 'EXECUTED' && t.price > 0)
+      .forEach(t => {
+        const ts = parseTime(t.created_at)
+        if (!inRange(ts)) return
+        const key = candleTimeFor(ts)
+        const arr = tradesByTime.get(key) ?? []
+        arr.push({ id: t.id, side: t.side, price: t.price, quantity: t.quantity })
+        tradesByTime.set(key, arr)
+      })
+
+    // SL/TP active-state timeline: replay events to know the level at any time.
+    // One open position per coin, so at most one active level at a time.
+    const timeline: { ts: number; sl: number | null; tp: number | null }[] = []
+    let activeId: number | null = null
+    let curSl: number | null = null
+    let curTp: number | null = null
+    for (const e of [...slTpEvents].sort((a, b) => parseTime(a.created_at) - parseTime(b.created_at))) {
+      const ts = parseTime(e.created_at)
+      if (e.event === 'close') {
+        if (activeId === null || e.position_id === activeId) { activeId = null; curSl = null; curTp = null }
+      } else {
+        activeId = e.position_id; curSl = e.stop_loss; curTp = e.take_profit
+      }
+      timeline.push({ ts, sl: curSl, tp: curTp })
+    }
+    const stateAt = (t: number) => {
+      let sl: number | null = null, tp: number | null = null
+      for (const s of timeline) { if (s.ts <= t) { sl = s.sl; tp = s.tp } else break }
+      return { sl, tp }
+    }
+
+    return candles.map(c => {
+      const { sl, tp } = stateAt(c.time)
+      return {
+        ...c,
+        range: [c.low, c.high] as [number, number],
+        signal: signalByTime.get(c.time),
+        trades: tradesByTime.get(c.time),
+        sl,
+        tp,
+      }
+    })
+  }, [candles, decisions, trades, slTpEvents, symbol])
+
+  const last = candles[candles.length - 1]
+  const first = candles[0]
+  const livePrice = liveSnap?.price ?? last?.close ?? 0
+
+  // Y-domain stretched to include the live price (and SL/TP when shown) so nothing clips.
+  const domain = useMemo<[number, number]>(() => {
+    if (data.length === 0) return [0, 1]
+    let min = Infinity, max = -Infinity
+    for (const d of data) {
+      min = Math.min(min, d.low); max = Math.max(max, d.high)
+      if (showSl && d.sl != null) { min = Math.min(min, d.sl); max = Math.max(max, d.sl) }
+      if (showTp && d.tp != null) { min = Math.min(min, d.tp); max = Math.max(max, d.tp) }
+    }
+    if (livePrice > 0) { min = Math.min(min, livePrice); max = Math.max(max, livePrice) }
+    const pad = (max - min) * 0.08 || max * 0.01
+    return [min - pad, max + pad]
+  }, [data, livePrice, showSl, showTp])
+
+  const periodChange = first && first.open > 0 ? ((livePrice - first.open) / first.open) * 100 : 0
+  const liveColor = periodChange >= 0 ? 'rgb(var(--buy-rgb))' : 'rgb(var(--sell-rgb))'
+
+  const tradeMarkers = data.flatMap(d => (d.trades ?? []).map(t => ({ ...t, time: d.time })))
+  const signalCount = data.filter(d => d.signal).length
+
+  return (
+    <div>
+      {/* Header: live price, change, timeframe selector */}
+      <div className="flex items-center justify-between px-5 pb-3">
+        <div className="flex items-center gap-2.5">
+          {last && (
+            <>
+              <span className="text-xl font-bold tabular-nums text-foreground">{fmtUSD(livePrice)}</span>
+              {liveSnap && (
+                <span className="flex items-center gap-1 text-[10px] font-medium text-buy">
+                  <span className="w-1.5 h-1.5 rounded-full bg-buy animate-pulse" />
+                  LIVE
+                </span>
+              )}
+              <span className={cn(
+                'text-xs font-semibold px-2 py-0.5 rounded-lg',
+                periodChange >= 0 ? 'bg-buy/10 text-buy' : 'bg-sell/10 text-sell',
+              )}>
+                {periodChange >= 0 ? '+' : ''}{periodChange.toFixed(2)}%
+              </span>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowSl(v => !v)}
+            className={cn(
+              'px-2.5 py-1 text-xs font-medium rounded-lg transition-all',
+              showSl ? 'bg-sell/10 text-sell' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
+            )}
+            title="Toggle stop-loss level"
+          >
+            SL
+          </button>
+          <button
+            onClick={() => setShowTp(v => !v)}
+            className={cn(
+              'px-2.5 py-1 text-xs font-medium rounded-lg transition-all',
+              showTp ? 'bg-buy/10 text-buy' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
+            )}
+            title="Toggle take-profit level"
+          >
+            TP
+          </button>
+          <div className="w-px h-4 bg-border mx-1" />
+          {TIMEFRAMES.map(t => (
+            <button
+              key={t}
+              onClick={() => setTf(t)}
+              className={cn(
+                'px-2.5 py-1 text-xs font-medium rounded-lg transition-all',
+                tf === t ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
+              )}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center h-72">
+          <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : error ? (
+        <div className="flex items-center justify-center h-72 text-sm text-muted px-5 text-center">{error}</div>
+      ) : data.length === 0 ? (
+        <div className="flex items-center justify-center h-72 text-sm text-muted">No candle data.</div>
+      ) : (
+        <>
+          <div className="px-2 pb-2">
+            <ResponsiveContainer width="100%" height={300}>
+              <ComposedChart data={data} margin={{ top: 12, right: 12, bottom: 4, left: 0 }}>
+                <XAxis
+                  dataKey="time"
+                  tickFormatter={(v: number) => fmtAxisTime(v, tf)}
+                  stroke="var(--muted-fg)"
+                  tick={{ fontSize: 10, fill: 'var(--muted-fg)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={40}
+                />
+                <YAxis
+                  domain={domain}
+                  orientation="right"
+                  stroke="var(--muted-fg)"
+                  tick={{ fontSize: 10, fill: 'var(--muted-fg)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={56}
+                  tickFormatter={fmtPrice}
+                />
+                <Tooltip content={<CandleTooltip />} cursor={{ fill: 'var(--surface-elevated)', opacity: 0.4 }} />
+                <Bar dataKey="range" shape={<Candlestick />} isAnimationActive={false} />
+
+                {/* Stop-loss / take-profit levels — stepped so they follow their history */}
+                {showTp && (
+                  <Line
+                    dataKey="tp" name="Take profit" type="stepAfter"
+                    stroke="rgb(var(--buy-rgb))" strokeWidth={1.5} strokeDasharray="5 3"
+                    dot={false} activeDot={false} connectNulls={false} isAnimationActive={false}
+                  />
+                )}
+                {showSl && (
+                  <Line
+                    dataKey="sl" name="Stop loss" type="stepAfter"
+                    stroke="rgb(var(--sell-rgb))" strokeWidth={1.5} strokeDasharray="5 3"
+                    dot={false} activeDot={false} connectNulls={false} isAnimationActive={false}
+                  />
+                )}
+
+                {/* Analyst signal markers */}
+                {data.filter(d => d.signal).map(d => (
+                  <ReferenceDot
+                    key={`sig-${d.time}`}
+                    x={d.time}
+                    y={d.signal!.action === 'SELL' ? d.high : d.low}
+                    ifOverflow="extendDomain"
+                    isFront
+                    shape={<SignalMarker action={d.signal!.action} />}
+                  />
+                ))}
+
+                {/* Executed trade markers (at fill price) */}
+                {tradeMarkers.map(t => (
+                  <ReferenceDot
+                    key={`trade-${t.id}`}
+                    x={t.time}
+                    y={t.price}
+                    ifOverflow="extendDomain"
+                    isFront
+                    shape={<TradeMarker side={t.side} />}
+                  />
+                ))}
+
+                {/* Live price line + pulsing dot */}
+                {livePrice > 0 && (
+                  <ReferenceLine
+                    y={livePrice}
+                    stroke={liveColor}
+                    strokeDasharray="3 3"
+                    strokeOpacity={0.6}
+                    ifOverflow="extendDomain"
+                    label={<LivePriceTag value={fmtPrice(livePrice)} color={liveColor} />}
+                  />
+                )}
+                {livePrice > 0 && last && (
+                  <ReferenceDot
+                    x={last.time}
+                    y={livePrice}
+                    ifOverflow="extendDomain"
+                    isFront
+                    shape={<LiveDot color={liveColor} />}
+                  />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center flex-wrap gap-x-4 gap-y-1 px-5 pb-4 text-[11px] text-muted">
+            <span className="flex items-center gap-1.5"><span className="text-buy">▲</span> Buy signal</span>
+            <span className="flex items-center gap-1.5"><span className="text-sell">▼</span> Sell signal</span>
+            <span className="flex items-center gap-1.5"><span className="text-warn">⬤</span> Hold</span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-buy text-white text-[7px] font-bold">B</span>
+              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-sell text-white text-[7px] font-bold">S</span>
+              Executed trade
+            </span>
+            {showSl && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-4 border-t-2 border-dashed border-sell" /> Stop loss
+              </span>
+            )}
+            {showTp && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-4 border-t-2 border-dashed border-buy" /> Take profit
+              </span>
+            )}
+            {signalCount === 0 && tradeMarkers.length === 0 && (
+              <span className="text-muted/60 ml-auto">No signals or trades in this range</span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}

@@ -23,15 +23,22 @@ export function TradeHistory({ trades }: { trades: Trade[] }) {
         </thead>
         <tbody className="divide-y divide-border">
           {trades.map(t => (
-            <tr key={t.id} className="hover:bg-surface-elevated/50 transition-colors duration-100">
-              <td className="py-3 px-3 text-xs text-muted font-mono">{formatDate(t.created_at)}</td>
-              <td className="px-3 font-medium">{t.coin.replace('/USDC', '')}</td>
-              <td className="px-3">{actionBadge(t.side)}</td>
-              <td className="px-3 text-right tabular-nums">{fmt(t.quantity, 6)}</td>
-              <td className="px-3 text-right tabular-nums">{t.price ? fmtUSD(t.price) : '—'}</td>
-              <td className="px-3 text-right tabular-nums">{t.total ? fmtUSD(t.total) : '—'}</td>
-              <td className="px-3 text-center">{statusBadge(t.status)}</td>
-            </tr>
+            <>
+              <tr key={t.id} className="hover:bg-surface-elevated/50 transition-colors duration-100">
+                <td className="py-3 px-3 text-xs text-muted font-mono">{formatDate(t.created_at)}</td>
+                <td className="px-3 font-medium">{t.coin.replace('/USDC', '')}</td>
+                <td className="px-3">{actionBadge(t.side)}</td>
+                <td className="px-3 text-right tabular-nums">{fmt(t.quantity, 6)}</td>
+                <td className="px-3 text-right tabular-nums text-muted">{t.price ? fmtUSD(t.price) : '—'}</td>
+                <td className="px-3 text-right tabular-nums text-muted">{t.total ? fmtUSD(t.total) : '—'}</td>
+                <td className="px-3 text-center">{statusBadge(t.status)}</td>
+              </tr>
+              {t.status === 'FAILED' && t.error && (
+                <tr key={`${t.id}-err`} className="bg-sell/5">
+                  <td colSpan={7} className="px-3 pb-2 text-xs text-sell/80 font-mono leading-relaxed truncate max-w-0">{t.error}</td>
+                </tr>
+              )}
+            </>
           ))}
         </tbody>
       </table>

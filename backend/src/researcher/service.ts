@@ -32,8 +32,8 @@ export async function researchCoin(coin: string): Promise<ResearchResult> {
 
     // Two parallel queries: breaking news from today, deeper coverage from the week
     const [todayResults, weekResults] = await Promise.allSettled([
-      search(`${fullName} crypto news price`, { count: 5, dateFilter: 'd' }),
-      search(`${symbol} ${fullName} cryptocurrency latest update`, { count: 4, dateFilter: 'w' }),
+      search(`${fullName} crypto news price`, { count: 6, dateFilter: 'd' }),
+      search(`${symbol} ${fullName} cryptocurrency latest update`, { count: 6, dateFilter: 'w' }),
     ])
 
     // Merge and deduplicate by URL — today's results take priority
@@ -52,8 +52,8 @@ export async function researchCoin(coin: string): Promise<ResearchResult> {
 
     const headlines = merged.map(r => r.title)
 
-    // Fetch article content in parallel, cap at 6 to stay within extractor budget
-    const toFetch = merged.slice(0, 6)
+    // Fetch article content in parallel, cap at 10
+    const toFetch = merged.slice(0, 10)
     const articleResults = await Promise.allSettled(
       toFetch.map(async r => ({
         title: r.title,

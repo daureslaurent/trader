@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Stat } from '../components/ui/Stat'
 import { Input } from '../components/ui/Input'
+import { PnlCard } from '../components/PnlCard'
 import { TransferModal } from '../components/TransferModal'
-import { PortfolioEntry, PortfolioResponse, GainsResponse, ActivePosition } from '../types'
+import { PortfolioEntry, PortfolioResponse, GainsResponse, ActivePosition, PositionReview, MonitorResponse } from '../types'
 import { fmtUSD, fmtPct, fmt } from '../lib/utils'
 import { cn } from '../lib/utils'
 import { usePrices } from '../hooks/usePrices'
+import { useWebSocket } from '../hooks/useWebSocket'
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +54,122 @@ function Td({ children, right, className }: { children: React.ReactNode; right?:
   )
 }
 
+// ── Action badge ───────────────────────────────────────────────────────────
+
+const ACTION_STYLES: Record<string, { cls: string; label: string }> = {
+  HOLD:   { cls: 'bg-surface-elevated text-muted border-border',    label: 'HOLD'   },
+  CLOSE:  { cls: 'bg-sell/10 text-sell border-sell/20',             label: 'CLOSE'  },
+  REDUCE: { cls: 'bg-warn/10 text-warn border-warn/20',             label: 'REDUCE' },
+  ADJUST: { cls: 'bg-accent/10 text-accent border-accent/20',       label: 'ADJUST' },
+}
+
+function ActionBadge({ action }: { action: string }) {
+  const s = ACTION_STYLES[action] ?? ACTION_STYLES.HOLD
+  return (
+    <span className={cn('inline-flex items-center px-2.5 py-0.5 text-xs rounded-md border font-semibold tracking-wide', s.cls)}>
+      {s.label}
+    </span>
+  )
+}
+
+function ConfidenceBar({ value }: { value: number }) {
+  const pct = Math.round(value * 100)
+  const color = pct >= 75 ? 'bg-buy' : pct >= 50 ? 'bg-warn' : 'bg-sell'
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1.5 rounded-full bg-surface-hover overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-muted tabular-nums w-8 text-right">{pct}%</span>
+    </div>
+  )
+}
+
+// ── Review list (shared between current run and history modal) ────────────
+
+function ReviewList({ reviews, holdings, closingCoin, onClose }: {
+  reviews: PositionReview[]
+  holdings: PortfolioEntry[]
+  closingCoin: string | null
+  onClose: (coin: string) => void
+}) {
+  return (
+    <div className="divide-y divide-border">
+      {reviews.map(review => {
+        const mdata = (() => { try { return JSON.parse(review.market_data) } catch { return {} } })()
+        const coin = review.coin.replace('/USDC', '')
+        const hasHolding = holdings.some(h => h.coin === review.coin)
+        const isClosing = closingCoin === review.coin
+        return (
+          <div key={review.id} className="px-5 py-4 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="font-semibold text-foreground shrink-0">{coin}</span>
+                <ActionBadge action={review.action} />
+                {mdata.trend && (
+                  <span className={cn(
+                    'text-xs px-1.5 py-0.5 rounded border font-medium',
+                    mdata.trend === 'uptrend' ? 'bg-buy/10 text-buy border-buy/20'
+                    : mdata.trend === 'downtrend' ? 'bg-sell/10 text-sell border-sell/20'
+                    : 'bg-surface-hover text-muted border-border',
+                  )}>
+                    {mdata.trend}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {(review.action === 'CLOSE' || review.action === 'REDUCE') && hasHolding && (
+                  <Button variant="danger" size="sm" loading={isClosing} disabled={isClosing} onClick={() => onClose(review.coin)}>
+                    {review.action === 'REDUCE'
+                      ? `Sell ${review.reduce_to_pct != null ? (100 - review.reduce_to_pct) + '%' : 'partial'}`
+                      : 'Close'}
+                  </Button>
+                )}
+                <span className="text-xs text-muted whitespace-nowrap">{review.created_at.slice(11, 16)}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-6 text-xs text-muted">
+              {mdata.pnlPct != null && (
+                <span className={cn('font-medium', mdata.pnlPct >= 0 ? 'text-buy' : 'text-sell')}>
+                  P&L: {mdata.pnlPct >= 0 ? '+' : ''}{mdata.pnlPct.toFixed(2)}%
+                </span>
+              )}
+              {mdata.rsi14 != null && <span>RSI {mdata.rsi14.toFixed(0)}</span>}
+              {mdata.change24h != null && (
+                <span className={cn(mdata.change24h >= 0 ? 'text-buy' : 'text-sell')}>
+                  24h: {mdata.change24h >= 0 ? '+' : ''}{mdata.change24h.toFixed(2)}%
+                </span>
+              )}
+              {review.action === 'REDUCE' && review.reduce_to_pct != null && (
+                <span className="text-warn">Keep {review.reduce_to_pct}%</span>
+              )}
+            </div>
+
+            {review.action === 'ADJUST' && (review.new_stop_loss != null || review.new_take_profit != null) && (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                {review.new_stop_loss != null && (
+                  <span className="px-2 py-0.5 rounded-md bg-sell/10 text-sell border border-sell/20 tabular-nums">
+                    SL → {fmtUSD(review.new_stop_loss)}
+                  </span>
+                )}
+                {review.new_take_profit != null && (
+                  <span className="px-2 py-0.5 rounded-md bg-buy/10 text-buy border border-buy/20 tabular-nums">
+                    TP → {fmtUSD(review.new_take_profit)}
+                  </span>
+                )}
+              </div>
+            )}
+
+            <ConfidenceBar value={review.confidence} />
+            <p className="text-sm text-muted leading-relaxed">{review.reasoning}</p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Component ──────────────────────────────────────────────────────────────
 
 export default function Portfolio() {
@@ -63,6 +181,13 @@ export default function Portfolio() {
   const [txError, setTxError] = useState<string | null>(null)
   const [txPending, setTxPending] = useState<'deposit' | 'withdraw' | null>(null)
   const [transferOpen, setTransferOpen] = useState(false)
+
+  const [monitorRunning, setMonitorRunning] = useState(false)
+  const [reviews, setReviews] = useState<PositionReview[]>([])
+  const [closingCoin, setClosingCoin] = useState<string | null>(null)
+  const [monitorError, setMonitorError] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+
   const livePrices = usePrices()
 
   function load() {
@@ -78,7 +203,26 @@ export default function Portfolio() {
     }).catch(() => {}).finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  function loadMonitor() {
+    fetch('/api/monitor').then(r => r.json()).then((data: MonitorResponse) => {
+      setMonitorRunning(data.running)
+      setReviews(data.reviews ?? [])
+    }).catch(() => {})
+  }
+
+  useWebSocket(useCallback((event: string, data: unknown) => {
+    if (event === 'monitor_started') setMonitorRunning(true)
+    if (event === 'monitor_completed') {
+      setMonitorRunning(false)
+      loadMonitor()
+    }
+    if (event === 'monitor_error') {
+      setMonitorRunning(false)
+      setMonitorError((data as { error?: string })?.error ?? 'Monitor failed')
+    }
+  }, []))
+
+  useEffect(() => { load(); loadMonitor() }, [])
 
   const usdcEntry = portfolio?.entries.find(e => e.coin === 'USDC')
   const usdcBalance = usdcEntry?.quantity ?? 0
@@ -131,6 +275,69 @@ export default function Portfolio() {
     }
   }
 
+  async function handleHorizonChange(positionId: number, horizon: 'short' | 'medium' | 'long') {
+    setPositions(prev => prev.map(p => p.id === positionId ? { ...p, horizon } : p))
+    await fetch(`/api/positions/${positionId}/horizon`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ horizon }),
+    }).catch(() => {})
+  }
+
+  async function handleRunMonitor() {
+    setMonitorError(null)
+    setMonitorRunning(true)
+    try {
+      const res = await fetch('/api/monitor/run', { method: 'POST' })
+      if (!res.ok) {
+        const d = await res.json()
+        setMonitorError(d.error ?? 'Failed to start monitor')
+        setMonitorRunning(false)
+      }
+    } catch {
+      setMonitorError('Request failed')
+      setMonitorRunning(false)
+    }
+  }
+
+  async function handleClosePosition(coin: string) {
+    const entry = holdings.find(h => h.coin === coin)
+    if (!entry || !entry.quantity) return
+    setClosingCoin(coin)
+    try {
+      const baseCoin = coin.includes('/') ? coin.split('/')[0] : coin
+      const res = await fetch('/api/trade/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: baseCoin, to: 'USDC', amount: entry.quantity }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMonitorError(data.error ?? 'Close failed')
+      } else {
+        load()
+        loadMonitor()
+      }
+    } catch {
+      setMonitorError('Request failed')
+    } finally {
+      setClosingCoin(null)
+    }
+  }
+
+  // Group reviews by cycle_id; latest run = most recent cycle_id
+  const reviewsByCycle = reviews.reduce<Map<string, PositionReview[]>>((acc, r) => {
+    const list = acc.get(r.cycle_id) ?? []
+    list.push(r)
+    acc.set(r.cycle_id, list)
+    return acc
+  }, new Map())
+
+  const cycleIds = Array.from(reviewsByCycle.keys())
+  const latestCycleId = cycleIds[0] ?? null
+  const latestReviews = latestCycleId ? (reviewsByCycle.get(latestCycleId) ?? []) : []
+  const historyRuns = cycleIds.slice(1).map(id => ({ cycleId: id, reviews: reviewsByCycle.get(id)! }))
+
   if (loading && !portfolio) {
     return <div className="flex items-center justify-center h-40"><div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" /></div>
   }
@@ -149,6 +356,17 @@ export default function Portfolio() {
         />
         <Stat label="USDC Balance" value={fmtUSD(usdcBalance)} trend="neutral" />
       </div>
+
+      {/* ── P&L Summary ───────────────────────────────────────────────── */}
+      {(() => {
+        const finalUsd = gains?.total_pnl ?? 0
+        const totalBought = gains?.coins.reduce((s, c) => s + c.total_bought, 0) ?? 0
+        const finalPct = totalBought > 0 ? (finalUsd / totalBought) * 100 : null
+        const liveUsd = livePositions.reduce((s, p) => s + (p.pnl ?? 0), 0)
+        const liveBasis = livePositions.reduce((s, p) => s + p.entry_price * p.quantity, 0)
+        const livePct = liveBasis > 0 ? (liveUsd / liveBasis) * 100 : null
+        return <PnlCard finalUsd={finalUsd} finalPct={finalPct} liveUsd={liveUsd} livePct={livePct} />
+      })()}
 
       {/* ── Active Positions ──────────────────────────────────────────── */}
       <Card noPad>
@@ -169,6 +387,7 @@ export default function Portfolio() {
               <thead>
                 <tr className="border-b border-border">
                   <Th>Coin</Th>
+                  <Th>Horizon</Th>
                   <Th right>Qty</Th>
                   <Th right>Entry</Th>
                   <Th right>Current</Th>
@@ -195,7 +414,28 @@ export default function Portfolio() {
                           )}>
                             {pos.status}
                           </span>
+                          {pos.status === 'OPEN' && pos.oco_status === 'ACTIVE' && (
+                            <span className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-buy/10 text-buy" title="Stop-loss / take-profit enforced on Binance (exchange-side OCO)">
+                              🛡 OCO
+                            </span>
+                          )}
+                          {pos.status === 'OPEN' && pos.oco_status === 'FAILED' && (
+                            <span className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-sell/10 text-sell" title="Exchange OCO could not be placed — bot is enforcing SL/TP in software as a fallback">
+                              ⚠ Fallback
+                            </span>
+                          )}
                         </div>
+                      </Td>
+                      <Td>
+                        <select
+                          value={pos.horizon ?? 'medium'}
+                          onChange={e => handleHorizonChange(pos.id, e.target.value as 'short' | 'medium' | 'long')}
+                          className="text-xs bg-surface-elevated border border-border rounded-lg px-2 py-1 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+                        >
+                          <option value="short">Short</option>
+                          <option value="medium">Medium</option>
+                          <option value="long">Long</option>
+                        </select>
                       </Td>
                       <Td right>{fmt(pos.quantity, 6)}</Td>
                       <Td right>{fmtUSD(pos.entry_price)}</Td>
@@ -299,6 +539,94 @@ export default function Portfolio() {
         )}
       </Card>
 
+      {/* ── Position Monitor ──────────────────────────────────────────── */}
+      <Card noPad>
+        <div className="px-5 pt-5 pb-4">
+          <CardHeader
+            title="Position Monitor"
+            subtitle="LLM-powered review of all open holdings — HOLD, CLOSE, or REDUCE recommendations"
+            action={
+              <div className="flex items-center gap-2">
+                {historyRuns.length > 0 && (
+                  <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
+                    History ({historyRuns.length})
+                  </Button>
+                )}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={monitorRunning}
+                  disabled={monitorRunning || holdings.length === 0}
+                  onClick={handleRunMonitor}
+                >
+                  {monitorRunning ? 'Analysing…' : 'Run Monitor'}
+                </Button>
+              </div>
+            }
+          />
+        </div>
+
+        {monitorError && (
+          <div className="mx-5 mb-4 px-4 py-3 rounded-xl bg-sell/10 border border-sell/20 text-sell text-sm">
+            {monitorError}
+          </div>
+        )}
+
+        {monitorRunning && latestReviews.length === 0 && (
+          <div className="px-5 pb-6 flex items-center gap-3 text-sm text-muted">
+            <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0" />
+            Fetching market data and requesting LLM analysis…
+          </div>
+        )}
+
+        {!monitorRunning && latestReviews.length === 0 && !monitorError && (
+          <div className="px-5 pb-6 text-center text-sm text-muted">
+            {holdings.length === 0
+              ? 'No open holdings to analyse.'
+              : 'Click "Run Monitor" to get an LLM review of your open positions.'}
+          </div>
+        )}
+
+        {latestReviews.length > 0 && (
+          <ReviewList reviews={latestReviews} holdings={holdings} closingCoin={closingCoin} onClose={handleClosePosition} />
+        )}
+      </Card>
+
+      {/* ── Monitor History Modal ─────────────────────────────────────── */}
+      {historyOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setHistoryOpen(false)}>
+          <div className="bg-surface-card border border-border rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">Monitor History</h2>
+                <p className="text-xs text-muted mt-0.5">{historyRuns.length} previous run{historyRuns.length !== 1 ? 's' : ''}</p>
+              </div>
+              <button onClick={() => setHistoryOpen(false)} className="text-muted hover:text-foreground transition-colors p-1 rounded-lg hover:bg-surface-elevated">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {historyRuns.map(({ cycleId, reviews: runReviews }) => {
+                const ts = runReviews[0]?.created_at ?? ''
+                return (
+                  <div key={cycleId}>
+                    <div className="px-6 py-2.5 bg-surface-elevated border-b border-border sticky top-0">
+                      <p className="text-xs font-semibold text-muted uppercase tracking-wide">
+                        {ts ? new Date(ts.includes('T') ? ts : ts + 'Z').toLocaleString() : cycleId}
+                        <span className="ml-2 font-normal normal-case">{runReviews.length} position{runReviews.length !== 1 ? 's' : ''}</span>
+                      </p>
+                    </div>
+                    <ReviewList reviews={runReviews} holdings={[]} closingCoin={null} onClose={() => {}} />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── USDC Balance ──────────────────────────────────────────────── */}
       <Card>
         <div className="flex items-start justify-between mb-4">
@@ -347,7 +675,6 @@ export default function Portfolio() {
                 <div className={cn('text-lg font-bold tabular-nums', gains.total_pnl >= 0 ? 'text-buy' : 'text-sell')}>
                   {gains.total_pnl >= 0 ? '+' : ''}{fmtUSD(gains.total_pnl)}
                 </div>
-                <div className="text-xs text-muted tabular-nums">fees: {fmtUSD(gains.total_fees ?? 0)}</div>
               </div>
             ) : undefined}
           />
@@ -362,7 +689,7 @@ export default function Portfolio() {
             <table className="w-full text-sm min-w-[520px]">
               <thead>
                 <tr className="border-b border-border">
-                  {['Coin', 'Invested', 'Returned', 'Fees', 'P&L', '%'].map((h, i) => (
+                  {['Coin', 'Invested', 'Returned', 'P&L', '%'].map((h, i) => (
                     <th key={h} className={cn('py-2.5 px-4 text-xs font-medium text-muted uppercase tracking-wide', i === 0 ? 'text-left' : 'text-right')}>
                       {h}
                     </th>
@@ -378,7 +705,6 @@ export default function Portfolio() {
                       <td className="py-3 px-4 font-semibold">{c.coin.replace('/USDC', '')}</td>
                       <td className="py-3 px-4 text-right tabular-nums text-muted">{fmtUSD(c.total_bought)}</td>
                       <td className="py-3 px-4 text-right tabular-nums text-muted">{fmtUSD(c.total_sold)}</td>
-                      <td className="py-3 px-4 text-right tabular-nums text-sell">{fmtUSD(c.fees_paid ?? 0)}</td>
                       <td className={cn('py-3 px-4 text-right tabular-nums font-semibold', cls)}>
                         {pos ? '+' : ''}{fmtUSD(c.realized_pnl)}
                       </td>

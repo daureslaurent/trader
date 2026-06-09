@@ -11,9 +11,11 @@ import * as pipeline from './views/pipeline.js'
 import * as settings from './views/settings.js'
 import * as approvals from './views/approvals.js'
 
+type ViewModule = { render: (ctx: any) => Promise<{ text: string; buttons: ReturnType<typeof Markup.button.callback>[][] }> }
+
 export class MenuController {
   private bot: Telegraf<BotContext>
-  private views = new Map<string, { render: (ctx: any) => Promise<{ text: string; buttons: ReturnType<typeof Markup.button.callback>[][] }> }>()
+  private views = new Map<string, ViewModule>()
 
   constructor(bot: Telegraf<BotContext>) {
     this.bot = bot
@@ -70,7 +72,10 @@ export class MenuController {
         const view = this.views.get('pipeline') as any
         const { text, buttons } = await view.renderCycle(ctx, cycleId)
         const fullButtons = [...buttons, [Markup.button.callback('◀️ Back', 'menu:back')]]
-        await ctx.editMessageText(text, { reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup })
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup,
+        })
       } catch (err) {
         logger.error('Pipeline cycle error', { error: err instanceof Error ? err.message : String(err) })
         await ctx.editMessageText('Error loading cycle.')
@@ -92,41 +97,47 @@ export class MenuController {
     })
 
     this.bot.command('set', async (ctx) => {
-      const text = ctx.message.text.trim()
-      const parts = text.split(' ').filter(Boolean)
+      const parts = ctx.message.text.trim().split(/\s+/).filter(Boolean)
       if (parts.length < 3) {
-        return ctx.reply('Usage: /set <key> <value>\nExample: /set pipeline_cron "0 */2 * * *"')
+        return ctx.reply(
+          'Usage: /set &lt;key&gt; &lt;value&gt;\nExample: <code>/set pipeline_cron "0 */2 * * *"</code>',
+          { parse_mode: 'HTML' }
+        )
       }
       const key = parts[1]
       const value = parts.slice(2).join(' ')
       try {
         updateSetting(key, value)
-        ctx.reply(`✅ ${key} updated to ${value}`)
+        ctx.reply(`✅ <code>${key}</code> updated to <code>${value}</code>`, { parse_mode: 'HTML' })
       } catch (err) {
-        ctx.reply(`❌ Failed to update: ${err instanceof Error ? err.message : String(err)}`)
+        ctx.reply(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`)
       }
     })
 
     this.bot.action('setting:toggle:approval_required', async (ctx) => {
-      const settings = getSettings()
-      updateSetting('approval_required', String(!settings.approval_required))
-      await ctx.answerCbQuery(`Approval required: ${!settings.approval_required}`)
+      const s = getSettings()
+      const next = !s.approval_required
+      updateSetting('approval_required', String(next))
+      await ctx.answerCbQuery(`Approval ${next ? 'enabled' : 'disabled'}`)
       await this.renderView(ctx, 'settings')
     })
 
     this.bot.action(/^setting:edit:(.+)$/, async (ctx) => {
       const labels: Record<string, string> = {
-        pipeline_cron: 'Pipeline Cron',
-        min_confidence: 'Min Confidence',
-        max_position_size_usd: 'Max Position ($)',
-        stop_loss_atr: 'Stop Loss ATR',
-        take_profit_atr: 'Take Profit ATR',
-        max_risk_per_trade: 'Max Risk (%)',
-        max_open_positions: 'Max Positions',
+        watchlist: 'Watchlist (comma-separated symbols)',
+        pipeline_cron: 'Pipeline Cron expression',
+        min_confidence: 'Min Confidence (0–1)',
+        max_position_size_usd: 'Max Position Size ($)',
+        stop_loss_atr: 'Stop Loss ATR multiplier',
+        take_profit_atr: 'Take Profit ATR multiplier',
+        max_risk_per_trade: 'Max Risk per Trade (0–1)',
+        max_open_positions: 'Max Open Positions',
       }
       const key = ctx.match[1]
+      const label = labels[key] || key
       await ctx.editMessageText(
-        `Send the new value for "${labels[key] || key}" as a message.\n\nReply with /set ${key} <value> to update.`
+        `✏️ <b>${label}</b>\n\nSend: <code>/set ${key} &lt;value&gt;</code>`,
+        { parse_mode: 'HTML' }
       )
       await ctx.answerCbQuery()
     })
@@ -134,35 +145,32 @@ export class MenuController {
     this.bot.action(/^approve:(\d+)$/, async (ctx) => {
       const id = parseInt(ctx.match[1], 10)
       bus.emit('trade_approved', id)
-      await ctx.answerCbQuery(`Trade ${id} approved`)
+      await ctx.answerCbQuery(`✅ Trade #${id} approved`)
       await this.renderView(ctx, 'approvals')
     })
 
     this.bot.action(/^reject:(\d+)$/, async (ctx) => {
       const id = parseInt(ctx.match[1], 10)
       bus.emit('trade_rejected', id)
-      await ctx.answerCbQuery(`Trade ${id} rejected`)
+      await ctx.answerCbQuery(`❌ Trade #${id} rejected`)
       await this.renderView(ctx, 'approvals')
     })
   }
 
   private async showMainMenu(ctx: any) {
     const buttons = [
-      [Markup.button.callback('📊 Dashboard', 'menu:dashboard')],
-      [Markup.button.callback('💼 Portfolio', 'menu:portfolio')],
-      [Markup.button.callback('📜 Trade History', 'menu:trades')],
-      [Markup.button.callback('🧠 LLM Decisions', 'menu:decisions')],
-      [Markup.button.callback('🔬 Pipeline', 'menu:pipeline')],
-      [Markup.button.callback('⚙️ Settings', 'menu:settings')],
-      [Markup.button.callback('✅ Approvals', 'menu:approvals')],
-      [Markup.button.callback('🔄 Refresh', 'menu:refresh')],
+      [Markup.button.callback('📊 Dashboard', 'menu:dashboard'), Markup.button.callback('💼 Portfolio', 'menu:portfolio')],
+      [Markup.button.callback('📜 Trades', 'menu:trades'), Markup.button.callback('🧠 Decisions', 'menu:decisions')],
+      [Markup.button.callback('🔬 Pipeline', 'menu:pipeline'), Markup.button.callback('⚙️ Settings', 'menu:settings')],
+      [Markup.button.callback('✅ Approvals', 'menu:approvals'), Markup.button.callback('🔄 Refresh', 'menu:refresh')],
     ]
-    const text = '🤖 CryptoBot — Main Menu\n\nSelect a section:'
+    const text = '🤖 <b>CryptoBot</b> — Main Menu\n\nSelect a section:'
+    const opts = { parse_mode: 'HTML' as const, reply_markup: Markup.inlineKeyboard(buttons).reply_markup }
     if (ctx.callbackQuery) {
-      await ctx.editMessageText(text, { reply_markup: Markup.inlineKeyboard(buttons).reply_markup })
+      await ctx.editMessageText(text, opts)
       await ctx.answerCbQuery().catch(() => {})
     } else {
-      await ctx.reply(text, { reply_markup: Markup.inlineKeyboard(buttons).reply_markup })
+      await ctx.reply(text, opts)
     }
   }
 
@@ -178,19 +186,20 @@ export class MenuController {
     try {
       const { text, buttons } = await view.render(ctx)
       const fullButtons = [...buttons, [Markup.button.callback('◀️ Back', 'menu:back')]]
+      const opts = { parse_mode: 'HTML' as const, reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup }
       if (ctx.callbackQuery) {
-        await ctx.editMessageText(text, { reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup })
+        await ctx.editMessageText(text, opts)
         await ctx.answerCbQuery()
       } else {
-        await ctx.reply(text, { reply_markup: Markup.inlineKeyboard(fullButtons).reply_markup })
+        await ctx.reply(text, opts)
       }
     } catch (err) {
       logger.error('View render error', { view: viewName, error: err instanceof Error ? err.message : String(err) })
       if (ctx.callbackQuery) {
-        await ctx.editMessageText('Error loading data. Try again later.')
+        await ctx.editMessageText('⚠️ Error loading data. Try again later.')
         await ctx.answerCbQuery()
       } else {
-        await ctx.reply('Error loading data. Try again later.')
+        await ctx.reply('⚠️ Error loading data. Try again later.')
       }
     }
   }

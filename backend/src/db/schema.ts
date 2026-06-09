@@ -1,131 +1,21 @@
-export const SCHEMA = `
-CREATE TABLE IF NOT EXISTS trades (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  coin TEXT NOT NULL,
-  side TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
-  quantity REAL NOT NULL,
-  price REAL,
-  total REAL,
-  fee_cost REAL NOT NULL DEFAULT 0,
-  fee_currency TEXT NOT NULL DEFAULT 'USDC',
-  signal_id INTEGER,
-  status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','EXECUTED','FAILED')),
-  approved INTEGER,
-  error TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
-CREATE TABLE IF NOT EXISTS decisions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  coin TEXT NOT NULL,
-  action TEXT NOT NULL CHECK(action IN ('BUY','SELL','HOLD')),
-  reason TEXT NOT NULL,
-  confidence REAL NOT NULL,
-  context TEXT,
-  triggered_trade_id INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (triggered_trade_id) REFERENCES trades(id)
-);
+const SQL_DIR = path.join(fileURLToPath(import.meta.url), '..', 'sql')
 
-CREATE TABLE IF NOT EXISTS portfolio_snapshots (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  total_value_usd REAL NOT NULL,
-  holdings TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+function loadDir(dir: string): string {
+  return fs
+    .readdirSync(dir)
+    .filter(f => f.endsWith('.sql'))
+    .sort()
+    .map(f => fs.readFileSync(path.join(dir, f), 'utf8'))
+    .join('\n')
+}
 
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS pipeline_events (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  coin       TEXT NOT NULL,
-  cycle_id   TEXT NOT NULL,
-  stage      TEXT NOT NULL,
-  data       TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_pipeline_cycle ON pipeline_events(cycle_id);
-CREATE INDEX IF NOT EXISTS idx_pipeline_created ON pipeline_events(created_at DESC);
-
-CREATE TABLE IF NOT EXISTS positions (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  coin        TEXT NOT NULL,
-  side        TEXT NOT NULL CHECK(side IN ('BUY')),
-  quantity    REAL NOT NULL,
-  entry_price REAL NOT NULL,
-  stop_loss   REAL NOT NULL,
-  take_profit REAL,
-  current_sl  REAL NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','CLOSED','SL_HIT','TP_HIT')),
-  entry_id    INTEGER,
-  exit_id     INTEGER,
-  pnl         REAL,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-INSERT OR IGNORE INTO settings (key, value) VALUES
-  ('cache_ttl_hours', '13'),
-  ('stop_loss_atr', '2'),
-  ('take_profit_atr', '4'),
-  ('max_risk_per_trade', '0.02'),
-  ('max_open_positions', '5'),
-  ('watchlist', '[]'),
-  ('pipeline_cron', '0 * * * *'),
-  ('min_confidence', '0.3'),
-  ('max_position_size_usd', '100'),
-  ('approval_required', 'false'),
-  ('fee_rate', '0.001'),
-  ('discover_cron', '0 6 * * *'),
-  ('discover_min_score', '0.65'),
-  ('discover_top_n', '30'),
-  ('discover_auto_add', 'false'),
-  ('discover_min_volume_usd', '5000000');
-
-CREATE TABLE IF NOT EXISTS coin_discoveries (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  coin        TEXT NOT NULL,
-  score       REAL NOT NULL,
-  reasoning   TEXT NOT NULL,
-  market_data TEXT NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','auto_added')),
-  cycle_id    TEXT NOT NULL,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_discoveries_created ON coin_discoveries(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_discoveries_status ON coin_discoveries(status);
-
-CREATE INDEX IF NOT EXISTS idx_trades_created ON trades(created_at);
-CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions(created_at);
-CREATE INDEX IF NOT EXISTS idx_snapshots_created ON portfolio_snapshots(created_at);
-CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
-CREATE INDEX IF NOT EXISTS idx_pipeline_events_created ON pipeline_events(created_at);
-CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
-
-CREATE TABLE IF NOT EXISTS portfolio_entries (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  coin        TEXT NOT NULL,
-  quantity    REAL NOT NULL,
-  buy_price   REAL NOT NULL,
-  buy_date    TEXT NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','CLOSED')),
-  source      TEXT NOT NULL DEFAULT 'trade' CHECK(source IN ('trade','manual','transfer')),
-  trade_id    INTEGER REFERENCES trades(id),
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_portfolio_entries_status ON portfolio_entries(status);
-
-CREATE TABLE IF NOT EXISTS extraction_cache (
-  url       TEXT PRIMARY KEY,
-  coin      TEXT NOT NULL DEFAULT '',
-  data      TEXT NOT NULL,
-  cached_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_extraction_cache_coin ON extraction_cache(coin);
-`
+export const SCHEMAS: Record<string, string> = {
+  settings: loadDir(path.join(SQL_DIR, 'settings')),
+  trading:  loadDir(path.join(SQL_DIR, 'trading')),
+  pipeline: loadDir(path.join(SQL_DIR, 'pipeline')),
+  cache:    loadDir(path.join(SQL_DIR, 'cache')),
+}

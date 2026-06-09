@@ -52,6 +52,21 @@
   color-scheme: dark;
 }
 
+[data-theme='aurora'] {
+  --surface-base: #0d0814;
+  --surface-card: #120f1e;
+  --surface-elevated: #1a1530;
+  --surface-hover: #221d3c;
+  --accent-rgb: 168 85 247;
+  --buy-rgb: 52 211 153;
+  --sell-rgb: 251 113 133;
+  --warn-rgb: 251 191 36;
+  --foreground: #f0ebff;
+  --muted-fg: #7c6fa0;
+  --border-color: rgba(168, 85, 247, 0.12);
+  color-scheme: dark;
+}
+
 [data-theme='light'] {
   --surface-base: #f8fafc;
   --surface-card: #ffffff;
@@ -104,4 +119,46 @@ body {
 
 [data-theme='neon'] .neon-border {
   box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.2), 0 0 20px rgba(34, 211, 238, 0.06);
+}
+
+/* ============================================================
+   AURORA THEME — violet/indigo glow accents
+   ============================================================ */
+
+[data-theme='aurora'] .aurora-card {
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.15), 0 4px 24px rgba(168, 85, 247, 0.06);
+}
+
+[data-theme='aurora'] aside {
+  background: linear-gradient(180deg, #150f26 0%, #120f1e 100%);
+  border-right-color: rgba(168, 85, 247, 0.14);
+}
+
+[data-theme='aurora'] aside .aurora-brand {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.2) 0%, rgba(99, 102, 241, 0.15) 100%);
+}
+
+@keyframes aurora-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%       { opacity: 1; }
+}
+
+[data-theme='aurora'] .aurora-dot {
+  animation: aurora-pulse 2.5s ease-in-out infinite;
+}
+
+[data-theme='aurora'] body::before {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 40% at 70% -10%, rgba(168, 85, 247, 0.07) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 30% at -10% 60%, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
+  z-index: 0;
+}
+
+[data-theme='aurora'] #root {
+  position: relative;
+  z-index: 1;
 }

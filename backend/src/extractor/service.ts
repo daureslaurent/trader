@@ -1,15 +1,65 @@
 import OpenAI from 'openai'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
+import { llmChat } from '../core/llm.js'
 import { queryOne, runSQL } from '../db/index.js'
 import { ResearchResult, ArticleContent } from '../researcher/index.js'
-import { buildSingleArticlePrompt, buildSelectionPrompt } from './prompts.js'
-import { ExtractedResearch, ExtractedArticle } from './types.js'
+import { buildChallengePrompt, buildSingleArticlePrompt, buildSelectionPrompt } from './prompts.js'
+import { ExtractedResearch, ExtractedArticle, ArticleSkipReason } from './types.js'
 
-const client = new OpenAI({
-  baseURL: config.extractor.baseURL,
-  apiKey: 'ollama',
-})
+export interface ExtractorLLMConfig {
+  client: OpenAI
+  model: string
+  maxTokens: number
+}
+
+const defaultExtractorConfig: ExtractorLLMConfig = {
+  client: new OpenAI({ baseURL: config.extractor.baseURL, apiKey: 'ollama' }),
+  model: config.extractor.model,
+  maxTokens: config.extractor.maxTokens,
+}
+
+// ── Blocked-content detection ────────────────────────────────────────────────
+
+const CLOUDFLARE_PATTERNS = [
+  /cloudflare/i,
+  /ray id:/i,
+  /checking your browser/i,
+  /enable javascript and cookies/i,
+  /cf-ray/i,
+]
+
+const CAPTCHA_PATTERNS = [
+  /captcha/i,
+  /verify you are (a )?human/i,
+  /i am not a robot/i,
+  /complete the security check/i,
+  /access denied/i,
+  /403 forbidden/i,
+  /ddos protection/i,
+  /just a moment\.\.\./i,
+]
+
+function detectBlockedContent(content: string): ArticleSkipReason | null {
+  if (CLOUDFLARE_PATTERNS.some(p => p.test(content))) return 'cloudflare'
+  if (CAPTCHA_PATTERNS.some(p => p.test(content))) return 'captcha'
+  return null
+}
+
+function makeSkippedArticle(
+  article: { title: string; url: string },
+  skip_reason: ArticleSkipReason,
+): ExtractedArticle {
+  return {
+    title: article.title,
+    url: article.url,
+    relevance_score: 0,
+    sentiment: 'neutral',
+    summary: '',
+    key_points: [],
+    skip_reason,
+  }
+}
 
 // ── Cache helpers ────────────────────────────────────────────────────────────
 
@@ -44,7 +94,7 @@ function setCached(coin: string, url: string, article: ExtractedArticle): void {
 
 function parseSingleArticle(content: string): ExtractedArticle | null {
   try {
-    const stripped = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+    const stripped = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
     const parsed = JSON.parse(stripped)
     const raw: unknown = (parsed as any)?.article ?? parsed
     if (typeof raw !== 'object' || !raw) return null
@@ -68,11 +118,57 @@ function computeAggregatedSentiment(
   return 'neutral'
 }
 
+// ── Relevance challenge (cheap LLM call before full extraction) ──────────────
+
+async function challengeArticle(
+  coin: string,
+  article: ArticleContent,
+  llm: ExtractorLLMConfig,
+): Promise<{ relevant: true } | { relevant: false; reason: string }> {
+  // Use only the base symbol, not the trading pair (e.g. BTC/USDC → BTC)
+  const baseCoin = coin.split('/')[0]
+  const { system, user } = buildChallengePrompt(baseCoin, article)
+  try {
+    const resp = await llmChat(llm.client, {
+      model: llm.model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.0,
+      max_tokens: llm.maxTokens,
+      response_format: { type: 'json_object' },
+    }, { module: 'extractor-challenge', coin: baseCoin })
+
+    const raw = resp.choices[0]?.message?.content ?? ''
+    const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+    logger.debug('Challenge response', { coin: baseCoin, url: article.url, raw: stripped })
+    const parsed = JSON.parse(stripped) as { relevant?: boolean; reason?: string }
+    if (parsed.relevant === true) {
+      logger.info('Article challenge passed', { coin: baseCoin, url: article.url })
+      return { relevant: true }
+    }
+    const reason = typeof parsed.reason === 'string' && parsed.reason.trim()
+      ? parsed.reason.trim()
+      : 'Not relevant to this coin'
+    logger.info('Article challenge failed', { coin: baseCoin, url: article.url, reason })
+    return { relevant: false, reason }
+  } catch (err) {
+    logger.warn('Challenge error, allowing article through', {
+      coin: baseCoin,
+      url: article.url,
+      error: (err as Error).message,
+    })
+    return { relevant: true }
+  }
+}
+
 // ── Per-article extraction (1 LLM call, cached by URL) ──────────────────────
 
 async function extractSingleArticle(
   coin: string,
   article: ArticleContent,
+  llm: ExtractorLLMConfig = defaultExtractorConfig,
 ): Promise<ExtractedArticle | null> {
   const cached = getCached(article.url)
   if (cached) {
@@ -80,20 +176,35 @@ async function extractSingleArticle(
     return { ...cached, from_cache: true }
   }
 
+  const blocked = detectBlockedContent(article.content)
+  if (blocked) {
+    logger.info('Article blocked, skipping LLM', { coin, url: article.url, skip_reason: blocked })
+    const skipped = makeSkippedArticle(article, blocked)
+    setCached(coin, article.url, skipped)
+    return skipped
+  }
+
+  const challenge = await challengeArticle(coin, article, llm)
+  if (!challenge.relevant) {
+    const skipped = { ...makeSkippedArticle(article, 'irrelevant'), summary: challenge.reason }
+    setCached(coin, article.url, skipped)
+    return skipped
+  }
+
   const { system, user } = buildSingleArticlePrompt(coin, article)
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
-      const resp = await client.chat.completions.create({
-        model: config.extractor.model,
+      const resp = await llmChat(llm.client, {
+        model: llm.model,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
         temperature: 0.2,
-        max_tokens: config.extractor.maxTokens,
+        max_tokens: llm.maxTokens,
         response_format: { type: 'json_object' },
-      })
+      }, { module: 'extractor', coin })
 
       const content = resp.choices[0]?.message?.content ?? ''
       if (resp.choices[0]?.finish_reason === 'length') {
@@ -125,10 +236,11 @@ async function extractSingleArticle(
 
 export async function extractResearch(
   result: ResearchResult,
+  llm?: ExtractorLLMConfig,
 ): Promise<ExtractedResearch> {
   if (result.articles.length === 0) {
     logger.debug('No articles to extract', { coin: result.coin })
-    return { coin: result.coin, articles: [], aggregated_sentiment: 'neutral', top_headlines: result.headlines }
+    return { coin: result.coin, articles: [], skipped_articles: [], aggregated_sentiment: 'neutral', top_headlines: result.headlines }
   }
 
   logger.info('Starting per-article extraction', {
@@ -137,28 +249,47 @@ export async function extractResearch(
   })
 
   const settled = await Promise.allSettled(
-    result.articles.map(a => extractSingleArticle(result.coin, a))
+    result.articles.map(a => extractSingleArticle(result.coin, a, llm))
   )
 
   const articles: ExtractedArticle[] = []
+  const skipped_articles: ExtractedArticle[] = []
   let cacheHits = 0
+
   for (const r of settled) {
-    if (r.status === 'fulfilled' && r.value) {
-      articles.push(r.value)
-      if (r.value.from_cache) cacheHits++
+    if (r.status !== 'fulfilled' || !r.value) continue
+    const article = r.value
+
+    if (article.skip_reason) {
+      skipped_articles.push(article)
+      continue
     }
+
+    if (article.relevance_score === 0) {
+      skipped_articles.push({ ...article, skip_reason: 'irrelevant' })
+      continue
+    }
+
+    articles.push(article)
+    if (article.from_cache) cacheHits++
   }
 
   logger.info('Extraction complete', {
     coin: result.coin,
-    total: articles.length,
+    valid: articles.length,
     fromCache: cacheHits,
-    fresh: articles.length - cacheHits,
+    skipped: skipped_articles.length,
+    skipBreakdown: skipped_articles.reduce<Record<string, number>>((acc, a) => {
+      const r = a.skip_reason ?? 'unknown'
+      acc[r] = (acc[r] ?? 0) + 1
+      return acc
+    }, {}),
   })
 
   return {
     coin: result.coin,
     articles,
+    skipped_articles,
     aggregated_sentiment: computeAggregatedSentiment(articles),
     top_headlines: result.headlines,
   }
@@ -169,15 +300,17 @@ export async function extractResearch(
 export async function selectArticles(
   coin: string,
   articles: ExtractedArticle[],
+  llm?: ExtractorLLMConfig,
 ): Promise<ExtractedArticle[]> {
   if (articles.length === 0) return []
   if (articles.length <= 2) return articles
 
   const { system, user } = buildSelectionPrompt(coin, articles)
+  const cfg = llm ?? defaultExtractorConfig
 
   try {
-    const resp = await client.chat.completions.create({
-      model: config.extractor.model,
+    const resp = await llmChat(cfg.client, {
+      model: cfg.model,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -185,7 +318,7 @@ export async function selectArticles(
       temperature: 0.1,
       max_tokens: 256,
       response_format: { type: 'json_object' },
-    })
+    }, { module: 'extractor', coin })
 
     const content = resp.choices[0]?.message?.content ?? ''
     const parsed = JSON.parse(content) as { selected_urls?: string[] }

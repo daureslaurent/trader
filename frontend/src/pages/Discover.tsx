@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
@@ -12,13 +12,12 @@ interface DiscoverResponse {
 }
 
 interface DiscoverSettings {
+  watchlist: string[]
   discover_cron: string
   discover_min_score: number
   discover_top_n: number
   discover_auto_add: boolean
   discover_min_volume_usd: number
-  discoverer_base_url: string
-  discoverer_model: string
 }
 
 const CRON_PRESETS = [
@@ -180,7 +179,7 @@ function DiscoveryCard({
   )
 }
 
-// ── Pipeline log ───────────────────────────────────────────────────────────
+// ── Pipeline run panel ────────────────────────────────────────────────────────
 
 interface LogEntry {
   id: number
@@ -190,40 +189,70 @@ interface LogEntry {
   ts: string
 }
 
-const STAGE_META: Record<string, { label: (d: Record<string, unknown>, coin: string) => string; cls: string; dot: string }> = {
-  discovery_started: {
-    label: (d) => `Pipeline started — top ${d.top_n ?? '?'}, min vol $${((d.min_volume_usd as number ?? 0) / 1_000_000).toFixed(1)}M`,
-    cls: 'text-accent',
-    dot: 'bg-accent',
-  },
-  discovery_candidates_found: {
-    label: (d) => `${d.candidates ?? 0} candidates (${d.excluded ?? 0} already in watchlist)`,
-    cls: 'text-foreground',
-    dot: 'bg-muted',
-  },
-  discovery_evaluating: {
-    label: (_, coin) => `Evaluating ${coin.replace('/USDC', '')}…`,
-    cls: 'text-muted',
-    dot: 'bg-warn',
-  },
-  discovery_scored: {
-    label: (d, coin) => {
-      const pct = Math.round(((d.score as number) ?? 0) * 100)
-      return `${coin.replace('/USDC', '')} scored ${pct}%`
-    },
-    cls: 'text-foreground',
-    dot: 'bg-buy',
-  },
-  discovery_error: {
-    label: (d, coin) => `Error${coin !== 'DISCOVERY' ? ` (${coin.replace('/USDC', '')})` : ''}: ${d.error ?? 'unknown'}`,
-    cls: 'text-sell',
-    dot: 'bg-sell',
-  },
-  discovery_completed: {
-    label: (d) => `Done — ${d.evaluated ?? 0} evaluated, ${d.discovered ?? 0} scored, ${d.auto_added ?? 0} auto-added`,
-    cls: 'text-buy',
-    dot: 'bg-buy',
-  },
+interface CoinState {
+  coin: string
+  stage: string
+  articlesFetched?: number
+  articlesExtracted?: number
+  sentiment?: string
+  score?: number
+  error?: string
+  ts: string
+}
+
+interface RunMeta {
+  startTs: string
+  topN?: number
+  candidates?: number
+  excluded?: number
+  evaluated?: number
+  discovered?: number
+  autoAdded?: number
+  done: boolean
+}
+
+function derivePipelineState(entries: LogEntry[]): { run: RunMeta | null; coins: CoinState[] } {
+  let run: RunMeta | null = null
+  const map = new Map<string, CoinState>()
+
+  for (const e of entries) {
+    if (e.stage === 'discovery_started') {
+      run = { startTs: e.ts, topN: e.data.top_n as number | undefined, done: false }
+      continue
+    }
+    if (e.stage === 'discovery_candidates_found') {
+      if (run) { run.candidates = e.data.candidates as number; run.excluded = e.data.excluded as number }
+      continue
+    }
+    if (e.stage === 'discovery_completed') {
+      if (run) { run.evaluated = e.data.evaluated as number; run.discovered = e.data.discovered as number; run.autoAdded = e.data.auto_added as number; run.done = true }
+      continue
+    }
+    if (!e.coin || e.coin === 'DISCOVERY' || e.coin === 'SYSTEM') continue
+
+    const prev = map.get(e.coin) ?? { coin: e.coin, stage: 'evaluating', ts: e.ts }
+    switch (e.stage) {
+      case 'discovery_evaluating':  map.set(e.coin, { ...prev, stage: 'evaluating',  ts: e.ts }); break
+      case 'discovery_researching': map.set(e.coin, { ...prev, stage: 'researching', ts: e.ts }); break
+      case 'discovery_researched':  map.set(e.coin, { ...prev, stage: 'researched',  articlesFetched: e.data.articleCount as number, ts: e.ts }); break
+      case 'discovery_extracting':  map.set(e.coin, { ...prev, stage: 'extracting',  ts: e.ts }); break
+      case 'discovery_extracted':   map.set(e.coin, { ...prev, stage: 'extracted',   articlesExtracted: e.data.articleCount as number, sentiment: e.data.aggregated_sentiment as string, ts: e.ts }); break
+      case 'discovery_scored':      map.set(e.coin, { ...prev, stage: 'scored',      score: e.data.score as number, ts: e.ts }); break
+      case 'discovery_error':       map.set(e.coin, { ...prev, stage: 'error',       error: e.data.error as string, ts: e.ts }); break
+    }
+  }
+
+  return { run, coins: Array.from(map.values()) }
+}
+
+const STAGE_CHIP: Record<string, { label: string; cls: string; pulse?: boolean }> = {
+  evaluating:  { label: 'Eval',       cls: 'text-warn bg-warn/10',              pulse: true  },
+  researching: { label: 'Searching',  cls: 'text-blue-400 bg-blue-400/10',      pulse: true  },
+  researched:  { label: 'Searched',   cls: 'text-blue-400 bg-blue-400/10'                    },
+  extracting:  { label: 'Extracting', cls: 'text-violet-400 bg-violet-400/10',  pulse: true  },
+  extracted:   { label: 'Extracted',  cls: 'text-violet-400 bg-violet-400/10'                },
+  scored:      { label: 'Scored',     cls: 'text-buy bg-buy/10'                              },
+  error:       { label: 'Error',      cls: 'text-sell bg-sell/10'                            },
 }
 
 function fmt(ts: string): string {
@@ -232,44 +261,83 @@ function fmt(ts: string): string {
 }
 
 function PipelineLog({ entries, active }: { entries: LogEntry[]; active: boolean }) {
-  const bottomRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [entries.length])
+  const { run, coins } = derivePipelineState(entries)
 
   return (
     <Card>
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className={cn('w-1.5 h-1.5 rounded-full', active ? 'bg-accent animate-pulse' : 'bg-muted')} />
-          <span className="text-xs font-semibold text-foreground">Pipeline Activity</span>
+          <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', active ? 'bg-accent animate-pulse' : 'bg-muted')} />
+          <span className="text-xs font-semibold text-foreground">Discovery run</span>
         </div>
-        {entries.length > 0 && (
-          <span className="text-xs text-muted">{entries.length} event{entries.length !== 1 ? 's' : ''}</span>
-        )}
+        {run && <span className="text-[11px] text-muted font-mono">{fmt(run.startTs)}</span>}
       </div>
 
-      {entries.length === 0 ? (
+      {!run ? (
         <p className="text-xs text-muted text-center py-4">
-          {active ? 'Waiting for events…' : 'Run the pipeline to see live activity.'}
+          {active ? 'Waiting for events…' : 'Run the pipeline to see activity.'}
         </p>
       ) : (
-        <div className="overflow-y-auto max-h-72 space-y-1 pr-1">
-          {entries.map(e => {
-            const meta = STAGE_META[e.stage]
-            const label = meta ? meta.label(e.data, e.coin) : e.stage
-            const cls = meta?.cls ?? 'text-muted'
-            const dot = meta?.dot ?? 'bg-muted'
-            return (
-              <div key={e.id} className="flex items-start gap-2 group">
-                <span className="text-[10px] text-muted tabular-nums shrink-0 mt-0.5 w-16">{fmt(e.ts)}</span>
-                <span className={cn('w-1.5 h-1.5 rounded-full shrink-0 mt-1', dot)} />
-                <span className={cn('text-xs leading-snug break-words min-w-0', cls)}>{label}</span>
-              </div>
-            )
-          })}
-          <div ref={bottomRef} />
+        <div className="space-y-2">
+          {/* Run meta */}
+          {run.candidates != null && (
+            <p className="text-[11px] text-muted">
+              {run.candidates} candidates · {run.excluded ?? 0} skipped
+              {run.topN != null && <span className="ml-1">· top {run.topN}</span>}
+            </p>
+          )}
+
+          {/* Per-coin cards */}
+          {coins.length > 0 && (
+            <div className="space-y-1.5">
+              {coins.map(c => {
+                const chip = STAGE_CHIP[c.stage] ?? { label: c.stage, cls: 'text-muted bg-muted/10' }
+                const symbol = c.coin.replace('/USDC', '')
+                const pct = c.score != null ? Math.round(c.score * 100) : null
+                const scoreColor = pct == null ? '' : pct >= 70 ? 'text-buy' : pct >= 50 ? 'text-warn' : 'text-sell'
+                const barColor  = pct == null ? '' : pct >= 70 ? 'bg-buy'   : pct >= 50 ? 'bg-warn'   : 'bg-sell'
+                const arts = c.articlesExtracted ?? c.articlesFetched
+
+                return (
+                  <div key={c.coin} className="bg-surface-elevated rounded-xl px-3 py-2 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold font-mono text-foreground">{symbol}</span>
+                      <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded-md', chip.cls, chip.pulse && 'animate-pulse')}>
+                        {chip.label}
+                      </span>
+                    </div>
+
+                    {pct != null && (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1 bg-surface rounded-full overflow-hidden">
+                          <div className={cn('h-full rounded-full transition-all', barColor)} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className={cn('text-[11px] font-semibold tabular-nums w-7 text-right', scoreColor)}>{pct}%</span>
+                      </div>
+                    )}
+
+                    {c.stage === 'error' && c.error && (
+                      <p className="text-[10px] text-sell leading-snug line-clamp-2">{c.error}</p>
+                    )}
+
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted">
+                      {arts != null && <span>{arts} art.</span>}
+                      {c.sentiment && <span className="text-muted/60">· {c.sentiment}</span>}
+                      <span className="ml-auto font-mono opacity-60">{fmt(c.ts)}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Done summary */}
+          {run.done && (
+            <div className="pt-1.5 border-t border-border/40 flex items-center gap-1.5 text-[11px] text-muted">
+              <span className="text-buy font-bold">✓</span>
+              <span>{run.evaluated ?? 0} evaluated · {run.discovered ?? 0} scored · {run.autoAdded ?? 0} auto-added</span>
+            </div>
+          )}
         </div>
       )}
     </Card>
@@ -306,6 +374,16 @@ export default function Discover() {
 
   // Live WebSocket updates
   useWebSocket(useCallback((event: string, raw: unknown) => {
+    if (event === 'coin_discovered') {
+      const d = raw as DiscoveryResult
+      setData(prev => {
+        if (!prev) return prev
+        const alreadyExists = prev.discoveries.some(x => x.id === d.id)
+        if (alreadyExists) return prev
+        return { ...prev, discoveries: [d, ...prev.discoveries] }
+      })
+      return
+    }
     if (event !== 'pipeline_event') return
     const e = raw as { id: number; coin: string; stage: string; data: string; created_at: string }
     if (!e.stage.startsWith('discovery_')) return
@@ -328,13 +406,12 @@ export default function Discover() {
       const settingsData = await settingsRes.json()
       setData(discoverData)
       setSettings({
+        watchlist: settingsData.watchlist ?? [],
         discover_cron: settingsData.discover_cron ?? '0 6 * * *',
         discover_min_score: settingsData.discover_min_score ?? 0.65,
         discover_top_n: settingsData.discover_top_n ?? 30,
         discover_auto_add: settingsData.discover_auto_add ?? false,
         discover_min_volume_usd: settingsData.discover_min_volume_usd ?? 5000000,
-        discoverer_base_url: settingsData.discoverer_base_url ?? '',
-        discoverer_model: settingsData.discoverer_model ?? '',
       })
     } catch {
       // ignore
@@ -390,8 +467,6 @@ export default function Discover() {
           discover_top_n: String(settings.discover_top_n),
           discover_auto_add: String(settings.discover_auto_add),
           discover_min_volume_usd: String(settings.discover_min_volume_usd),
-          discoverer_base_url: settings.discoverer_base_url,
-          discoverer_model: settings.discoverer_model,
         }),
       })
     } finally {
@@ -402,7 +477,8 @@ export default function Discover() {
   const isActive = data?.running || running
 
   const discoveries = data?.discoveries ?? []
-  const filtered = filter === 'all' ? discoveries : discoveries.filter(d => d.status === filter)
+  const filtered = (filter === 'all' ? discoveries : discoveries.filter(d => d.status === filter))
+    .slice().sort((a, b) => b.score - a.score)
 
   const pendingCount = discoveries.filter(d => d.status === 'pending').length
   const approvedCount = discoveries.filter(d => d.status === 'approved').length
@@ -509,6 +585,30 @@ export default function Discover() {
 
         {/* Settings + Activity panel */}
         <div className="space-y-4 sticky top-4">
+          {/* Watchlist */}
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-semibold text-foreground">Current Watchlist</span>
+              {settings && (
+                <span className="text-xs text-muted">{settings.watchlist.length} coin{settings.watchlist.length !== 1 ? 's' : ''}</span>
+              )}
+            </div>
+            {!settings || settings.watchlist.length === 0 ? (
+              <p className="text-xs text-muted">No coins in watchlist — discovery will not skip any.</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {settings.watchlist.map(coin => (
+                  <span
+                    key={coin}
+                    className="px-2 py-0.5 rounded-md bg-accent/10 text-accent text-xs font-medium font-mono"
+                  >
+                    {coin.replace('/USDC', '')}
+                  </span>
+                ))}
+              </div>
+            )}
+          </Card>
+
           <PipelineLog entries={logs} active={isActive} />
           <Card>
             <CardHeader title="Discovery settings" />
@@ -563,26 +663,6 @@ export default function Discover() {
                     step={500000}
                     value={settings.discover_min_volume_usd}
                     onChange={e => setSettings(s => s ? { ...s, discover_min_volume_usd: parseFloat(e.target.value) || 5000000 } : s)}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-muted block mb-1.5">LLM base URL</label>
-                  <Input
-                    value={settings.discoverer_base_url}
-                    onChange={e => setSettings(s => s ? { ...s, discoverer_base_url: e.target.value } : s)}
-                    placeholder="http://localhost:11434/v1"
-                    className="font-mono text-xs"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-muted block mb-1.5">LLM model</label>
-                  <Input
-                    value={settings.discoverer_model}
-                    onChange={e => setSettings(s => s ? { ...s, discoverer_model: e.target.value } : s)}
-                    placeholder="llama3"
-                    className="font-mono text-xs"
                   />
                 </div>
 

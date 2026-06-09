@@ -28,7 +28,7 @@ export default function Logs() {
   }, [])
 
   useWebSocket((event, data) => {
-    if (event === 'trade_executed') {
+    if (event === 'trade_executed' || event === 'trade_failed') {
       const trade = data as Trade
       setEntries(prev => [{ kind: 'trade', data: trade, ts: trade.created_at }, ...prev])
     } else if (event === 'portfolio_updated') {
@@ -76,10 +76,15 @@ export default function Logs() {
                   {statusBadge(entry.data.status)}
                   <span className="font-medium text-sm">{entry.data.coin.replace('/USDC', '')}</span>
                   {actionBadge(entry.data.side)}
-                  <span className="text-sm text-muted">{fmt(entry.data.quantity, 4)}</span>
-                  {entry.data.price ? (
+                  {entry.data.status !== 'FAILED' && (
+                    <span className="text-sm text-muted">{fmt(entry.data.quantity, 4)}</span>
+                  )}
+                  {entry.data.status !== 'FAILED' && entry.data.price ? (
                     <span className="text-sm text-muted">@ {fmtUSD(entry.data.price)}</span>
                   ) : null}
+                  {entry.data.status === 'FAILED' && entry.data.error && (
+                    <span className="text-sm text-sell truncate flex-1">{entry.data.error}</span>
+                  )}
                 </div>
               )}
 

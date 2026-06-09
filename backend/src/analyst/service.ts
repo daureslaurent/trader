@@ -1,12 +1,15 @@
 import OpenAI from 'openai'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
+import { llmChat } from '../core/llm.js'
 import { Signal, MarketContext, PortfolioState } from '../types.js'
 import { ExtractedResearch } from '../extractor/index.js'
 import { buildAnalysisPrompt } from '../portfolio/prompts.js'
 import { getCoinPortfolioContext } from '../portfolio/service.js'
 import { getSettings } from '../db/index.js'
 import { LLMError } from '../core/errors.js'
+import { fetchOrderBook, analyzeOrderBook } from '../trader/index.js'
+import { OrderBookAnalysis } from '../trader/types.js'
 
 const client = new OpenAI({
   baseURL: config.analyst.baseURL,
@@ -24,7 +27,8 @@ function parseAnalystResponse(content: string, coin: string): Signal {
 
   let parsed: Record<string, unknown>
   try {
-    parsed = JSON.parse(content) as Record<string, unknown>
+    const stripped = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+    parsed = JSON.parse(stripped) as Record<string, unknown>
   } catch {
     throw new LLMError(`JSON parse failed. Raw: ${content.substring(0, 200)}`)
   }
@@ -44,7 +48,22 @@ function parseAnalystResponse(content: string, coin: string): Signal {
     ? parsed.reason.trim()
     : 'No reason provided'
 
-  return { coin, action: action as 'BUY' | 'SELL' | 'HOLD', quantity: 0, reason, confidence }
+  // LLM-decided SL/TP percentages (only meaningful for BUY; clamped to safe ranges)
+  let stop_loss_pct: number | undefined
+  let take_profit_pct: number | undefined
+  if (action === 'BUY') {
+    if (typeof parsed.stop_loss_pct === 'number' && parsed.stop_loss_pct > 0) {
+      stop_loss_pct = Math.min(Math.max(parsed.stop_loss_pct, 0.5), 25)
+    }
+    if (typeof parsed.take_profit_pct === 'number' && parsed.take_profit_pct > 0) {
+      take_profit_pct = Math.min(Math.max(parsed.take_profit_pct, 0.5), 50)
+    }
+    if (stop_loss_pct != null && take_profit_pct != null) {
+      logger.info('LLM-decided SL/TP', { coin, stop_loss_pct, take_profit_pct })
+    }
+  }
+
+  return { coin, action: action as 'BUY' | 'SELL' | 'HOLD', quantity: 0, reason, confidence, stop_loss_pct, take_profit_pct, horizon: undefined }
 }
 
 export async function analyzeSignal(
@@ -55,7 +74,19 @@ export async function analyzeSignal(
 ): Promise<Signal> {
   const settings = getSettings()
   const coinCtx = getCoinPortfolioContext(coin)
-  const { system, user } = buildAnalysisPrompt(coin, market, portfolio, settings, research, coinCtx)
+
+  // Fetch live order book for LLM context; non-fatal if it fails
+  let orderBook: OrderBookAnalysis | null = null
+  try {
+    const book = await fetchOrderBook(coin, 20)
+    orderBook = analyzeOrderBook(book, market.price > 0 ? 100 / market.price : 1)
+  } catch (obErr) {
+    logger.warn('Order book fetch failed, proceeding without it', { coin, error: (obErr as Error).message })
+  }
+
+  const { system, user } = buildAnalysisPrompt(coin, market, portfolio, settings, research, coinCtx, orderBook)
+  // 'auto' means the LLM decides SL/TP freely — no specific horizon is stamped on the position
+  const defaultHorizon = settings.default_horizon === 'auto' ? undefined : settings.default_horizon
   logger.info('Request LLM', { module: 'analyst', coin })
 
   const params: OpenAI.ChatCompletionCreateParams = {
@@ -71,11 +102,12 @@ export async function analyzeSignal(
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
-      const resp = await client.chat.completions.create(params)
+      const resp = await llmChat(client, params, { module: 'analyst', coin })
       const content = resp.choices[0]?.message?.content ?? ''
       logger.info('Response LLM', { module: 'analyst', coin, finish_reason: resp.choices[0]?.finish_reason })
       const signal = parseAnalystResponse(content, coin)
-      logger.info('Signal from LLM', { coin, action: signal.action, confidence: signal.confidence })
+      signal.horizon = defaultHorizon
+      logger.info('Signal from LLM', { coin, action: signal.action, confidence: signal.confidence, horizon: signal.horizon })
       return signal
     } catch (err) {
       if (attempt === 0 && err instanceof LLMError) {
@@ -87,9 +119,9 @@ export async function analyzeSignal(
         coin, message: e.message, status: e.status,
         baseURL: config.analyst.baseURL, model: config.analyst.model,
       })
-      return { coin, action: 'HOLD', quantity: 0, reason: 'Analysis error', confidence: 0 }
+      return { coin, action: 'HOLD', quantity: 0, reason: 'Analysis error', confidence: 0, horizon: defaultHorizon }
     }
   }
 
-  return { coin, action: 'HOLD', quantity: 0, reason: 'Analysis failed after retry', confidence: 0 }
+  return { coin, action: 'HOLD', quantity: 0, reason: 'Analysis failed after retry', confidence: 0, horizon: defaultHorizon }
 }

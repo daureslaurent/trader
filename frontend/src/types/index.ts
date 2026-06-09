@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'portfolio' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover'
+export type Page = 'dashboard' | 'portfolio' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug'
 
 export interface Trade {
   id: number
@@ -9,6 +9,7 @@ export interface Trade {
   total: number
   status: 'EXECUTED' | 'PENDING' | 'FAILED'
   approved: number
+  error?: string
   created_at: string
 }
 
@@ -59,6 +60,9 @@ export interface ActivePosition {
   distance_to_sl_pct: number | null
   distance_to_tp_pct: number | null
   status: 'OPEN' | 'CLOSED' | 'SL_HIT' | 'TP_HIT'
+  horizon: 'short' | 'medium' | 'long'
+  /** Exchange-side OCO protection state: ACTIVE = enforced on Binance, FAILED = software fallback. */
+  oco_status: 'NONE' | 'ACTIVE' | 'FAILED'
 }
 
 export interface GainsCoin {
@@ -164,4 +168,77 @@ export interface DiscoveryMarketData {
 export interface DiscoverResponse {
   running: boolean
   discoveries: DiscoveryResult[]
+}
+
+export interface PositionReview {
+  id: number
+  coin: string
+  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+  confidence: number
+  reasoning: string
+  reduce_to_pct: number | null
+  new_stop_loss?: number | null
+  new_take_profit?: number | null
+  market_data: string
+  cycle_id: string
+  created_at: string
+}
+
+export interface AdjustmentRequest {
+  adjustmentId: number
+  coin: string
+  oldStopLoss: number | null
+  oldTakeProfit: number | null
+  newStopLoss: number | null
+  newTakeProfit: number | null
+  reasoning: string
+  confidence: number
+  expiresAt: string
+}
+
+export interface PositionAdjustment {
+  id: number
+  position_id: number
+  coin: string
+  old_stop_loss: number | null
+  old_take_profit: number | null
+  new_stop_loss: number | null
+  new_take_profit: number | null
+  reasoning: string | null
+  confidence: number | null
+  status: 'PENDING' | 'APPLIED' | 'REJECTED' | 'EXPIRED'
+  cycle_id: string | null
+  created_at: string
+}
+
+export interface MonitorResponse {
+  running: boolean
+  reviews: PositionReview[]
+}
+
+export interface SlTpEvent {
+  position_id: number
+  coin: string
+  stop_loss: number
+  take_profit: number | null
+  event: 'open' | 'update' | 'close'
+  price: number | null
+  created_at: string
+}
+
+export interface LLMCall {
+  id: number
+  module: string
+  model: string
+  base_url: string
+  system_prompt?: string
+  user_prompt?: string
+  response: string | null
+  error: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  duration_ms: number
+  coin: string | null
+  cycle_id: string | null
+  created_at: string
 }
