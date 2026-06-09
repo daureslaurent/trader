@@ -48,16 +48,49 @@ export function startTelegramBot() {
   const menu = new MenuController(bot)
   menu.register()
 
+  // #10: Track pending approvals so we can reply with the actual outcome.
+  const pendingApprovalReplies = new Map<number, (msg: string) => void>()
+
+  bus.on('trade_result', ({ tradeId, success, error }: { tradeId: number; success: boolean; error?: string }) => {
+    const reply = pendingApprovalReplies.get(tradeId)
+    if (!reply) return
+    pendingApprovalReplies.delete(tradeId)
+    reply(success
+      ? `✅ Trade #${tradeId} executed successfully.`
+      : `❌ Trade #${tradeId} failed: ${error ?? 'unknown error'}`
+    )
+  })
+
+  // Inline keyboard button handlers (callback queries from approval messages)
+  bot.action(/^approve:(\d+)$/, (ctx) => {
+    const id = parseInt((ctx.match as RegExpMatchArray)[1], 10)
+    pendingApprovalReplies.set(id, (msg) => ctx.reply(msg).catch(() => {}))
+    bus.emit('trade_approved', id)
+    ctx.answerCbQuery('Approving…').catch(() => {})
+    ctx.reply(`⏳ Trade #${id} approved — executing…`)
+  })
+
+  bot.action(/^reject:(\d+)$/, (ctx) => {
+    const id = parseInt((ctx.match as RegExpMatchArray)[1], 10)
+    pendingApprovalReplies.delete(id)
+    bus.emit('trade_rejected', id)
+    ctx.answerCbQuery('Rejected').catch(() => {})
+    ctx.reply(`❌ Trade #${id} rejected.`)
+  })
+
+  // Text command fallbacks (for manual use: /approve 123, /reject 123)
   bot.command('approve', (ctx) => {
     const id = parseInt(ctx.message.text.split(' ')[1], 10)
     if (!id) return ctx.reply('Usage: /approve &lt;trade_id&gt;', { parse_mode: 'HTML' })
+    pendingApprovalReplies.set(id, (msg) => ctx.reply(msg).catch(() => {}))
     bus.emit('trade_approved', id)
-    ctx.reply(`✅ Trade #${id} approved.`)
+    ctx.reply(`⏳ Trade #${id} approved — executing...`)
   })
 
   bot.command('reject', (ctx) => {
     const id = parseInt(ctx.message.text.split(' ')[1], 10)
     if (!id) return ctx.reply('Usage: /reject &lt;trade_id&gt;', { parse_mode: 'HTML' })
+    pendingApprovalReplies.delete(id)
     bus.emit('trade_rejected', id)
     ctx.reply(`❌ Trade #${id} rejected.`)
   })

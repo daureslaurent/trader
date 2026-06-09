@@ -7,6 +7,7 @@ export interface LLMCallMeta {
   module: string
   coin?: string | null
   cycle_id?: string | null
+  base_url?: string
 }
 
 function extractText(content: unknown): string {
@@ -45,7 +46,9 @@ export async function llmChat(
     const userPrompt = extractText(userMsg?.content)
     const responseText = resp?.choices[0]?.message?.content ?? null
 
-    const baseUrl: string = (client as unknown as { baseURL: string }).baseURL ?? ''
+    const baseUrl: string = meta.base_url ?? (client as unknown as { baseURL: string }).baseURL ?? ''
+
+    logger.debug('llmChat base_url', { module: meta.module, baseUrl, meta_base_url: meta.base_url, client_base_url: (client as unknown as { baseURL: string }).baseURL })
 
     try {
       const { lastInsertRowid } = runSQL(

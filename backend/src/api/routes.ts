@@ -9,10 +9,10 @@ import { Signal, PortfolioEntry } from '../types.js'
 import * as priceCache from '../market/index.js'
 import { getDiscoveries, approveDiscovery, rejectDiscovery, deleteDiscovery, isRunning } from '../discoverer/index.js'
 import { getReviews, isRunning as isMonitorRunning } from '../monitor/index.js'
-import { isPipelineRunning } from '../index.js'
+import { isPipelineRunning, getPendingApprovals } from '../index.js'
 import { isTradeable } from '../core/tradeable.js'
 
-import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, closeEntry, reduceEntryQuantity, enrichPortfolioEntriesWithPrices, depositUsdt, withdrawUsdt, getUsdtEntry, updatePortfolioForTrade, getSlTpHistory } from '../portfolio/index.js'
+import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, closeEntry, reduceEntryQuantity, enrichPortfolioEntriesWithPrices, depositUsdt, withdrawUsdt, getUsdtEntry, updatePortfolioForTrade, getSlTpHistory, cancelProtection, getOpenPositions } from '../portfolio/index.js'
 
 function normalizeSymbol(coin: string): string {
   const upper = coin.trim().toUpperCase()
@@ -476,11 +476,21 @@ router.delete('/trades/failed', (_req: Request, res: Response) => {
   res.json({ ok: true, deleted: info.changes })
 })
 
+router.get('/approvals', (_req: Request, res: Response) => {
+  res.json(getPendingApprovals())
+})
+
 router.post('/trade/approve/:id', (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid trade ID' })
   const trade = queryOne("SELECT id FROM trades WHERE id = ? AND status = 'PENDING'", [id])
   if (!trade) return res.status(404).json({ error: 'Trade not found or not pending' })
+  const hasPending = getPendingApprovals().some(a => a.tradeId === id)
+  if (!hasPending) {
+    logger.warn('Trade approval failed: in-memory state lost (server restarted)', { tradeId: id })
+    return res.status(409).json({ error: 'Approval session expired — server was restarted. Please reject this trade and re-run the pipeline.' })
+  }
+  logger.info('Trade approved by user', { tradeId: id })
   bus.emit('trade_approved', id)
   res.json({ ok: true })
 })
@@ -490,6 +500,7 @@ router.post('/trade/reject/:id', (req: Request, res: Response) => {
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid trade ID' })
   const trade = queryOne("SELECT id FROM trades WHERE id = ? AND status = 'PENDING'", [id])
   if (!trade) return res.status(404).json({ error: 'Trade not found or not pending' })
+  logger.info('Trade rejected by user', { tradeId: id })
   bus.emit('trade_rejected', id)
   res.json({ ok: true })
 })
@@ -535,6 +546,13 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
   if (preCheck.quantity < amount) return res.status(400).json({ error: `Insufficient balance: have ${preCheck.quantity}, need ${amount}` })
 
   try {
+    // Cancel any active OCO before selling — Binance rejects a market SELL when
+    // the coins are locked in an open order-list (OCO).
+    if (toSymbol === 'USDC') {
+      const openPos = getOpenPositions().find(p => p.coin === fromSymbol)
+      if (openPos) await cancelProtection(openPos.id)
+    }
+
     const result = await executeCoinTrade(fromSymbol, toSymbol, amount)
 
     let tradeInfo: ReturnType<typeof runSQL>
@@ -797,7 +815,7 @@ router.get('/llm-calls', (req: Request, res: Response) => {
     const module = req.query.module as string | undefined
     const coin = req.query.coin as string | undefined
 
-    let sql = 'SELECT id, module, model, response, error, prompt_tokens, completion_tokens, duration_ms, coin, cycle_id, created_at FROM llm_calls'
+    let sql = 'SELECT id, module, model, base_url, response, error, prompt_tokens, completion_tokens, duration_ms, coin, cycle_id, created_at FROM llm_calls'
     const params: (string | number)[] = []
     const conditions: string[] = []
 

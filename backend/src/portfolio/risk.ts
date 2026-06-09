@@ -45,7 +45,9 @@ export function calculateStopLoss(
   settings: BotSettings,
 ): number {
   const risk = parseSettings(settings)
-  return entryPrice - (atr * risk.stopLossAtrMultiplier)
+  const raw = entryPrice - (atr * risk.stopLossAtrMultiplier)
+  // Guard against zero/negative SL — would never trigger, leaving position unprotected
+  return Math.max(raw, entryPrice * 0.01)
 }
 
 export function calculateTakeProfit(
@@ -55,6 +57,87 @@ export function calculateTakeProfit(
 ): number {
   const risk = parseSettings(settings)
   return entryPrice + (atr * risk.takeProfitAtrMultiplier)
+}
+
+export interface RiskLevels {
+  stopLossPct: number   // % below entry price
+  takeProfitPct: number // % above entry price
+  source: 'atr' | 'horizon'
+  notes: string[]
+}
+
+/**
+ * Deterministically derive stop-loss / take-profit percentages for a new BUY.
+ *
+ * Replaces the LLM-decided SL/TP (to_fix.md #1): risk sizing is a mechanical
+ * function of ATR, the configured horizon targets, and the volatility regime —
+ * not a judgement call. The decision LLM now only picks direction/confidence.
+ *
+ *  - horizon === 'auto'  → ATR-based, volatility is already baked into ATR.
+ *  - horizon set         → owner's configured % targets, scaled for volatility.
+ *
+ * Always guarantees TP ≥ 1.5 × SL and clamps to the same safe ranges the old
+ * LLM path used (SL 0.5–25%, TP 0.5–50%).
+ */
+export function computeRiskLevels(
+  market: { price: number; atr14: number },
+  regime: { volatility: 'high' | 'normal' | 'low' },
+  horizon: 'auto' | 'short' | 'medium' | 'long',
+  settings: BotSettings,
+): RiskLevels {
+  const risk = parseSettings(settings)
+  const notes: string[] = []
+
+  let stopLossPct: number
+  let takeProfitPct: number
+  let source: 'atr' | 'horizon'
+
+  const atrSlPct = market.price > 0 && market.atr14 > 0
+    ? (market.atr14 * risk.stopLossAtrMultiplier / market.price) * 100
+    : 0
+
+  if (horizon === 'auto') {
+    source = 'atr'
+    if (atrSlPct > 0) {
+      stopLossPct = atrSlPct
+      takeProfitPct = (market.atr14 * risk.takeProfitAtrMultiplier / market.price) * 100
+    } else {
+      // ATR unavailable (insufficient candles) — fall back to a safe default.
+      stopLossPct = 3
+      takeProfitPct = 6
+      notes.push('ATR unavailable, used 3%/6% default')
+    }
+  } else {
+    source = 'horizon'
+    const slBase = horizon === 'short' ? settings.monitor_sl_pct_short
+      : horizon === 'long' ? settings.monitor_sl_pct_long
+      : settings.monitor_sl_pct_medium
+    const tpBase = horizon === 'short' ? settings.monitor_tp_pct_short
+      : horizon === 'long' ? settings.monitor_tp_pct_long
+      : settings.monitor_tp_pct_medium
+
+    // Scale the owner's targets to the current volatility regime.
+    const volFactor = regime.volatility === 'high' ? 1.4 : regime.volatility === 'low' ? 0.8 : 1
+    if (volFactor !== 1) notes.push(`${regime.volatility}-vol scaling ×${volFactor}`)
+    stopLossPct = slBase * volFactor
+    takeProfitPct = tpBase * volFactor
+  }
+
+  // Enforce minimum reward/risk of 1.5.
+  if (takeProfitPct < stopLossPct * 1.5) {
+    takeProfitPct = stopLossPct * 1.5
+    notes.push('TP raised to 1.5× SL')
+  }
+
+  stopLossPct = Math.min(Math.max(stopLossPct, 0.5), 25)
+  takeProfitPct = Math.min(Math.max(takeProfitPct, 0.5), 50)
+
+  return {
+    stopLossPct: Math.round(stopLossPct * 100) / 100,
+    takeProfitPct: Math.round(takeProfitPct * 100) / 100,
+    source,
+    notes,
+  }
 }
 
 export function checkPosition(currentPrice: number, position: PositionRecord): 'HOLD' | 'SL_HIT' | 'TP_HIT' {
@@ -70,6 +153,9 @@ export interface SlTpProposal {
   oldTakeProfit: number | null
   proposedStopLoss: number | null
   proposedTakeProfit: number | null
+  // When set, loosening is allowed up to this % below current price (the horizon floor).
+  // When absent, the old tighten-only rule applies.
+  maxSlPct?: number
 }
 
 export interface SlTpValidation {
@@ -101,7 +187,14 @@ export function validateSlTpAdjustment(p: SlTpProposal): SlTpValidation {
     if (sl >= p.currentPrice) {
       notes.push('Ignored stop-loss ≥ current price (would trigger immediately)')
     } else if (p.oldStopLoss != null && sl < p.oldStopLoss) {
-      notes.push('Ignored stop-loss loosening — stops may only be tightened')
+      const floor = p.maxSlPct != null ? p.currentPrice * (1 - p.maxSlPct / 100) : null
+      if (floor != null && sl >= floor) {
+        stopLoss = sl
+        changed = true
+        notes.push(`Stop-loss widened to ${sl} (within horizon floor -${p.maxSlPct}%)`)
+      } else {
+        notes.push('Ignored stop-loss loosening beyond horizon floor')
+      }
     } else {
       stopLoss = sl
       changed = true

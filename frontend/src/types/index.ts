@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'portfolio' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug'
+export type Page = 'dashboard' | 'portfolio' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
 
 export interface Trade {
   id: number

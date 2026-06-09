@@ -23,6 +23,12 @@ let savePending = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 const SAVE_DEBOUNCE_MS = 2000
 
+// Transaction guard: prevents partial-state saves mid-transaction
+let inTransactionFlag = false
+
+export function isInTransaction(): boolean { return inTransactionFlag }
+export function setTransactionState(active: boolean): void { inTransactionFlag = active }
+
 function loadOrCreate(SQL: initSqlJs.SqlJsStatic, filePath: string): SqlJsDatabase {
   if (fs.existsSync(filePath)) {
     return new SQL.Database(fs.readFileSync(filePath))
@@ -72,6 +78,17 @@ export function getTableDB(table: string): SqlJsDatabase {
   return getDB(name)
 }
 
+export function getTableDBName(table: string): string {
+  return TABLE_DB[table.toLowerCase()] ?? 'trading'
+}
+
+export function saveOne(name: string): void {
+  const filePath = DB_FILES[name]
+  const db = DBS[name]
+  if (!db || !filePath) return
+  fs.writeFileSync(filePath, Buffer.from(db.export()))
+}
+
 export function saveAll(): void {
   for (const [name, filePath] of Object.entries(DB_FILES)) {
     const db = DBS[name]
@@ -84,6 +101,7 @@ export function saveAll(): void {
 export const saveDB = saveAll
 
 export function scheduleSave(): void {
+  if (inTransactionFlag) return  // never persist partial transaction state
   if (savePending) return
   savePending = true
   if (saveTimer) clearTimeout(saveTimer)

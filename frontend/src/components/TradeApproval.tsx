@@ -12,11 +12,23 @@ interface Props {
 
 export function TradeApproval({ request, onAction }: Props) {
   const [busy, setBusy] = useState<'approve' | 'reject' | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   async function submit(action: 'approve' | 'reject') {
     setBusy(action)
-    await fetch(`/api/trade/${action}/${request.tradeId}`, { method: 'POST' }).catch(() => {})
-    onAction()
+    setError(null)
+    try {
+      const res = await fetch(`/api/trade/${action}/${request.tradeId}`, { method: 'POST' })
+      if (res.ok) {
+        onAction()
+        return
+      }
+      const body = await res.json().catch(() => ({}))
+      setError(body.error ?? `Request failed (${res.status})`)
+    } catch {
+      setError('Network error')
+    }
+    setBusy(null)
   }
 
   const isBuy = request.side === 'BUY'
@@ -52,6 +64,10 @@ export function TradeApproval({ request, onAction }: Props) {
         <p className="text-xs text-muted italic mb-4 leading-relaxed border-l-2 border-border pl-3">
           {request.reason}
         </p>
+      )}
+
+      {error && (
+        <p className="text-xs text-sell mb-2">{error}</p>
       )}
 
       <div className="flex gap-2">

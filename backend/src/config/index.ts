@@ -45,7 +45,7 @@ export const config = {
   analyst: {
     baseURL: opt('ANALYST_BASE_URL', llamaBaseURL),
     model: opt('ANALYST_MODEL', llamaModel),
-    maxTokens: num('ANALYST_MAX_TOKENS', 28000),
+    maxTokens: num('ANALYST_MAX_TOKENS', 2048),
   },
   discoverer: {
     baseURL: opt('DISCOVERER_BASE_URL', llamaBaseURL),

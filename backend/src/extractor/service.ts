@@ -11,12 +11,14 @@ export interface ExtractorLLMConfig {
   client: OpenAI
   model: string
   maxTokens: number
+  baseURL: string
 }
 
 const defaultExtractorConfig: ExtractorLLMConfig = {
   client: new OpenAI({ baseURL: config.extractor.baseURL, apiKey: 'ollama' }),
   model: config.extractor.model,
   maxTokens: config.extractor.maxTokens,
+  baseURL: config.extractor.baseURL,
 }
 
 // ── Blocked-content detection ────────────────────────────────────────────────
@@ -138,7 +140,7 @@ async function challengeArticle(
       temperature: 0.0,
       max_tokens: llm.maxTokens,
       response_format: { type: 'json_object' },
-    }, { module: 'extractor-challenge', coin: baseCoin })
+    }, { module: 'extractor-challenge', coin: baseCoin, base_url: llm.baseURL })
 
     const raw = resp.choices[0]?.message?.content ?? ''
     const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
@@ -204,7 +206,7 @@ async function extractSingleArticle(
         temperature: 0.2,
         max_tokens: llm.maxTokens,
         response_format: { type: 'json_object' },
-      }, { module: 'extractor', coin })
+      }, { module: 'extractor', coin, base_url: llm.baseURL })
 
       const content = resp.choices[0]?.message?.content ?? ''
       if (resp.choices[0]?.finish_reason === 'length') {
@@ -318,7 +320,7 @@ export async function selectArticles(
       temperature: 0.1,
       max_tokens: 256,
       response_format: { type: 'json_object' },
-    }, { module: 'extractor', coin })
+    }, { module: 'extractor', coin, base_url: cfg.baseURL })
 
     const content = resp.choices[0]?.message?.content ?? ''
     const parsed = JSON.parse(content) as { selected_urls?: string[] }

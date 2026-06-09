@@ -23,6 +23,7 @@ const discovererExtractorConfig: ExtractorLLMConfig = {
   client: makeClient(config.discovererExtractor.baseURL),
   model: config.discovererExtractor.model,
   maxTokens: config.discovererExtractor.maxTokens,
+  baseURL: config.discovererExtractor.baseURL,
 }
 
 let running = false
@@ -101,7 +102,7 @@ async function evaluateCandidate(
       temperature: 0.2,
       max_tokens: config.discoverer.maxTokens,
       response_format: { type: 'json_object' },
-    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId })
+    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId, base_url: config.discoverer.baseURL })
 
     const content = resp.choices[0]?.message?.content ?? ''
     if (!content.trim()) throw new LLMError('Empty response')

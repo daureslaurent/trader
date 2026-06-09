@@ -1,37 +1,91 @@
 import { Database as SqlJsDatabase } from 'sql.js'
 import { logger } from '../core/logger.js'
 
+// ── Migration versioning ────────────────────────────────────────────────────
+// Each migration is numbered. On startup we check which have already run and
+// skip them. Migration errors crash startup (fail-fast) so they can't be silently
+// swallowed — a half-migrated DB is worse than a blocked start.
+
+function getAppliedVersion(db: SqlJsDatabase, ns: string): number {
+  db.run(`CREATE TABLE IF NOT EXISTS schema_version (
+    ns      TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (ns)
+  )`)
+  const rows = db.exec(`SELECT version FROM schema_version WHERE ns = '${ns}'`)
+  return (rows[0]?.values?.[0]?.[0] as number) ?? 0
+}
+
+function setAppliedVersion(db: SqlJsDatabase, ns: string, version: number): void {
+  db.run(`INSERT OR REPLACE INTO schema_version (ns, version) VALUES ('${ns}', ${version})`)
+}
+
+function migrate(
+  db: SqlJsDatabase,
+  ns: string,
+  version: number,
+  fn: (db: SqlJsDatabase) => void,
+): void {
+  if (getAppliedVersion(db, ns) >= version) return
+  logger.info('Running migration', { ns, version })
+  db.exec('BEGIN')
+  try {
+    fn(db)
+    setAppliedVersion(db, ns, version)
+    db.exec('COMMIT')
+    logger.info('Migration applied', { ns, version })
+  } catch (err) {
+    try { db.exec('ROLLBACK') } catch {}
+    // Crash startup — a broken migration must be visible, not swallowed.
+    throw new Error(`Migration ${ns} v${version} failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
   const trading  = dbs['trading']
   const cache    = dbs['cache']
   const settings = dbs['settings']
 
-  // extraction_cache: add coin column
-  try {
-    cache.run("ALTER TABLE extraction_cache ADD COLUMN coin TEXT NOT NULL DEFAULT ''")
-    logger.info('Migrated extraction_cache: added coin column')
-  } catch { /* already exists */ }
-  try {
-    cache.run('CREATE INDEX IF NOT EXISTS idx_extraction_cache_coin ON extraction_cache(coin)')
-  } catch { /* already exists */ }
+  // ── Cache DB ──────────────────────────────────────────────────────────────
 
-  // trades: add fee columns
-  try {
-    trading.run('ALTER TABLE trades ADD COLUMN fee_cost REAL NOT NULL DEFAULT 0')
-    logger.info('Migrated trades: added fee_cost column')
-  } catch { /* already exists */ }
-  try {
-    trading.run("ALTER TABLE trades ADD COLUMN fee_currency TEXT NOT NULL DEFAULT 'USDC'")
-    logger.info('Migrated trades: added fee_currency column')
-  } catch { /* already exists */ }
+  migrate(cache, 'cache', 1, (db) => {
+    try { db.run("ALTER TABLE extraction_cache ADD COLUMN coin TEXT NOT NULL DEFAULT ''") } catch { /* already exists in fresh schema */ }
+    db.run('CREATE INDEX IF NOT EXISTS idx_extraction_cache_coin ON extraction_cache(coin)')
+  })
 
-  // portfolio_entries: expand source CHECK constraint to include 'transfer'
-  try {
-    const rows = trading.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='portfolio_entries'")
+  migrate(cache, 'cache', 2, (db) => {
+    db.run(`CREATE TABLE IF NOT EXISTS coin_discoveries (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      coin        TEXT NOT NULL,
+      score       REAL NOT NULL,
+      reasoning   TEXT NOT NULL,
+      market_data TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','auto_added')),
+      cycle_id    TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )`)
+    db.run('CREATE INDEX IF NOT EXISTS idx_discoveries_created ON coin_discoveries(created_at DESC)')
+    db.run('CREATE INDEX IF NOT EXISTS idx_discoveries_status ON coin_discoveries(status)')
+  })
+
+  migrate(cache, 'cache', 3, (db) => {
+    try { db.run("ALTER TABLE llm_calls ADD COLUMN base_url TEXT NOT NULL DEFAULT ''") } catch { /* already exists in fresh schema */ }
+  })
+
+  // ── Trading DB ────────────────────────────────────────────────────────────
+
+  migrate(trading, 'trading', 1, (db) => {
+    try { db.run('ALTER TABLE trades ADD COLUMN fee_cost REAL NOT NULL DEFAULT 0') } catch { /* already exists in fresh schema */ }
+    try { db.run("ALTER TABLE trades ADD COLUMN fee_currency TEXT NOT NULL DEFAULT 'USDC'") } catch { /* already exists in fresh schema */ }
+  })
+
+  migrate(trading, 'trading', 2, (db) => {
+    // portfolio_entries: expand source CHECK constraint to include 'transfer'
+    const rows = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='portfolio_entries'")
     const sql = rows[0]?.values?.[0]?.[0] as string | undefined
     if (sql && !sql.includes("'transfer'")) {
-      trading.run('ALTER TABLE portfolio_entries RENAME TO portfolio_entries_old')
-      trading.run(`CREATE TABLE portfolio_entries (
+      db.run('ALTER TABLE portfolio_entries RENAME TO portfolio_entries_old')
+      db.run(`CREATE TABLE portfolio_entries (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         coin        TEXT NOT NULL,
         quantity    REAL NOT NULL,
@@ -42,40 +96,14 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
         trade_id    INTEGER REFERENCES trades(id),
         created_at  TEXT NOT NULL DEFAULT (datetime('now'))
       )`)
-      trading.run('INSERT INTO portfolio_entries SELECT * FROM portfolio_entries_old')
-      trading.run('DROP TABLE portfolio_entries_old')
-      trading.run('CREATE INDEX IF NOT EXISTS idx_portfolio_entries_status ON portfolio_entries(status)')
-      logger.info('Migrated portfolio_entries: expanded source CHECK constraint')
+      db.run('INSERT INTO portfolio_entries SELECT * FROM portfolio_entries_old')
+      db.run('DROP TABLE portfolio_entries_old')
+      db.run('CREATE INDEX IF NOT EXISTS idx_portfolio_entries_status ON portfolio_entries(status)')
     }
-  } catch (err) {
-    logger.warn('portfolio_entries source constraint migration failed', { err: String(err) })
-  }
+  })
 
-  // coin_discoveries table for existing DBs
-  try {
-    cache.run(`CREATE TABLE IF NOT EXISTS coin_discoveries (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      coin        TEXT NOT NULL,
-      score       REAL NOT NULL,
-      reasoning   TEXT NOT NULL,
-      market_data TEXT NOT NULL,
-      status      TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','auto_added')),
-      cycle_id    TEXT NOT NULL,
-      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )`)
-    cache.run('CREATE INDEX IF NOT EXISTS idx_discoveries_created ON coin_discoveries(created_at DESC)')
-    cache.run('CREATE INDEX IF NOT EXISTS idx_discoveries_status ON coin_discoveries(status)')
-  } catch { /* already exists */ }
-
-  // llm_calls: add base_url column
-  try {
-    cache.run("ALTER TABLE llm_calls ADD COLUMN base_url TEXT NOT NULL DEFAULT ''")
-    logger.info('Migrated llm_calls: added base_url column')
-  } catch { /* already exists */ }
-
-  // sl_tp_history table for existing DBs
-  try {
-    trading.run(`CREATE TABLE IF NOT EXISTS sl_tp_history (
+  migrate(trading, 'trading', 3, (db) => {
+    db.run(`CREATE TABLE IF NOT EXISTS sl_tp_history (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       position_id INTEGER NOT NULL,
       coin        TEXT NOT NULL,
@@ -85,12 +113,11 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
       price       REAL,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )`)
-    trading.run('CREATE INDEX IF NOT EXISTS idx_sl_tp_history_coin ON sl_tp_history(coin, created_at)')
-  } catch { /* already exists */ }
+    db.run('CREATE INDEX IF NOT EXISTS idx_sl_tp_history_coin ON sl_tp_history(coin, created_at)')
+  })
 
-  // position_adjustments table for existing DBs
-  try {
-    trading.run(`CREATE TABLE IF NOT EXISTS position_adjustments (
+  migrate(trading, 'trading', 4, (db) => {
+    db.run(`CREATE TABLE IF NOT EXISTS position_adjustments (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       position_id     INTEGER NOT NULL,
       coin            TEXT NOT NULL,
@@ -104,17 +131,17 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
       cycle_id        TEXT,
       created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )`)
-    trading.run('CREATE INDEX IF NOT EXISTS idx_position_adjustments_status ON position_adjustments(status)')
-    trading.run('CREATE INDEX IF NOT EXISTS idx_position_adjustments_coin ON position_adjustments(coin, created_at)')
-  } catch { /* already exists */ }
+    db.run('CREATE INDEX IF NOT EXISTS idx_position_adjustments_status ON position_adjustments(status)')
+    db.run('CREATE INDEX IF NOT EXISTS idx_position_adjustments_coin ON position_adjustments(coin, created_at)')
+  })
 
-  // position_reviews: add ADJUST action + new SL/TP columns (rebuild to widen CHECK)
-  try {
-    const rows = trading.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='position_reviews'")
+  migrate(trading, 'trading', 5, (db) => {
+    // position_reviews: add ADJUST action + new SL/TP columns (rebuild to widen CHECK)
+    const rows = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='position_reviews'")
     const sql = rows[0]?.values?.[0]?.[0] as string | undefined
     if (sql && !sql.includes("'ADJUST'")) {
-      trading.run('ALTER TABLE position_reviews RENAME TO position_reviews_old')
-      trading.run(`CREATE TABLE position_reviews (
+      db.run('ALTER TABLE position_reviews RENAME TO position_reviews_old')
+      db.run(`CREATE TABLE position_reviews (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         coin            TEXT NOT NULL,
         action          TEXT NOT NULL CHECK(action IN ('HOLD','CLOSE','REDUCE','ADJUST')),
@@ -127,35 +154,33 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
         cycle_id        TEXT NOT NULL,
         created_at      TEXT NOT NULL DEFAULT (datetime('now'))
       )`)
-      trading.run(`INSERT INTO position_reviews
+      db.run(`INSERT INTO position_reviews
         (id, coin, action, confidence, reasoning, reduce_to_pct, market_data, cycle_id, created_at)
         SELECT id, coin, action, confidence, reasoning, reduce_to_pct, market_data, cycle_id, created_at
         FROM position_reviews_old`)
-      trading.run('DROP TABLE position_reviews_old')
-      trading.run('CREATE INDEX IF NOT EXISTS idx_position_reviews_created ON position_reviews(created_at DESC)')
-      trading.run('CREATE INDEX IF NOT EXISTS idx_position_reviews_coin ON position_reviews(coin)')
-      logger.info('Migrated position_reviews: added ADJUST action + SL/TP columns')
+      db.run('DROP TABLE position_reviews_old')
+      db.run('CREATE INDEX IF NOT EXISTS idx_position_reviews_created ON position_reviews(created_at DESC)')
+      db.run('CREATE INDEX IF NOT EXISTS idx_position_reviews_coin ON position_reviews(coin)')
     }
-  } catch (err) {
-    logger.warn('position_reviews ADJUST migration failed', { err: String(err) })
-  }
+  })
 
-  // positions: add exchange-side OCO tracking columns
-  for (const [col, def] of [
-    ['oco_order_list_id', 'TEXT'],
-    ['oco_sl_order_id', 'TEXT'],
-    ['oco_tp_order_id', 'TEXT'],
-    ['oco_status', "TEXT NOT NULL DEFAULT 'NONE'"],
-    ['oco_synced_at', 'TEXT'],
-    ['horizon', "TEXT NOT NULL DEFAULT 'medium'"],
-  ]) {
-    try {
-      trading.run(`ALTER TABLE positions ADD COLUMN ${col} ${def}`)
-      logger.info('Migrated positions: added column', { col })
-    } catch { /* already exists */ }
-  }
+  migrate(trading, 'trading', 6, (db) => {
+    // positions: add exchange-side OCO tracking + horizon columns
+    for (const [col, def] of [
+      ['oco_order_list_id', 'TEXT'],
+      ['oco_sl_order_id', 'TEXT'],
+      ['oco_tp_order_id', 'TEXT'],
+      ['oco_status', "TEXT NOT NULL DEFAULT 'NONE'"],
+      ['oco_synced_at', 'TEXT'],
+      ['horizon', "TEXT NOT NULL DEFAULT 'medium'"],
+    ]) {
+      try {
+        db.run(`ALTER TABLE positions ADD COLUMN ${col} ${def}`)
+      } catch { /* column already exists from a prior partial run */ }
+    }
+  })
 
-  // Seed settings for existing DBs
+  // ── Settings seeds (idempotent — INSERT OR IGNORE) ────────────────────────
   const seeds = [
     ['default_horizon', 'auto'],
     ['discover_cron', '0 6 * * *'],

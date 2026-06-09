@@ -144,7 +144,6 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
     if (signal.action === 'BUY') {
       await ensureMarkets()
 
-      // Fetch order book and analyze depth for our order size
       const book = await fetchOrderBook(symbol, 20)
       const analysis = analyzeOrderBook(book, signal.quantity)
 
@@ -157,11 +156,8 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
         suggestedLimitPrice: analysis.suggestedLimitPrice,
       })
 
-      // Round quantity and price to Binance's required precision (lot size / tick size)
-      const rawQty   = signal.quantity
-      const rawPrice = analysis.suggestedLimitPrice
-      const qty   = parseFloat(ex.amountToPrecision(symbol, rawQty))
-      const price = parseFloat(ex.priceToPrecision(symbol, rawPrice))
+      const qty   = parseFloat(ex.amountToPrecision(symbol, signal.quantity))
+      const price = parseFloat(ex.priceToPrecision(symbol, analysis.suggestedLimitPrice))
 
       if (qty <= 0) {
         throw new TradeError(`Order quantity rounds to zero after precision adjustment for ${symbol}`)
@@ -169,38 +165,50 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
 
       logger.info('🛸 Binance createLimitOrder IOC', { symbol, side: 'buy', qty, price })
 
+      let iocFilled = 0
+      let iocResult: { id: string; price: number; quantity: number; cost: number } | null = null
+
       try {
         const order = await ex.createLimitBuyOrder(symbol, qty, price, { timeInForce: 'IOC' })
-        const filled = order.filled ?? 0
+        iocFilled = order.filled ?? 0
         const actualPrice = fillPrice(order)
 
-        if (filled > 0) {
-          if (filled < qty * 0.95) {
-            logger.warn('IOC limit order partially filled — accepting partial fill', {
-              symbol, requested: qty, filled, pct: `${((filled / qty) * 100).toFixed(1)}%`,
-            })
-          } else {
-            logger.info('IOC limit order fully filled', { symbol, qty: filled, price: actualPrice })
-          }
-          return { id: order.id, price: actualPrice, quantity: filled, cost: order.cost || actualPrice * filled }
+        if (iocFilled >= qty * 0.95) {
+          logger.info('IOC limit order fully filled', { symbol, qty: iocFilled, price: actualPrice })
+          return { id: order.id, price: actualPrice, quantity: iocFilled, cost: order.cost || actualPrice * iocFilled }
         }
 
-        // IOC expired unfilled (price moved past our limit) — fall back to market
-        logger.warn('IOC limit order not filled, falling back to market order', {
-          symbol, limitPrice: price, bestAsk: analysis.bestAsk,
-        })
+        if (iocFilled > 0) {
+          logger.warn('IOC limit order partially filled — market order for remainder', {
+            symbol, requested: qty, filled: iocFilled, pct: `${((iocFilled / qty) * 100).toFixed(1)}%`,
+          })
+          iocResult = { id: order.id, price: actualPrice, quantity: iocFilled, cost: order.cost || actualPrice * iocFilled }
+        } else {
+          logger.warn('IOC limit order not filled, falling back to market order', {
+            symbol, limitPrice: price, bestAsk: analysis.bestAsk,
+          })
+        }
       } catch (ioErr) {
         logger.warn('IOC limit order rejected, falling back to market order', {
           symbol, error: (ioErr as Error).message,
         })
       }
 
-      // Market fallback
-      const cost = signal.quantity * analysis.bestAsk
-      logger.info('🛸 Binance createMarketOrderWithCost (fallback)', { symbol, cost })
+      const remainingQty = signal.quantity - iocFilled
+      const cost = remainingQty * analysis.bestAsk
+      logger.info('🛸 Binance createMarketOrderWithCost (fallback)', { symbol, cost, remainingQty })
       const mkt = await ex.createMarketOrderWithCost(symbol, 'buy', cost)
       const mktPrice = fillPrice(mkt)
-      return { id: mkt.id, price: mktPrice, quantity: mkt.amount || 0, cost: mkt.cost || cost }
+      const mktQty = mkt.amount || 0
+      const mktCost = mkt.cost || cost
+
+      if (iocResult) {
+        const totalQty = iocResult.quantity + mktQty
+        const totalCost = iocResult.cost + mktCost
+        const blendedPrice = totalQty > 0 ? totalCost / totalQty : mktPrice
+        return { id: mkt.id, price: blendedPrice, quantity: totalQty, cost: totalCost }
+      }
+      return { id: mkt.id, price: mktPrice, quantity: mktQty, cost: mktCost }
 
     } else {
       logger.info('🛸 Binance createMarketOrder', { symbol, side: 'sell', quantity: signal.quantity })

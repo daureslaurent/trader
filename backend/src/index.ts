@@ -1,4 +1,4 @@
-import { initDB, queryAll, queryOne, runSQL, saveDB, getSettings, updateSetting } from './db/index.js'
+import { initDB, queryAll, queryOne, runSQL, withTransaction, saveDB, getSettings, updateSetting } from './db/index.js'
 import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
@@ -18,7 +18,7 @@ import { runDiscovery } from './discoverer/index.js'
 import { runMonitor, clearReviewsForCoin } from './monitor/index.js'
 import { isTradeable } from './core/tradeable.js'
 
-interface PendingApproval { signal: Signal; estimatedPrice: number; atr?: number; settings?: ReturnType<typeof getSettings> }
+interface PendingApproval { signal: Signal; estimatedPrice: number; atr?: number; settings?: ReturnType<typeof getSettings>; req: ApprovalRequest }
 let pendingApprovals: Map<number, PendingApproval> = new Map()
 let approvalTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
 
@@ -42,8 +42,11 @@ let cycleCounter = 0
 let pipelineRunning = false
 
 export function isPipelineRunning(): boolean { return pipelineRunning }
+export function getPendingApprovals(): ApprovalRequest[] {
+  return Array.from(pendingApprovals.values()).map(p => p.req)
+}
 
-const POSITION_CHECK_INTERVAL_MS = 2 * 60 * 1000 // every 2 minutes
+const POSITION_CHECK_INTERVAL_MS = 30 * 1000 // every 30 seconds
 
 
 function scheduleDiscovery(expression: string): void {
@@ -245,46 +248,28 @@ async function tradingLoop() {
 
   await checkOpenPositions()
 
-  const portfolioState = getPortfolioState(marketData, settings)
-
-  // Phase 1: research + extraction + selection + analysis — parallel across all coins
-  const analysisResults = await Promise.allSettled(
-    marketData.map(async (data): Promise<CoinAnalysisResult> => {
-      const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
-      try {
-        return await analyzeCoin(data, portfolioState, cycleId)
-      } catch (err) {
-        const isCancelled = err instanceof PipelineCancelledError
-        cancelledCycles.delete(cycleId)
-        const stage = isCancelled ? 'pipeline_cancelled' : 'pipeline_error'
-        logPipelineEvent(stage, data.symbol, cycleId, {
-          symbol: data.symbol, error: err instanceof Error ? err.message : String(err),
-          price: data.price, change24h: data.change24h, volume: data.volume,
-        } as Record<string, unknown>)
-        if (!isCancelled) logger.error('Error in pipeline', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
-        throw err
-      }
-    })
-  )
-
-  // Phase 2: trade execution is sequential — preserves position count checks and ledger integrity
   let tradesInitiated = 0
 
-  for (const result of analysisResults) {
-    if (result.status === 'rejected') continue
-    const { data, signal, marketCtx, cycleId } = result.value
-
-    if (signal.action === 'HOLD' || signal.confidence < settings.min_confidence) {
-      logger.debug('Skipping trade', { coin: data.symbol, action: signal.action, confidence: signal.confidence })
-      if (signal.action !== 'HOLD' && signal.confidence < settings.min_confidence) {
-        logPipelineEvent('trade_skipped', data.symbol, cycleId, {
-          reason: `Confidence ${Math.round(signal.confidence * 100)}% below threshold ${Math.round(settings.min_confidence * 100)}%`,
-        })
-      }
-      continue
-    }
+  // Each coin runs its full pipeline sequentially; trade is proposed immediately after
+  // analysis completes — not batched after all coins finish.
+  for (const data of marketData) {
+    const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
+    // Re-fetch portfolio state so position counts reflect any trades already done this cycle
+    const portfolioState = getPortfolioState(marketData, settings)
 
     try {
+      const { signal, marketCtx } = await analyzeCoin(data, portfolioState, cycleId)
+
+      if (signal.action === 'HOLD' || signal.confidence < settings.min_confidence) {
+        logger.debug('Skipping trade', { coin: data.symbol, action: signal.action, confidence: signal.confidence })
+        if (signal.action !== 'HOLD' && signal.confidence < settings.min_confidence) {
+          logPipelineEvent('trade_skipped', data.symbol, cycleId, {
+            reason: `Confidence ${Math.round(signal.confidence * 100)}% below threshold ${Math.round(settings.min_confidence * 100)}%`,
+          })
+        }
+        continue
+      }
+
       if (signal.action === 'BUY') {
         if (portfolioState.openPositionCount >= portfolioState.maxOpenPositions) {
           logger.warn('Max open positions reached, skipping BUY', { coin: data.symbol, openPositions: portfolioState.openPositionCount })
@@ -314,7 +299,7 @@ async function tradingLoop() {
           action: 'BUY', price: data.price, quantity: qty,
           stop_loss: sl, take_profit: tp,
           pending_approval: outcome === 'pending',
-          sl_source: signal.stop_loss_pct != null ? 'llm' : 'atr',
+          sl_source: signal.stop_loss_pct != null ? 'rule' : 'atr',
           error: outcome === 'failed' ? tradeErr : undefined,
         })
         if (outcome !== 'failed') tradesInitiated++
@@ -329,30 +314,21 @@ async function tradingLoop() {
             pending_approval: outcome === 'pending',
             error: outcome === 'failed' ? tradeErr : undefined,
           })
-          if (outcome !== 'failed') {
-            tradesInitiated++
-            recordPositionClose(existing.id as number, data.price)
-            clearReviewsForCoin(data.symbol)
-            runSQL(
-              "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
-              [qty, data.price, (existing.id as number)]
-            )
-            const sellEntries = queryAll("SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC", [data.symbol]) as { id: number; quantity: number }[]
-            for (const entry of sellEntries) {
-              reduceEntryQuantity(entry.id, qty)
-            }
-            const usdtEntry = getUsdtEntry()
-            if (usdtEntry) {
-              increaseEntryQuantity(usdtEntry.id, qty * data.price)
-            }
-          }
+          if (outcome !== 'failed') tradesInitiated++
         } else {
           logger.debug('No open position to sell', { coin: data.symbol })
           logPipelineEvent('trade_skipped', data.symbol, cycleId, { reason: 'No open position to sell' })
         }
       }
     } catch (err) {
-      logger.error('Error in trade execution', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
+      const isCancelled = err instanceof PipelineCancelledError
+      cancelledCycles.delete(cycleId)
+      const stage = isCancelled ? 'pipeline_cancelled' : 'pipeline_error'
+      logPipelineEvent(stage, data.symbol, cycleId, {
+        symbol: data.symbol, error: err instanceof Error ? err.message : String(err),
+        price: data.price, change24h: data.change24h, volume: data.volume,
+      } as Record<string, unknown>)
+      if (!isCancelled) logger.error('Error in pipeline', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -378,6 +354,12 @@ async function tradingLoop() {
   )
 
   if (tradesInitiated > 0) bus.emit('portfolio_updated')
+
+  // #7: Notify frontend that the full cycle is done so it can refresh state
+  const completedPayload = { total_value_usd: snapshotTotal, trades_initiated: tradesInitiated, holdings }
+  bus.emit('pipeline_completed', completedPayload)
+  broadcast('pipeline_completed', completedPayload)
+
   logger.info('Trading loop completed', { totalValue: snapshotTotal, tradesInitiated })
 }
 
@@ -452,24 +434,8 @@ async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<v
         pending_approval: outcome === 'pending',
         error: outcome === 'failed' ? tradeErr : undefined,
       })
-      if (outcome !== 'failed') {
-        recordPositionClose(existing.id as number, data.price)
-        clearReviewsForCoin(symbol)
-        runSQL(
-          "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
-          [qty, data.price, existing.id as number]
-        )
-        const sellEntries = queryAll(
-          "SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
-          [symbol]
-        ) as { id: number; quantity: number }[]
-        for (const entry of sellEntries) reduceEntryQuantity(entry.id, qty)
-        const usdtEntry = getUsdtEntry()
-        if (usdtEntry) {
-          increaseEntryQuantity(usdtEntry.id, qty * data.price)
-        }
-        bus.emit('portfolio_updated')
-      }
+      // Portfolio writes are handled inside submitTrade atomically.
+      if (outcome !== 'failed') bus.emit('portfolio_updated')
     }
   } catch (err) {
     const isCancelled = err instanceof PipelineCancelledError
@@ -507,8 +473,9 @@ async function handleTradeSignal(signal: Signal, price: number, atr?: number, se
       expiresAt: new Date(Date.now() + config.approvalTimeoutMs).toISOString(),
     }
 
-    pendingApprovals.set(tradeId, { signal, estimatedPrice: price, atr, settings: s })
+    pendingApprovals.set(tradeId, { signal, estimatedPrice: price, atr, settings: s, req })
     bus.emit('approval_requested', req)
+    broadcast('approval_requested', req)
     sendApprovalMessage(req)
 
     const timer = setTimeout(() => {
@@ -533,47 +500,77 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
       if (openPos) await cancelProtection(openPos.id as number)
     }
 
+    // Exchange API call — must happen OUTSIDE the transaction (async)
     const result = await executeTrade(signal)
-    if (tradeId) {
-      runSQL(
-        "UPDATE trades SET price = ?, total = ?, fee_cost = 0, fee_currency = 'BNB', status = 'EXECUTED', approved = 1 WHERE id = ?",
-        [result.price, result.cost, tradeId]
-      )
-    } else {
-      runSQL(
-        "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-        [signal.coin, signal.action, result.quantity, result.price, result.cost]
-      )
-    }
 
-    if (signal.action === 'BUY' && atr && settings) {
-      const sl = calculateStopLoss(result.price, atr, settings)
-      const tp = calculateTakeProfit(result.price, atr, settings)
-      const existing = queryOne("SELECT id FROM positions WHERE coin = ? AND status = 'OPEN'", [signal.coin])
-      if (!existing) {
-        const { lastInsertRowid } = runSQL(
-          'INSERT INTO positions (coin, side, quantity, entry_price, stop_loss, take_profit, current_sl, horizon) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [signal.coin, 'BUY', result.quantity, result.price, sl, tp, sl, signal.horizon ?? 'medium']
+    // Capture data needed post-transaction (OCO placement needs the new position ID)
+    let newPositionId: number | undefined
+
+    // Atomic DB writes: trade record + position + portfolio entries
+    withTransaction(() => {
+      if (tradeId) {
+        runSQL(
+          "UPDATE trades SET price = ?, total = ?, fee_cost = 0, fee_currency = 'BNB', status = 'EXECUTED', approved = 1 WHERE id = ?",
+          [result.price, result.cost, tradeId]
         )
-        recordPositionOpen(lastInsertRowid as number, signal.coin, sl, tp ?? null, result.price)
-        logger.info('Position opened', { coin: signal.coin, price: result.price, sl, tp })
-        // Place exchange-side OCO protection immediately. On failure it's marked
-        // FAILED and the reconciler's software fallback covers the position.
-        await placeProtection(lastInsertRowid as number)
+      } else {
+        runSQL(
+          "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
+          [signal.coin, signal.action, result.quantity, result.price, result.cost]
+        )
       }
-    }
 
+      if (signal.action === 'BUY' && atr && settings) {
+        const sl = calculateStopLoss(result.price, atr, settings)
+        const tp = calculateTakeProfit(result.price, atr, settings)
+        const existing = queryOne("SELECT id FROM positions WHERE coin = ? AND status = 'OPEN'", [signal.coin])
+        if (!existing) {
+          const { lastInsertRowid } = runSQL(
+            'INSERT INTO positions (coin, side, quantity, entry_price, stop_loss, take_profit, current_sl, horizon) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [signal.coin, 'BUY', result.quantity, result.price, sl, tp, sl, signal.horizon ?? 'medium']
+          )
+          newPositionId = Number(lastInsertRowid)
+          recordPositionOpen(newPositionId, signal.coin, sl, tp ?? null, result.price)
+        }
+        const costBasis = result.quantity > 0 ? result.cost / result.quantity : result.price
+        addEntry(signal.coin, result.quantity, costBasis, new Date().toISOString().split('T')[0], 'trade', tradeId)
+        const usdtEntry = getUsdtEntry()
+        if (usdtEntry) reduceEntryQuantity(usdtEntry.id, result.cost)
+
+      } else if (signal.action === 'SELL') {
+        // Consolidate all SELL portfolio writes here so callers don't need to
+        // duplicate them — and so they're in the same atomic transaction.
+        const existingPos = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [signal.coin])
+        if (existingPos) {
+          const posId = existingPos.id as number
+          const qty = result.quantity || (existingPos.quantity as number)
+          recordPositionClose(posId, result.price)
+          runSQL(
+            "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
+            [qty, result.price, posId]
+          )
+          const sellEntries = queryAll(
+            "SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
+            [signal.coin]
+          ) as { id: number; quantity: number }[]
+          for (const entry of sellEntries) reduceEntryQuantity(entry.id, qty)
+          const usdtEntry = getUsdtEntry()
+          if (usdtEntry) increaseEntryQuantity(usdtEntry.id, qty * result.price)
+        }
+      }
+    })
+
+    // Post-transaction: broadcasts and async exchange operations
+    clearReviewsForCoin(signal.coin)
     const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
     bus.emit('trade_executed', trade as any)
+    broadcast('trade_executed', trade)
 
-    if (signal.action === 'BUY') {
-      // cost basis = USDC spent / coins received
-      const costBasis = result.quantity > 0 ? result.cost / result.quantity : result.price
-      addEntry(signal.coin, result.quantity, costBasis, new Date().toISOString().split('T')[0], 'trade', (trade?.id as number) || (tradeId as number))
-      const usdtEntry = getUsdtEntry()
-      if (usdtEntry) {
-        reduceEntryQuantity(usdtEntry.id, result.cost)
-      }
+    if (newPositionId !== undefined) {
+      logger.info('Position opened', { coin: signal.coin, price: result.price })
+      // Place exchange-side OCO protection. On failure it's marked FAILED and the
+      // reconciler's software fallback covers the position.
+      await placeProtection(newPositionId)
     }
 
     logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price })
@@ -600,16 +597,25 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
   }
 }
 
-bus.on('trade_approved', (tradeId: number) => {
+bus.on('trade_approved', async (tradeId: number) => {
+  logger.info('Trade approval received, executing', { tradeId })
   const pending = pendingApprovals.get(tradeId)
-  if (!pending) return
+  if (!pending) {
+    // In-memory state is gone (e.g. server restarted) — mark FAILED so the DB doesn't stay PENDING
+    logger.error('Trade approval failed: in-memory state not found', { tradeId })
+    runSQL("UPDATE trades SET status = 'FAILED', error = 'Approval state lost (server restart)' WHERE id = ? AND status = 'PENDING'", [tradeId])
+    broadcast('trade_failed', { tradeId, error: 'Approval state lost after server restart' })
+    return
+  }
 
   const timer = approvalTimers.get(tradeId)
   if (timer) clearTimeout(timer)
   approvalTimers.delete(tradeId)
   pendingApprovals.delete(tradeId)
 
-  submitTrade(pending.signal, pending.estimatedPrice, tradeId, pending.atr, pending.settings)
+  const result = await submitTrade(pending.signal, pending.estimatedPrice, tradeId, pending.atr, pending.settings)
+  logger.info('Trade execution result', { tradeId, success: result.ok, error: result.error })
+  bus.emit('trade_result', { tradeId, success: result.ok, error: result.error })
 })
 
 bus.on('trade_rejected', (tradeId: number) => {
@@ -619,6 +625,7 @@ bus.on('trade_rejected', (tradeId: number) => {
   pendingApprovals.delete(tradeId)
 
   runSQL("UPDATE trades SET approved = 0, status = 'FAILED' WHERE id = ? AND status = 'PENDING'", [tradeId])
+  broadcast('trade_rejected', tradeId)
   logger.info('Trade rejected by user', { tradeId })
 })
 
@@ -712,6 +719,49 @@ bus.on('adjustment_rejected', (adjId: number) => {
   runSQL("UPDATE position_adjustments SET status = 'REJECTED' WHERE id = ? AND status = 'PENDING'", [adjId])
   broadcast('adjustment_resolved', { adjustmentId: adjId, status: 'REJECTED' })
   logger.info('SL/TP adjustment rejected by user', { adjId })
+})
+
+// Monitor-initiated CLOSE: cancel any live OCO first, then market-sell.
+async function executeMonitorClose(
+  positionId: number,
+  coin: string,
+  triggerPrice: number,
+  reasoning: string,
+): Promise<void> {
+  try {
+    const pos = queryOne("SELECT quantity FROM positions WHERE id = ? AND status = 'OPEN'", [positionId]) as { quantity: number } | null
+    if (!pos) return
+    const qty = pos.quantity
+    await cancelProtection(positionId)
+    const result = await executeTrade({ coin, action: 'SELL', quantity: qty, reason: `Monitor close: ${reasoning}`, confidence: 1 })
+    closePositionFromExit({
+      positionId,
+      coin,
+      status: 'CLOSED',
+      fillPrice: result.price || triggerPrice,
+      fillQty: result.quantity || qty,
+      reason: `Monitor close: ${reasoning}`,
+    })
+    broadcast('monitor_position_closed', { coin, positionId, price: result.price || triggerPrice, reasoning })
+    logger.warn('Monitor CLOSE executed', { coin, positionId, price: result.price || triggerPrice })
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    logger.error('Monitor close failed', { coin, error: errMsg })
+    runSQL(
+      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved, error) VALUES (?, 'SELL', 0, 0, 0, 0, 'USDC', 'FAILED', 1, ?)",
+      [coin, errMsg]
+    )
+    const failedTrade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
+    broadcast('trade_failed', failedTrade)
+    bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+  }
+}
+
+bus.on('monitor_close_requested', ({ positionId, coin, currentPrice, reasoning }) => {
+  logger.warn('Monitor CLOSE requested', { coin, positionId, currentPrice })
+  executeMonitorClose(positionId, coin, currentPrice, reasoning).catch(err =>
+    logger.error('Monitor close handler error', { coin, error: err instanceof Error ? err.message : String(err) })
+  )
 })
 
 // Software-fallback exits. These fire only from the reconciler when a position
@@ -910,23 +960,7 @@ bus.on('trade_signal_simulated', async ({ symbol, action, confidence, reason, cy
         pending_approval: outcome === 'pending',
         error: outcome === 'failed' ? tradeErr : undefined,
       })
-      if (outcome !== 'failed') {
-        recordPositionClose(existing.id as number, data.price)
-        clearReviewsForCoin(symbol)
-        runSQL(
-          "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
-          [qty, data.price, existing.id as number]
-        )
-        const sellEntries = queryAll(
-          "SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
-          [symbol]
-        ) as { id: number; quantity: number }[]
-        for (const entry of sellEntries) reduceEntryQuantity(entry.id, qty)
-        const usdtEntry = getUsdtEntry()
-        if (usdtEntry) {
-          increaseEntryQuantity(usdtEntry.id, qty * data.price)
-        }
-      }
+      // Portfolio writes are handled inside submitTrade atomically.
     }
   } catch (err) {
     logger.error('Simulated signal failed', { symbol, error: err instanceof Error ? err.message : String(err) })

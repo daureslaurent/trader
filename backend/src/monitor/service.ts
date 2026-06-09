@@ -21,8 +21,9 @@ interface RawReview {
   confidence: number
   reasoning: string
   reduce_to_pct?: number | null
-  new_stop_loss?: number | null
-  new_take_profit?: number | null
+  // #2a: LLM returns percentages relative to current price — engine converts to abs prices
+  new_stop_loss_pct?: number | null
+  new_take_profit_pct?: number | null
 }
 
 function parseReview(content: string): RawReview {
@@ -40,31 +41,15 @@ function parseReview(content: string): RawReview {
   // Accept { "review": {...} } wrapper or bare object
   const obj: unknown = (parsed as Record<string, unknown>)?.review ?? parsed
 
+  const candidate = obj as Record<string, unknown>
   if (
-    typeof obj !== 'object' || obj === null ||
-    !['HOLD', 'CLOSE', 'REDUCE', 'ADJUST'].includes((obj as RawReview).action) ||
-    typeof (obj as RawReview).confidence !== 'number' ||
-    typeof (obj as RawReview).reasoning !== 'string'
+    typeof candidate !== 'object' || candidate === null ||
+    !['HOLD', 'CLOSE', 'REDUCE', 'ADJUST'].includes(candidate.action as string) ||
+    typeof candidate.confidence !== 'number' ||
+    typeof candidate.reasoning !== 'string'
   ) throw new LLMError('Invalid review in monitor response')
 
-  return obj as RawReview
-}
-
-/**
- * If the LLM dropped the decimal point (e.g. returned 11780 for a $1.1787 coin),
- * try dividing by powers of 10 until the value lands within 50%–150% of reference.
- * Returns the original value if no rescaling produces a plausible result.
- */
-function rescalePrice(proposed: number, reference: number): number {
-  if (reference <= 0) return proposed
-  const ratio = proposed / reference
-  if (ratio >= 0.1 && ratio <= 5) return proposed  // already reasonable
-  for (const exp of [1, 2, 3, 4, 5]) {
-    const scaled = proposed / Math.pow(10, exp)
-    const r = scaled / reference
-    if (r >= 0.5 && r <= 1.5) return scaled
-  }
-  return proposed
+  return candidate as unknown as RawReview
 }
 
 function pruneMonitorHistory(maxCycles = 20): void {
@@ -96,17 +81,27 @@ async function monitorCoin(
 
   let raw: RawReview | null = null
 
+  // #2d: Retry on both parse errors AND LLM API/network errors
   for (let attempt = 0; attempt <= 1; attempt++) {
-    const resp = await llmChat(client, {
-      model: config.monitor.model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.2,
-      max_tokens: config.monitor.maxTokens,
-      response_format: { type: 'json_object' },
-    }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin })
+    let resp: Awaited<ReturnType<typeof llmChat>>
+    try {
+      resp = await llmChat(client, {
+        model: config.monitor.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.2,
+        max_tokens: config.monitor.maxTokens,
+        response_format: { type: 'json_object' },
+      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: config.monitor.baseURL })
+    } catch (apiErr) {
+      if (attempt === 0) {
+        logger.warn('Monitor LLM API error, retrying', { coin: ctx.coin, error: (apiErr as Error).message })
+        continue
+      }
+      throw apiErr
+    }
 
     const finish = resp.choices[0]?.finish_reason
     const content = resp.choices[0]?.message?.content ?? ''
@@ -140,40 +135,61 @@ async function monitorCoin(
   let proposalToEmit: { newSl: number | null; newTp: number | null } | null = null
 
   if (raw.action === 'ADJUST' && ctx.positionId != null) {
-    const proposedSl = typeof raw.new_stop_loss === 'number'
-      ? rescalePrice(raw.new_stop_loss, ctx.currentPrice) : null
-    const proposedTp = typeof raw.new_take_profit === 'number'
-      ? rescalePrice(raw.new_take_profit, ctx.currentPrice) : null
-
-    if (proposedSl !== raw.new_stop_loss && proposedSl !== null)
-      logger.info('Rescaled LLM stop-loss', { coin: ctx.coin, original: raw.new_stop_loss, rescaled: proposedSl })
-    if (proposedTp !== raw.new_take_profit && proposedTp !== null)
-      logger.info('Rescaled LLM take-profit', { coin: ctx.coin, original: raw.new_take_profit, rescaled: proposedTp })
-
-    const validated = validateSlTpAdjustment({
-      currentPrice: ctx.currentPrice,
-      oldStopLoss: ctx.stopLoss,
-      oldTakeProfit: ctx.takeProfit,
-      proposedStopLoss: proposedSl,
-      proposedTakeProfit: proposedTp,
-    })
-    if (validated.notes.length > 0) {
-      logger.info('SL/TP adjustment validated', { coin: ctx.coin, changed: validated.changed, notes: validated.notes })
-    }
-    if (validated.changed && adjustEnabled) {
-      newStopLoss = validated.stopLoss
-      newTakeProfit = validated.takeProfit
-      proposalToEmit = { newSl: newStopLoss, newTp: newTakeProfit }
-    } else if (!validated.changed) {
-      // Proposal was invalid or a no-op (e.g. LLM returned wrong scale) — downgrade to HOLD
-      logger.warn('ADJUST proposal rejected by validation, storing as HOLD', {
-        coin: ctx.coin,
-        proposed_sl: raw.new_stop_loss,
-        proposed_tp: raw.new_take_profit,
-        current_price: ctx.currentPrice,
-        notes: validated.notes,
-      })
+    // #2b: ADJUST cooldown — if an ADJUST was applied for this coin in the last 24 hours,
+    // downgrade to HOLD to prevent excessive OCO cancel/replace churn.
+    const recentAdjust = queryOne(
+      `SELECT 1 FROM position_adjustments
+       WHERE coin = ? AND status = 'APPLIED'
+         AND created_at > datetime('now', '-24 hours')
+       LIMIT 1`,
+      [ctx.coin],
+    )
+    if (recentAdjust) {
+      logger.info('ADJUST cooldown active — downgrading to HOLD', { coin: ctx.coin })
       raw = { ...raw, action: 'HOLD' }
+    } else {
+      // #2a: LLM expresses levels as % relative to CURRENT price. A null side means
+      // "leave unchanged" — backfill it from the existing level, or (when none was
+      // ever set) from the horizon default, so the resulting OCO always carries BOTH
+      // a stop and a target. An OCO with a missing leg can't be placed and would
+      // otherwise cancel existing protection (see replaceProtection).
+      const hcfg = horizonConfigs[ctx.horizon]
+      const pctToPrice = (pct: number) => ctx.currentPrice * (1 + pct / 100)
+      const proposedSl = typeof raw.new_stop_loss_pct === 'number'
+        ? pctToPrice(raw.new_stop_loss_pct)
+        : (ctx.stopLoss ?? pctToPrice(-hcfg.slPct))
+      const proposedTp = typeof raw.new_take_profit_pct === 'number'
+        ? pctToPrice(raw.new_take_profit_pct)
+        : (ctx.takeProfit ?? pctToPrice(hcfg.tpPct))
+
+      const validated = validateSlTpAdjustment({
+        currentPrice: ctx.currentPrice,
+        oldStopLoss: ctx.stopLoss,
+        oldTakeProfit: ctx.takeProfit,
+        proposedStopLoss: proposedSl,
+        proposedTakeProfit: proposedTp,
+        maxSlPct: hcfg.slPct,
+      })
+      if (validated.notes.length > 0) {
+        logger.info('SL/TP adjustment validated', { coin: ctx.coin, changed: validated.changed, notes: validated.notes })
+      }
+      if (validated.changed && adjustEnabled) {
+        // Final safety net: never emit a half OCO. If validation left a side null
+        // (old was unset and the proposal was rejected), seed it from the horizon.
+        newStopLoss = validated.stopLoss ?? pctToPrice(-hcfg.slPct)
+        newTakeProfit = validated.takeProfit ?? pctToPrice(hcfg.tpPct)
+        proposalToEmit = { newSl: newStopLoss, newTp: newTakeProfit }
+      } else if (!validated.changed) {
+        // Proposal was no-op or invalid — downgrade to HOLD
+        logger.warn('ADJUST proposal rejected by validation, storing as HOLD', {
+          coin: ctx.coin,
+          sl_pct: raw.new_stop_loss_pct,
+          tp_pct: raw.new_take_profit_pct,
+          current_price: ctx.currentPrice,
+          notes: validated.notes,
+        })
+        raw = { ...raw, action: 'HOLD' }
+      }
     }
   }
 
@@ -220,7 +236,19 @@ async function monitorCoin(
   logger.info('Position review saved', { coin: ctx.coin, action: raw.action, confidence })
   broadcast('monitor_coin_completed', { cycle_id: cycleId, review })
 
-  // Fire decision immediately — don't wait for other coins
+  // Fire close immediately — don't wait for other coins
+  if (raw.action === 'CLOSE' && ctx.positionId != null) {
+    bus.emit('monitor_close_requested', {
+      positionId: ctx.positionId,
+      coin: ctx.coin,
+      currentPrice: ctx.currentPrice,
+      reasoning: raw.reasoning,
+      confidence,
+      cycleId,
+    })
+  }
+
+  // Fire adjustment immediately — don't wait for other coins
   if (proposalToEmit && ctx.positionId != null) {
     bus.emit('position_adjustment_proposed', {
       positionId: ctx.positionId,
@@ -257,16 +285,18 @@ export async function runMonitor(cycleId: string): Promise<void> {
   broadcast('monitor_started', { cycle_id: cycleId })
 
   try {
+    // #2c: Use weighted-average julian date instead of MIN to reflect the true
+    // centre of mass of a position that was built across multiple entries.
     const entries = queryAll(`
       SELECT
         coin,
         SUM(quantity) AS quantity,
         SUM(quantity * buy_price) / SUM(quantity) AS avg_buy_price,
-        MIN(buy_date) AS earliest_date
+        SUM(quantity * julianday(created_at)) / SUM(quantity) AS avg_date_jd
       FROM portfolio_entries
       WHERE status = 'OPEN' AND coin != 'USDC'
       GROUP BY coin
-    `) as { coin: string; quantity: number; avg_buy_price: number; earliest_date: string }[]
+    `) as { coin: string; quantity: number; avg_buy_price: number; avg_date_jd: number }[]
 
     if (entries.length === 0) {
       logger.info('Position monitor: no open positions to review')
@@ -306,8 +336,12 @@ export async function runMonitor(cycleId: string): Promise<void> {
           ? ((takeProfit - currentPrice) / currentPrice) * 100
           : null
 
-        const ageMs = Date.now() - new Date(entry.earliest_date + 'T00:00:00Z').getTime()
-        const ageHours = ageMs / (1000 * 60 * 60)
+        // Convert Julian Day Number back to ms since epoch:
+        // JDN 2440587.5 = 1970-01-01T00:00:00Z
+        const msFromJd = (entry.avg_date_jd - 2440587.5) * 86400000
+        const ageHours = (Date.now() - msFromJd) / (1000 * 60 * 60)
+        // Quantity-weighted open time across all entries (UTC, second precision).
+        const entryDate = new Date(msFromJd).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
 
         const rawHorizon = position?.horizon ?? 'medium'
         const horizon = (['short', 'medium', 'long'].includes(rawHorizon)
@@ -325,6 +359,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
           takeProfit,
           distanceToSlPct,
           distanceToTpPct,
+          entryDate,
           ageHours,
           horizon,
           rsi14: marketCtx.rsi14,
@@ -349,18 +384,18 @@ export async function runMonitor(cycleId: string): Promise<void> {
       long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
     }
 
-    logger.info('Monitor running per-coin in parallel', { cycleId, coins: positionContexts.map(c => c.coin) })
+    logger.info('Monitor running per-coin sequentially', { cycleId, coins: positionContexts.map(c => c.coin) })
 
-    // Each coin runs in parallel; decisions (bus events) fire as each coin resolves
-    const reviews = (await Promise.all(
-      positionContexts.map(ctx =>
-        monitorCoin(ctx, cycleId, adjustEnabled, now, horizonConfigs).catch(err => {
-          logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })
-          broadcast('monitor_coin_error', { cycle_id: cycleId, coin: ctx.coin, error: (err as Error).message })
-          return null
-        }),
-      ),
-    )).filter((v): v is PositionReview => v !== null)
+    const reviews: PositionReview[] = []
+    for (const ctx of positionContexts) {
+      try {
+        const review = await monitorCoin(ctx, cycleId, adjustEnabled, now, horizonConfigs)
+        if (review) reviews.push(review)
+      } catch (err) {
+        logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })
+        broadcast('monitor_coin_error', { cycle_id: cycleId, coin: ctx.coin, error: (err as Error).message })
+      }
+    }
 
     pruneMonitorHistory()
 

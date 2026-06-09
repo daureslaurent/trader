@@ -15,6 +15,7 @@ import LLM from './pages/LLM'
 import LLMDebug from './pages/LLMDebug'
 import CacheView from './pages/CacheView'
 import Discover from './pages/Discover'
+import LLMStats from './pages/LLMStats'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
@@ -27,6 +28,7 @@ const PAGE_TITLES: Record<Page, string> = {
   settings: 'Settings',
   discover: 'Discover Coins',
   'llm-debug': 'LLM Debug',
+  'llm-stats': 'LLM Stats',
 }
 
 let toastId = 0
@@ -95,6 +97,10 @@ function AppInner() {
       addToast('warning', `Trade approval needed: ${req.side} ${req.coin}`)
     } else if (event === 'trade_executed') {
       addToast('success', `Trade executed successfully`)
+    } else if (event === 'trade_failed') {
+      const d = data as { coin?: string; side?: string; error?: string }
+      const label = d.coin ? `${d.side ?? 'Trade'} ${d.coin.replace('/USDC', '')} failed` : 'Trade failed'
+      addToast('error', d.error ? `${label}: ${d.error}` : label)
     } else if (event === 'stop_loss_hit') {
       const d = data as { coin: string }
       addToast('error', `Stop loss hit: ${d.coin}`)
@@ -172,6 +178,7 @@ function AppInner() {
           {page === 'cache' && <CacheView />}
           {page === 'discover' && <Discover />}
           {page === 'llm-debug' && <LLMDebug />}
+          {page === 'llm-stats' && <LLMStats />}
           {page === 'settings' && <Settings />}
         </main>
       </div>

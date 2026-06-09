@@ -1,4 +1,4 @@
-import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
+import { queryAll, queryOne, runSQL, withTransaction, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
 import { broadcast } from '../api/ws.js'
@@ -295,36 +295,63 @@ export interface PositionExit {
  * and broadcasts. Idempotent — bails if the position is no longer OPEN, so
  * overlapping reconcile passes can't double-close.
  *
+ * All DB writes are wrapped in a single transaction so a mid-crash can't leave
+ * the coin closed but USDC unreplenished (issue #3/#6d).
+ *
  * The actual exchange sell must already have happened (OCO fill on the exchange,
  * or a market sell issued by the caller). This function never trades.
  */
 export function closePositionFromExit(exit: PositionExit): boolean {
-  const closed = runSQL(
-    "UPDATE positions SET status = ?, pnl = (quantity * (? - entry_price)) WHERE id = ? AND status = 'OPEN'",
-    [exit.status, exit.fillPrice, exit.positionId]
-  )
-  if (closed.changes === 0) return false // already closed by a concurrent pass
+  let positionClosed = false
+  let pnl: number | null = null
 
-  recordPositionClose(exit.positionId, exit.fillPrice)
+  // Atomic: position close + ledger update + USDC credit
+  const committed = withTransaction(() => {
+    const r = runSQL(
+      "UPDATE positions SET status = ?, pnl = (quantity * (? - entry_price)) WHERE id = ? AND status = 'OPEN'",
+      [exit.status, exit.fillPrice, exit.positionId]
+    )
+    if (r.changes === 0) return false  // already closed by a concurrent pass
+
+    positionClosed = true
+    pnl = (getBotPositionById(exit.positionId)?.pnl) ?? null
+
+    recordPositionClose(exit.positionId, exit.fillPrice)
+
+    // Close the local ledger entries for the coin (full exit).
+    const entries = queryAll(
+      "SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
+      [exit.coin]
+    ) as { id: number }[]
+    for (const e of entries) closeEntry(e.id)
+
+    const proceeds = exit.fillPrice * exit.fillQty
+    let usdtEntry = getUsdtEntry()
+    if (!usdtEntry) {
+      // #6a: USDT entry was deleted or never seeded — auto-seed at zero so the credit lands safely
+      seedUsdtIfAbsent(0)
+      usdtEntry = getUsdtEntry()
+    }
+    if (usdtEntry) {
+      increaseEntryQuantity(usdtEntry.id, proceeds)
+    } else {
+      logger.error('closePositionFromExit: USDC entry missing after seed attempt — proceeds lost', {
+        coin: exit.coin, proceeds,
+      })
+    }
+
+    runSQL(
+      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
+      [exit.coin, exit.fillQty, exit.fillPrice, exit.fillPrice * exit.fillQty]
+    )
+    return true
+  })
+
+  if (!committed || !positionClosed) return false
+
+  // Post-commit: non-critical cleanup + broadcasts
   clearReviewsForCoin(exit.coin)
 
-  // Close the local ledger entries for the coin (full exit).
-  const entries = queryAll(
-    "SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
-    [exit.coin]
-  ) as { id: number }[]
-  for (const e of entries) closeEntry(e.id)
-
-  const proceeds = exit.fillPrice * exit.fillQty
-  const usdtEntry = getUsdtEntry()
-  if (usdtEntry) increaseEntryQuantity(usdtEntry.id, proceeds)
-
-  runSQL(
-    "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-    [exit.coin, exit.fillQty, exit.fillPrice, proceeds]
-  )
-
-  const pnl = (getBotPositionById(exit.positionId)?.pnl) ?? null
   if (exit.status === 'SL_HIT') broadcast('stop_loss_hit', { coin: exit.coin, price: exit.fillPrice, pnl })
   else if (exit.status === 'TP_HIT') broadcast('take_profit_hit', { coin: exit.coin, price: exit.fillPrice, pnl })
   const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
@@ -445,12 +472,21 @@ export async function reconcileOpenPositions(): Promise<void> {
           })
           if (oco.status === 'OPEN') continue
           if (oco.status === 'FILLED' && oco.filledLeg) {
+            const fillQty = oco.fillQty ?? pos.quantity
+            // #6b: Skip close if only partially filled — wait for the full fill next cycle.
+            // A partial fill shouldn't close the ledger entry; it isn't fully executed yet.
+            if (fillQty < pos.quantity * 0.99) {
+              logger.warn('OCO partially filled — waiting for full fill before closing', {
+                coin: pos.coin, positionQty: pos.quantity, fillQty,
+              })
+              continue
+            }
             closePositionFromExit({
               positionId: pos.id,
               coin: pos.coin,
               status: oco.filledLeg === 'SL' ? 'SL_HIT' : 'TP_HIT',
               fillPrice: oco.fillPrice ?? (oco.filledLeg === 'SL' ? pos.current_sl : (pos.take_profit ?? pos.entry_price)),
-              fillQty: oco.fillQty ?? pos.quantity,
+              fillQty,
               reason: oco.filledLeg === 'SL' ? 'Stop loss (OCO)' : 'Take profit (OCO)',
             })
             continue

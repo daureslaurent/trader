@@ -41,6 +41,43 @@ function computeATR(candles: OHLCV[], period: number): number {
   return recentTRs.reduce((a, b) => a + b, 0) / period
 }
 
+// ── Deterministic market-regime classification ──────────────────────────────
+// The regime is derived purely from the SMA/RSI/ATR figures already computed in
+// getMarketContext. Keeping it deterministic means a "regime" mistake can never
+// cascade into a wrong trade direction or wrong SL/TP (to_fix.md #1b), and it
+// removes that subtask from the LLM prompt entirely (#1a, #1c).
+
+export type RegimeMomentum = 'overbought' | 'bullish' | 'neutral' | 'bearish' | 'oversold'
+
+export interface MarketRegime {
+  trend: 'uptrend' | 'downtrend' | 'ranging'
+  volatility: 'high' | 'normal' | 'low'
+  momentum: RegimeMomentum
+  smaAlignment: 'bullish' | 'bearish' | 'mixed'
+  /** One-line human-readable summary handed to the decision LLM. */
+  summary: string
+}
+
+export function classifyRegime(m: MarketContext): MarketRegime {
+  const smaAlignment: MarketRegime['smaAlignment'] =
+    m.sma7 > m.sma25 && m.sma25 > (m.sma99 ?? 0) ? 'bullish'
+    : m.sma7 < m.sma25 && m.sma25 < (m.sma99 ?? Infinity) ? 'bearish'
+    : 'mixed'
+
+  const momentum: RegimeMomentum =
+    m.rsi14 >= 70 ? 'overbought'
+    : m.rsi14 >= 55 ? 'bullish'
+    : m.rsi14 > 45 ? 'neutral'
+    : m.rsi14 > 30 ? 'bearish'
+    : 'oversold'
+
+  const summary =
+    `${m.trend.toUpperCase()} · ${m.volatility}-volatility · ` +
+    `RSI ${m.rsi14.toFixed(0)} (${momentum}) · SMA alignment ${smaAlignment}`
+
+  return { trend: m.trend, volatility: m.volatility, momentum, smaAlignment, summary }
+}
+
 export async function getMarketContext(symbol: string, price: number): Promise<MarketContext> {
   try {
     const { getExchange } = await import('../trader/service.js')

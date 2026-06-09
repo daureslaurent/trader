@@ -6,6 +6,8 @@ import { Signal, MarketContext, PortfolioState } from '../types.js'
 import { ExtractedResearch } from '../extractor/index.js'
 import { buildAnalysisPrompt } from '../portfolio/prompts.js'
 import { getCoinPortfolioContext } from '../portfolio/service.js'
+import { classifyRegime } from '../portfolio/market.js'
+import { computeRiskLevels } from '../portfolio/risk.js'
 import { getSettings } from '../db/index.js'
 import { LLMError } from '../core/errors.js'
 import { fetchOrderBook, analyzeOrderBook } from '../trader/index.js'
@@ -22,6 +24,9 @@ const CONFIDENCE_MAP: Record<string, number> = {
   LOW: 0.3,
 }
 
+// The decision LLM now returns only direction + confidence + reason.
+// SL/TP are computed deterministically (computeRiskLevels), so they are no
+// longer parsed from the model output.
 function parseAnalystResponse(content: string, coin: string): Signal {
   if (!content.trim()) throw new LLMError('Empty response')
 
@@ -48,22 +53,7 @@ function parseAnalystResponse(content: string, coin: string): Signal {
     ? parsed.reason.trim()
     : 'No reason provided'
 
-  // LLM-decided SL/TP percentages (only meaningful for BUY; clamped to safe ranges)
-  let stop_loss_pct: number | undefined
-  let take_profit_pct: number | undefined
-  if (action === 'BUY') {
-    if (typeof parsed.stop_loss_pct === 'number' && parsed.stop_loss_pct > 0) {
-      stop_loss_pct = Math.min(Math.max(parsed.stop_loss_pct, 0.5), 25)
-    }
-    if (typeof parsed.take_profit_pct === 'number' && parsed.take_profit_pct > 0) {
-      take_profit_pct = Math.min(Math.max(parsed.take_profit_pct, 0.5), 50)
-    }
-    if (stop_loss_pct != null && take_profit_pct != null) {
-      logger.info('LLM-decided SL/TP', { coin, stop_loss_pct, take_profit_pct })
-    }
-  }
-
-  return { coin, action: action as 'BUY' | 'SELL' | 'HOLD', quantity: 0, reason, confidence, stop_loss_pct, take_profit_pct, horizon: undefined }
+  return { coin, action: action as 'BUY' | 'SELL' | 'HOLD', quantity: 0, reason, confidence, horizon: undefined }
 }
 
 export async function analyzeSignal(
@@ -75,7 +65,10 @@ export async function analyzeSignal(
   const settings = getSettings()
   const coinCtx = getCoinPortfolioContext(coin)
 
-  // Fetch live order book for LLM context; non-fatal if it fails
+  // Deterministic regime — handed to the LLM as a fact, never asked of it (#1).
+  const regime = classifyRegime(market)
+
+  // Fetch live order book for liquidity context; non-fatal if it fails
   let orderBook: OrderBookAnalysis | null = null
   try {
     const book = await fetchOrderBook(coin, 20)
@@ -84,10 +77,10 @@ export async function analyzeSignal(
     logger.warn('Order book fetch failed, proceeding without it', { coin, error: (obErr as Error).message })
   }
 
-  const { system, user } = buildAnalysisPrompt(coin, market, portfolio, settings, research, coinCtx, orderBook)
-  // 'auto' means the LLM decides SL/TP freely — no specific horizon is stamped on the position
+  const { system, user } = buildAnalysisPrompt(coin, market, regime, portfolio, settings, research, coinCtx, orderBook)
+  // 'auto' means deterministic risk sizes freely off ATR — no horizon stamped on the position
   const defaultHorizon = settings.default_horizon === 'auto' ? undefined : settings.default_horizon
-  logger.info('Request LLM', { module: 'analyst', coin })
+  logger.info('Request LLM', { module: 'analyst', coin, regime: regime.summary })
 
   const params: OpenAI.ChatCompletionCreateParams = {
     model: config.analyst.model,
@@ -95,18 +88,31 @@ export async function analyzeSignal(
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
-    temperature: 0.3,
+    // Single low temperature — the only subtask left is a discrete judgement (#1a)
+    temperature: 0.2,
     max_tokens: config.analyst.maxTokens,
     response_format: { type: 'json_object' },
   }
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
-      const resp = await llmChat(client, params, { module: 'analyst', coin })
+      const resp = await llmChat(client, params, { module: 'analyst', coin, base_url: config.analyst.baseURL })
       const content = resp.choices[0]?.message?.content ?? ''
       logger.info('Response LLM', { module: 'analyst', coin, finish_reason: resp.choices[0]?.finish_reason })
       const signal = parseAnalystResponse(content, coin)
       signal.horizon = defaultHorizon
+
+      // Deterministic SL/TP for BUYs — computed from ATR / horizon / volatility,
+      // not guessed by the LLM (#1b). Carried as % on the signal; index.ts converts.
+      if (signal.action === 'BUY') {
+        const risk = computeRiskLevels(market, regime, settings.default_horizon, settings)
+        signal.stop_loss_pct = risk.stopLossPct
+        signal.take_profit_pct = risk.takeProfitPct
+        logger.info('Risk levels (deterministic)', {
+          coin, sl_pct: risk.stopLossPct, tp_pct: risk.takeProfitPct, source: risk.source, notes: risk.notes,
+        })
+      }
+
       logger.info('Signal from LLM', { coin, action: signal.action, confidence: signal.confidence, horizon: signal.horizon })
       return signal
     } catch (err) {

@@ -45,7 +45,8 @@ export {
 } from './service.js'
 export type { CoinPortfolioContext, PositionExit } from './service.js'
 
-export { getMarketContext } from './market.js'
+export { getMarketContext, classifyRegime } from './market.js'
+export type { MarketRegime, RegimeMomentum } from './market.js'
 export { buildAnalysisPrompt } from './prompts.js'
 export {
   recordPositionOpen,
@@ -58,7 +59,8 @@ export {
   calculatePositionSize,
   calculateStopLoss,
   calculateTakeProfit,
+  computeRiskLevels,
   checkPosition,
   validateSlTpAdjustment,
 } from './risk.js'
-export type { SlTpProposal, SlTpValidation } from './risk.js'
+export type { SlTpProposal, SlTpValidation, RiskLevels } from './risk.js'

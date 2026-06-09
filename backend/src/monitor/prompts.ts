@@ -12,6 +12,7 @@ export interface PositionContext {
   takeProfit: number | null
   distanceToSlPct: number | null
   distanceToTpPct: number | null
+  entryDate: string
   ageHours: number
   horizon: 'short' | 'medium' | 'long'
   rsi14: number
@@ -37,11 +38,6 @@ export function fmtPrice(n: number): string {
   if (n >= 1) return n.toFixed(4)
   if (n >= 0.01) return n.toFixed(6)
   return n.toPrecision(5)
-}
-
-function fmtPct(n: number | null | undefined): string {
-  if (n == null || !isFinite(n)) return 'N/A'
-  return n.toFixed(2) + '%'
 }
 
 const HORIZON_BEHAVIOR: Record<'short' | 'medium' | 'long', string> = {
@@ -84,9 +80,15 @@ REDUCE     Partial exit. Set reduce_to_pct (integer: % of current size to keep, 
 ADJUST     Keep the position but update stop-loss and/or take-profit.
            Use to trail the stop UP as price rises, extend TP in a strong trend,
            or tighten risk when momentum weakens.
-           Express levels as PERCENTAGES relative to current price (not absolute USD):
-             new_stop_loss_pct  — negative = below current price (e.g. -3.5 means SL 3.5% below)
-             new_take_profit_pct — positive = above current price (e.g. +8.0 means TP 8% above)
+           Express BOTH levels as PERCENTAGES relative to the CURRENT price (never
+           absolute USD, never relative to entry):
+             new_stop_loss_pct   — negative = below current price (e.g. -3.5 → SL 3.5% below)
+             new_take_profit_pct — positive = above current price (e.g. +8.0 → TP 8% above)
+           Adjust just one side by setting the other to null — the engine keeps the
+           untouched side as-is (or seeds it from the horizon target if none exists),
+           so a complete stop+target pair is always maintained. The "Stop"/"TP" lines
+           below are already shown in this same %-from-current-price frame: to leave a
+           level unchanged, repeat its shown value; do not echo it as a fresh change.
 HOLD       No change. Trend intact, SL buffer healthy, no compelling reason to act.
 
 ── Horizon: ${position.horizon.toUpperCase()} ─────────────────────────────────────────────────────
@@ -101,7 +103,9 @@ ${horizonBehavior}
   - When trailing the stop, aim to stay near -${cfg.slPct.toFixed(1)}% from the recent high, not from entry.
 
 ── Hard risk rules (engine-enforced) ────────────────────────────────────────
-- Stop-loss may only be TIGHTENED (raised toward price). Loosening is always rejected.
+- Stop-loss loosening is capped at -${cfg.slPct.toFixed(1)}% from current price (the horizon floor).
+  Only loosen when volatility has expanded or the original stop was structurally wrong.
+  Prefer tightening (trailing) when the trend is intact.
 - new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
 - Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).
 
@@ -121,23 +125,30 @@ Use null for new_stop_loss_pct / new_take_profit_pct when not changing them.`
   const pnlSign = p.pnlPct >= 0 ? '+' : ''
   const ch24Sign = p.change24h >= 0 ? '+' : ''
   const p7Sign = p.perf7d >= 0 ? '+' : ''
-  const slPct = p.stopLoss != null && p.entryPrice > 0
-    ? ((p.stopLoss - p.entryPrice) / p.entryPrice * 100)
+
+  // Show SL/TP in the SAME frame the model must answer in: a signed % relative to
+  // the CURRENT price (negative = below, positive = above). This is exactly the
+  // new_stop_loss_pct / new_take_profit_pct convention, so there is one coordinate
+  // frame end-to-end — no entry-relative vs current-relative ambiguity.
+  const sgn = (n: number) => (n >= 0 ? '+' : '')
+  const slFromCurrent = p.stopLoss != null && p.currentPrice > 0
+    ? ((p.stopLoss - p.currentPrice) / p.currentPrice) * 100
     : null
-  const tpPct = p.takeProfit != null && p.entryPrice > 0
-    ? ((p.takeProfit - p.entryPrice) / p.entryPrice * 100)
+  const tpFromCurrent = p.takeProfit != null && p.currentPrice > 0
+    ? ((p.takeProfit - p.currentPrice) / p.currentPrice) * 100
     : null
-  const sl = p.stopLoss != null
-    ? `$${fmtPrice(p.stopLoss)} (${slPct!.toFixed(2)}%)`
-    : `not yet set (target: -${cfg.slPct.toFixed(1)}%)`
-  const tp = p.takeProfit != null
-    ? `$${fmtPrice(p.takeProfit)} (+${tpPct!.toFixed(2)}%)`
-    : `not yet set (target: +${cfg.tpPct.toFixed(1)}%)`
+  const sl = slFromCurrent != null
+    ? `$${fmtPrice(p.stopLoss!)} (${sgn(slFromCurrent)}${slFromCurrent.toFixed(2)}% from price)${slFromCurrent >= 0 ? ' ⚠ at/above price — SL imminent' : ''}`
+    : `not set — seed new_stop_loss_pct = -${cfg.slPct.toFixed(1)}`
+  const tp = tpFromCurrent != null
+    ? `$${fmtPrice(p.takeProfit!)} (${sgn(tpFromCurrent)}${tpFromCurrent.toFixed(2)}% from price)`
+    : `not set — seed new_take_profit_pct = +${cfg.tpPct.toFixed(1)}`
 
   const positionText = `Coin:     ${p.coin}
-Horizon:  ${p.horizon.toUpperCase()} (SL target: -${cfg.slPct.toFixed(1)}%, TP target: +${cfg.tpPct.toFixed(1)}%)
+Horizon:  ${p.horizon.toUpperCase()} (SL target: -${cfg.slPct.toFixed(1)}%, TP target: +${cfg.tpPct.toFixed(1)}% from current price)
+Opened:   ${p.entryDate} (${p.ageHours.toFixed(1)}h ago)
 Qty:      ${p.quantity} | Entry: $${fmtPrice(p.entryPrice)} | Current: $${fmtPrice(p.currentPrice)}
-P&L:      ${pnlSign}$${p.pnlUsd.toFixed(2)} (${pnlSign}${p.pnlPct.toFixed(2)}%) | Age: ${p.ageHours.toFixed(1)}h
+P&L:      ${pnlSign}$${p.pnlUsd.toFixed(2)} (${pnlSign}${p.pnlPct.toFixed(2)}%)
 Stop:     ${sl}
 TP:       ${tp}
 RSI(14):  ${p.rsi14.toFixed(1)} | Trend: ${p.trend} | Volatility: ${p.volatility}

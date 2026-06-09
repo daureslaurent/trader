@@ -121,6 +121,7 @@ export type PipelineStage =
   | 'pipeline_timeout'
   | 'pipeline_failed'
   | 'pipeline_cancelled'
+  | 'pipeline_completed'
   | 'trade_executed'
   | 'trade_skipped'
   | 'discovery_started'
@@ -142,6 +143,10 @@ export interface PipelineEvent {
 export interface MarketData {
   symbol: string
   price: number
+  change24h?: number
+  volume?: number
+  bid?: number
+  ask?: number
 }
 
 export interface MarketContext {

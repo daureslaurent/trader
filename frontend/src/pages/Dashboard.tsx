@@ -129,7 +129,16 @@ export default function Dashboard({ onApprovalAction }: Props) {
       .catch(() => {})
   }
 
-  useEffect(() => { loadAll(); loadAdjustments() }, [])
+  function loadPendingApprovals() {
+    fetch('/api/approvals')
+      .then(r => r.json())
+      .then((data: ApprovalRequest[]) => {
+        if (Array.isArray(data)) setApprovals(data)
+      })
+      .catch(() => {})
+  }
+
+  useEffect(() => { loadAll(); loadAdjustments(); loadPendingApprovals() }, [])
 
   useEffect(() => {
     if (!pipelineRunning) return
