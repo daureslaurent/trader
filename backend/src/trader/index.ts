@@ -60,5 +60,9 @@ export function fetchOco(
   return ocoImpl().fetchOco(symbol, oco)
 }
 
+export function findExistingOco(symbol: string): Promise<OcoResult | null> {
+  return ocoImpl().findExistingOco(symbol)
+}
+
 export { OcoUnplaceableError } from './oco.js'
 export type { MarketData, AccountBalance, TradeResult, CoinTradeResult, BalanceInfo, OcoLevels, OcoResult, OcoCancelResult, OcoFetchResult, OcoStatus, OrderBook, OrderBookAnalysis } from './types.js'

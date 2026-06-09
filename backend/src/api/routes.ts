@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
+import { getRunningLLMCalls } from '../core/llm.js'
 import { executeTrade, executeCoinTrade } from '../trader/index.js'
 import { getExchange } from '../trader/service.js'
 import { config } from '../config/index.js'
@@ -259,11 +260,19 @@ router.get('/portfolio/gains', (_req: Request, res: Response) => {
       ORDER BY realized_pnl DESC
     `) as { coin: string; total_bought: number; total_sold: number; realized_pnl: number }[]
 
+    const feeRow = queryOne(`
+      SELECT SUM(fee_cost) AS total_bnb_fees
+      FROM trades
+      WHERE fee_currency = 'BNB' AND status = 'EXECUTED' AND fee_cost > 0
+    `) as { total_bnb_fees: number | null } | null
+
     const total_pnl = rows.reduce((s, r) => s + (r.realized_pnl ?? 0), 0)
+    const total_bnb_fees = Math.round((feeRow?.total_bnb_fees ?? 0) * 1e8) / 1e8
 
     res.json({
       total_pnl: Math.round(total_pnl * 100) / 100,
       total_fees: 0,
+      total_bnb_fees,
       coins: rows.map(r => ({
         coin: r.coin,
         total_bought: Math.round((r.total_bought ?? 0) * 100) / 100,
@@ -338,8 +347,8 @@ router.patch('/positions/:id/horizon', (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     const { horizon } = req.body as { horizon?: string }
-    if (!['short', 'medium', 'long'].includes(horizon ?? '')) {
-      return res.status(400).json({ error: 'horizon must be short, medium, or long' })
+    if (!['short', 'medium', 'long', 'disabled', 'llm'].includes(horizon ?? '')) {
+      return res.status(400).json({ error: 'horizon must be short, medium, long, disabled, or llm' })
     }
     const pos = queryOne("SELECT id FROM positions WHERE id = ? AND status = 'OPEN'", [id])
     if (!pos) return res.status(404).json({ error: 'Position not found' })
@@ -809,13 +818,18 @@ router.post('/adjustment/reject/:id', (req: Request, res: Response) => {
 
 // ── LLM call log ──────────────────────────────────────────────────────────────
 
+router.get('/llm-calls/running', (_req: Request, res: Response) => {
+  res.json(getRunningLLMCalls())
+})
+
 router.get('/llm-calls', (req: Request, res: Response) => {
   try {
-    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10), 1), 500)
+    const defaultLimit = getSettings().llm_debug_fetch_limit || 200
+    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || String(defaultLimit), 10), 1), 2000)
     const module = req.query.module as string | undefined
     const coin = req.query.coin as string | undefined
 
-    let sql = 'SELECT id, module, model, base_url, response, error, prompt_tokens, completion_tokens, duration_ms, coin, cycle_id, created_at FROM llm_calls'
+    let sql = 'SELECT id, module, model, base_url, response, reasoning_content, error, prompt_tokens, completion_tokens, thinking_tokens, duration_ms, coin, cycle_id, created_at FROM llm_calls'
     const params: (string | number)[] = []
     const conditions: string[] = []
 
@@ -847,6 +861,15 @@ router.delete('/llm-calls', (_req: Request, res: Response) => {
   try {
     runSQL('DELETE FROM llm_calls')
     res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+router.get('/llm-stats-snapshots', (_req: Request, res: Response) => {
+  try {
+    const rows = queryAll('SELECT module, model, base_url, call_count, error_count, total_duration_ms, total_prompt_tokens, total_completion_tokens, total_thinking_tokens FROM llm_stats_snapshots')
+    res.json(rows)
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }

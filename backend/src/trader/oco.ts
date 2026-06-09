@@ -120,6 +120,52 @@ export async function cancelOco(symbol: string, orderListId: string): Promise<Oc
 }
 
 /**
+ * Scan open orders for the symbol and reattach to any existing OCO list.
+ * Called when OCO placement fails with "insufficient balance" — that error
+ * almost always means the coins are already locked in an OCO that survived a
+ * backend restart but whose IDs were lost from the local DB.
+ * Returns null if no OCO is found or the lookup fails (non-fatal).
+ */
+export async function findExistingOco(symbol: string): Promise<OcoResult | null> {
+  const ex = getExchange()
+  await ensureMarkets(ex)
+  try {
+    logger.info('🛸 Binance fetchOpenOrders (OCO recovery)', { symbol })
+    const openOrders = await ex.fetchOpenOrders(symbol)
+
+    // Group orders by OCO list ID; standalone orders have orderListId = -1
+    const byList = new Map<string, typeof openOrders>()
+    for (const order of openOrders) {
+      const listId = String((order.info as any)?.orderListId ?? -1)
+      if (listId === '-1') continue
+      if (!byList.has(listId)) byList.set(listId, [])
+      byList.get(listId)!.push(order)
+    }
+
+    if (byList.size === 0) return null
+
+    // Use the first OCO list found for this symbol
+    const [orderListId, orders] = [...byList.entries()][0]
+    const slOrder = orders.find(o => {
+      const t = String((o.info as any)?.type ?? '').toUpperCase()
+      return t === 'STOP_LOSS_LIMIT' || t.startsWith('STOP_LOSS')
+    })
+    const tpOrder = orders.find(o => String((o.info as any)?.type ?? '').toUpperCase() === 'LIMIT_MAKER')
+
+    logger.info('Found existing OCO on Binance (recovery)', { symbol, orderListId, slOrderId: slOrder?.id ?? null, tpOrderId: tpOrder?.id ?? null })
+    return {
+      orderListId,
+      slOrderId: slOrder ? String(slOrder.id) : null,
+      tpOrderId: tpOrder ? String(tpOrder.id) : null,
+      status: 'ACTIVE',
+    }
+  } catch (err) {
+    logger.warn('OCO recovery lookup failed', { symbol, error: err instanceof Error ? err.message : String(err) })
+    return null
+  }
+}
+
+/**
  * Atomic cancel + replace (Binance Spot has no native OCO modify). Cancels the
  * old list, then places fresh levels. If the replace fails after the cancel, the
  * position is briefly unprotected — we return status FAILED so the caller marks

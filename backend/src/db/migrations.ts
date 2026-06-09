@@ -72,6 +72,11 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     try { db.run("ALTER TABLE llm_calls ADD COLUMN base_url TEXT NOT NULL DEFAULT ''") } catch { /* already exists in fresh schema */ }
   })
 
+  migrate(cache, 'cache', 4, (db) => {
+    try { db.run('ALTER TABLE llm_calls ADD COLUMN thinking_tokens INTEGER') } catch { /* already exists in fresh schema */ }
+    try { db.run('ALTER TABLE llm_calls ADD COLUMN reasoning_content TEXT') } catch { /* already exists in fresh schema */ }
+  })
+
   // ── Trading DB ────────────────────────────────────────────────────────────
 
   migrate(trading, 'trading', 1, (db) => {
@@ -199,6 +204,8 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     ['monitor_tp_pct_medium', '10'],
     ['monitor_tp_pct_long', '20'],
     ['oco_sl_buffer_pct', '0.5'],
+    ['llm_debug_fetch_limit', '200'],
+    ['llm_retain_days', '0'],
   ]
   for (const [key, value] of seeds) {
     settings.run('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', [key, value])

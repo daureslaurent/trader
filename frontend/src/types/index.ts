@@ -60,7 +60,7 @@ export interface ActivePosition {
   distance_to_sl_pct: number | null
   distance_to_tp_pct: number | null
   status: 'OPEN' | 'CLOSED' | 'SL_HIT' | 'TP_HIT'
-  horizon: 'short' | 'medium' | 'long'
+  horizon: 'short' | 'medium' | 'long' | 'disabled' | 'llm'
   /** Exchange-side OCO protection state: ACTIVE = enforced on Binance, FAILED = software fallback. */
   oco_status: 'NONE' | 'ACTIVE' | 'FAILED'
 }
@@ -77,6 +77,7 @@ export interface GainsCoin {
 export interface GainsResponse {
   total_pnl: number
   total_fees: number
+  total_bnb_fees: number
   coins: GainsCoin[]
 }
 
@@ -228,17 +229,21 @@ export interface SlTpEvent {
 
 export interface LLMCall {
   id: number
+  temp_id?: string
   module: string
   model: string
   base_url: string
   system_prompt?: string
   user_prompt?: string
   response: string | null
+  reasoning_content: string | null
   error: string | null
   prompt_tokens: number | null
   completion_tokens: number | null
+  thinking_tokens: number | null
   duration_ms: number
   coin: string | null
   cycle_id: string | null
   created_at: string
+  status?: 'running' | 'done'
 }

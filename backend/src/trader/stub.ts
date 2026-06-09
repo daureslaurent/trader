@@ -55,10 +55,10 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
   if (signal.action === 'BUY') {
     logger.info('🛸 Binance fetchTicker', { symbol: signal.coin })
     logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'buy', cost })
-    return { id: `stub-${Date.now()}`, price, quantity: signal.quantity, cost }
+    return { id: `stub-${Date.now()}`, price, quantity: signal.quantity, cost, fee_cost: cost * 0.001, fee_currency: 'BNB' }
   } else {
     logger.info('🛸 Binance createMarketOrder', { symbol: signal.coin, side: 'sell', quantity: signal.quantity })
-    return { id: `stub-${Date.now()}`, price, quantity: signal.quantity, cost }
+    return { id: `stub-${Date.now()}`, price, quantity: signal.quantity, cost, fee_cost: cost * 0.001, fee_currency: 'BNB' }
   }
 }
 
@@ -122,6 +122,10 @@ export async function cancelOco(symbol: string, orderListId: string): Promise<Oc
 export async function updateOco(symbol: string, orderListId: string, quantity: number, levels: OcoLevels): Promise<OcoResult> {
   await cancelOco(symbol, orderListId)
   return placeOco(symbol, quantity, levels)
+}
+
+export async function findExistingOco(_symbol: string): Promise<OcoResult | null> {
+  return null
 }
 
 export async function fetchOco(

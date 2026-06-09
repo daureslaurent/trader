@@ -305,6 +305,10 @@ export function closePositionFromExit(exit: PositionExit): boolean {
   let positionClosed = false
   let pnl: number | null = null
 
+  const preClose = queryOne("SELECT entry_price, quantity, created_at FROM positions WHERE id = ? AND status = 'OPEN'", [exit.positionId]) as
+    | { entry_price: number; quantity: number; created_at: string }
+    | null
+
   // Atomic: position close + ledger update + USDC credit
   const committed = withTransaction(() => {
     const r = runSQL(
@@ -358,6 +362,17 @@ export function closePositionFromExit(exit: PositionExit): boolean {
   if (trade) broadcast('trade_executed', trade)
 
   bus.emit('portfolio_updated')
+  bus.emit('position_closed', {
+    positionId: exit.positionId,
+    coin: exit.coin,
+    status: exit.status,
+    fillPrice: exit.fillPrice,
+    fillQty: exit.fillQty,
+    pnl,
+    reason: exit.reason,
+    entryPrice: preClose?.entry_price ?? null,
+    openedAt: preClose?.created_at ?? null,
+  })
   logger.info('Position closed from exit', { coin: exit.coin, status: exit.status, fillPrice: exit.fillPrice, reason: exit.reason })
   return true
 }
@@ -388,8 +403,30 @@ export async function placeProtection(positionId: number): Promise<void> {
     persistOco(positionId, res)
     logger.info('OCO protection placed', { coin: pos.coin, positionId, orderListId: res.orderListId, stopLoss: pos.current_sl, takeProfit: pos.take_profit })
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+
+    // "Insufficient balance" means the coins are already locked in an OCO that
+    // survived a backend restart but whose IDs were lost from the local DB.
+    // Scan Binance open orders and reattach to the existing OCO instead of
+    // falling back to the software stop, which would leave the position
+    // unprotected on the exchange side.
+    if (/insufficient balance/i.test(msg)) {
+      try {
+        const existing = await trader.findExistingOco(pos.coin)
+        if (existing) {
+          persistOco(positionId, existing)
+          logger.info('OCO protection reattached after restart (recovered lost OCO state)', {
+            coin: pos.coin, positionId, orderListId: existing.orderListId,
+          })
+          return
+        }
+      } catch (recErr) {
+        logger.warn('OCO recovery lookup threw unexpectedly', { coin: pos.coin, error: recErr instanceof Error ? recErr.message : String(recErr) })
+      }
+    }
+
     setOcoStatus(positionId, 'FAILED')
-    logger.error('OCO placement failed — software fallback active', { coin: pos.coin, positionId, error: err instanceof Error ? err.message : String(err) })
+    logger.error('OCO placement failed — software fallback active', { coin: pos.coin, positionId, error: msg })
   }
 }
 

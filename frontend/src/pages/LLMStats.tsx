@@ -102,7 +102,21 @@ interface ModuleStat {
   avg_duration: number
   avg_prompt: number
   avg_completion: number
+  avg_thinking: number
   total_tokens: number
+  total_thinking: number
+}
+
+interface LLMSnapshot {
+  module: string
+  model: string
+  base_url: string
+  call_count: number
+  error_count: number
+  total_duration_ms: number
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_thinking_tokens: number
 }
 
 function TimingTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: ScatterPoint }> }) {
@@ -127,121 +141,139 @@ function EmptyChart() {
 
 export default function LLMStats() {
   const [calls, setCalls] = useState<LLMCall[]>([])
+  const [snapshots, setSnapshots] = useState<LLMSnapshot[]>([])
   const [loading, setLoading] = useState(true)
   const [timeRange, setTimeRange] = useState<TimeRange>('all')
 
   useEffect(() => {
-    fetch('/api/llm-calls?limit=500')
-      .then(r => r.json())
-      .then(d => { setCalls(d); setLoading(false) })
-      .catch(() => setLoading(false))
+    Promise.all([
+      fetch('/api/llm-calls?limit=500').then(r => r.json()).catch(() => [] as LLMCall[]),
+      fetch('/api/llm-stats-snapshots').then(r => r.json()).catch(() => [] as LLMSnapshot[]),
+    ]).then(([liveCalls, snaps]: [LLMCall[], LLMSnapshot[]]) => {
+      setCalls(liveCalls)
+      setSnapshots(snaps)
+      setLoading(false)
+    })
   }, [])
 
   useWebSocket(useCallback((event: string, data: unknown) => {
     if (event === 'llm_call') {
-      setCalls(prev => [data as LLMCall, ...prev].slice(0, 500))
+      const call = data as LLMCall
+      setCalls(prev => {
+        if (call.temp_id) {
+          const idx = prev.findIndex(c => c.temp_id === call.temp_id)
+          if (idx !== -1) {
+            const next = [...prev]
+            next[idx] = call
+            return next
+          }
+        }
+        return [call, ...prev].slice(0, 500)
+      })
     }
   }, []))
 
-  const { moduleStats, sortedModules, totalCalls, avgDuration, totalTokens, errorCount, endpointStats, sortedEndpoints, modelStats, sortedModels } = useMemo(() => {
-    if (!calls.length) {
-      return { moduleStats: [] as ModuleStat[], sortedModules: [] as string[], totalCalls: 0, avgDuration: 0, totalTokens: 0, errorCount: 0, endpointStats: [] as ModuleStat[], sortedEndpoints: [] as string[], modelStats: [] as ModuleStat[], sortedModels: [] as string[] }
+  const doneCalls = useMemo(() => calls.filter(c => c.status !== 'running'), [calls])
+
+  const hasHistorical = snapshots.length > 0
+  const historicalCallCount = useMemo(() => snapshots.reduce((s, r) => s + r.call_count, 0), [snapshots])
+
+  type AggBucket = { count: number; errors: number; totalDuration: number; totalPrompt: number; totalCompletion: number; totalThinking: number }
+
+  const { moduleStats, sortedModules, totalCalls, avgDuration, totalTokens, totalThinking, errorCount, endpointStats, sortedEndpoints, modelStats, sortedModels } = useMemo(() => {
+    const empty = { moduleStats: [] as ModuleStat[], sortedModules: [] as string[], totalCalls: 0, avgDuration: 0, totalTokens: 0, totalThinking: 0, errorCount: 0, endpointStats: [] as ModuleStat[], sortedEndpoints: [] as string[], modelStats: [] as ModuleStat[], sortedModels: [] as string[] }
+    if (!doneCalls.length && !snapshots.length) return empty
+
+    const modMap = new Map<string, AggBucket>()
+    const epMap  = new Map<string, AggBucket>()
+    const mdlMap = new Map<string, AggBucket>()
+
+    function ensureBucket(map: Map<string, AggBucket>, key: string): AggBucket {
+      let b = map.get(key)
+      if (!b) { b = { count: 0, errors: 0, totalDuration: 0, totalPrompt: 0, totalCompletion: 0, totalThinking: 0 }; map.set(key, b) }
+      return b
     }
 
-    const map = new Map<string, { durations: number[]; prompts: number[]; completions: number[]; errors: number }>()
-    const epMap = new Map<string, { durations: number[]; prompts: number[]; completions: number[]; errors: number }>()
-    const modMap = new Map<string, { durations: number[]; prompts: number[]; completions: number[]; errors: number }>()
+    // Fold historical snapshots first
+    for (const snap of snapshots) {
+      const mb = ensureBucket(modMap, snap.module)
+      mb.count += snap.call_count; mb.errors += snap.error_count
+      mb.totalDuration += snap.total_duration_ms; mb.totalPrompt += snap.total_prompt_tokens
+      mb.totalCompletion += snap.total_completion_tokens; mb.totalThinking += snap.total_thinking_tokens
 
-    for (const call of calls) {
-      let e = map.get(call.module)
-      if (!e) { e = { durations: [], prompts: [], completions: [], errors: 0 }; map.set(call.module, e) }
-      e.durations.push(call.duration_ms)
-      e.prompts.push(call.prompt_tokens ?? 0)
-      e.completions.push(call.completion_tokens ?? 0)
-      if (call.error) e.errors++
+      const epKey = snap.base_url || `module:${snap.module}`
+      const eb = ensureBucket(epMap, epKey)
+      eb.count += snap.call_count; eb.errors += snap.error_count
+      eb.totalDuration += snap.total_duration_ms; eb.totalPrompt += snap.total_prompt_tokens
+      eb.totalCompletion += snap.total_completion_tokens; eb.totalThinking += snap.total_thinking_tokens
+
+      const mlb = ensureBucket(mdlMap, snap.model || snap.module)
+      mlb.count += snap.call_count; mlb.errors += snap.error_count
+      mlb.totalDuration += snap.total_duration_ms; mlb.totalPrompt += snap.total_prompt_tokens
+      mlb.totalCompletion += snap.total_completion_tokens; mlb.totalThinking += snap.total_thinking_tokens
+    }
+
+    // Fold live calls
+    for (const call of doneCalls) {
+      const mb = ensureBucket(modMap, call.module)
+      mb.count++; if (call.error) mb.errors++
+      mb.totalDuration += call.duration_ms; mb.totalPrompt += call.prompt_tokens ?? 0
+      mb.totalCompletion += call.completion_tokens ?? 0; mb.totalThinking += call.thinking_tokens ?? 0
 
       const epKey = call.base_url || `module:${call.module}`
-      let ep = epMap.get(epKey)
-      if (!ep) { ep = { durations: [], prompts: [], completions: [], errors: 0 }; epMap.set(epKey, ep) }
-      ep.durations.push(call.duration_ms)
-      ep.prompts.push(call.prompt_tokens ?? 0)
-      ep.completions.push(call.completion_tokens ?? 0)
-      if (call.error) ep.errors++
+      const eb = ensureBucket(epMap, epKey)
+      eb.count++; if (call.error) eb.errors++
+      eb.totalDuration += call.duration_ms; eb.totalPrompt += call.prompt_tokens ?? 0
+      eb.totalCompletion += call.completion_tokens ?? 0; eb.totalThinking += call.thinking_tokens ?? 0
 
-      let md = modMap.get(call.model)
-      if (!md) { md = { durations: [], prompts: [], completions: [], errors: 0 }; modMap.set(call.model, md) }
-      md.durations.push(call.duration_ms)
-      md.prompts.push(call.prompt_tokens ?? 0)
-      md.completions.push(call.completion_tokens ?? 0)
-      if (call.error) md.errors++
+      const mlb = ensureBucket(mdlMap, call.model)
+      mlb.count++; if (call.error) mlb.errors++
+      mlb.totalDuration += call.duration_ms; mlb.totalPrompt += call.prompt_tokens ?? 0
+      mlb.totalCompletion += call.completion_tokens ?? 0; mlb.totalThinking += call.thinking_tokens ?? 0
     }
 
-    const sortedModules = [...map.keys()].sort()
+    const bucketToStat = (key: string, b: AggBucket, label: string, color: string): ModuleStat => ({
+      module: key, label, color,
+      count: b.count, errors: b.errors,
+      avg_duration: b.count > 0 ? b.totalDuration / b.count : 0,
+      avg_prompt: b.count > 0 ? b.totalPrompt / b.count : 0,
+      avg_completion: b.count > 0 ? b.totalCompletion / b.count : 0,
+      avg_thinking: b.count > 0 ? b.totalThinking / b.count : 0,
+      total_tokens: b.totalPrompt + b.totalCompletion,
+      total_thinking: b.totalThinking,
+    })
+
+    const sortedModules = [...modMap.keys()].sort()
     const sortedEndpoints = [...epMap.keys()].sort()
-    const sortedModels = [...modMap.keys()].sort()
-    const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length
+    const sortedModels = [...mdlMap.keys()].sort()
 
-    const moduleStats: ModuleStat[] = sortedModules.map((mod, i) => {
-      const e = map.get(mod)!
-      return {
-        module: mod,
-        label: modLabel(mod),
-        color: modColor(mod, i),
-        count: e.durations.length,
-        errors: e.errors,
-        avg_duration: avg(e.durations),
-        avg_prompt: avg(e.prompts),
-        avg_completion: avg(e.completions),
-        total_tokens: e.prompts.reduce((a, b) => a + b, 0) + e.completions.reduce((a, b) => a + b, 0),
-      }
-    })
-
-    const endpointStats: ModuleStat[] = sortedEndpoints.map((key, i) => {
+    const moduleStats = sortedModules.map((mod, i) => bucketToStat(mod, modMap.get(mod)!, modLabel(mod), modColor(mod, i)))
+    const endpointStats = sortedEndpoints.map((key, i) => {
       const isModuleFallback = key.startsWith('module:')
-      const moduleName = isModuleFallback ? key.slice(7) : ''
       const url = isModuleFallback ? '' : key
-      return {
-        module: key,
-        label: endpointLabel(url, moduleName),
-        color: FALLBACK_COLORS[i % FALLBACK_COLORS.length],
-        count: epMap.get(key)!.durations.length,
-        errors: epMap.get(key)!.errors,
-        avg_duration: avg(epMap.get(key)!.durations),
-        avg_prompt: avg(epMap.get(key)!.prompts),
-        avg_completion: avg(epMap.get(key)!.completions),
-        total_tokens: epMap.get(key)!.prompts.reduce((a, b) => a + b, 0) + epMap.get(key)!.completions.reduce((a, b) => a + b, 0),
-      }
+      const moduleName = isModuleFallback ? key.slice(7) : ''
+      return bucketToStat(key, epMap.get(key)!, endpointLabel(url, moduleName), FALLBACK_COLORS[i % FALLBACK_COLORS.length])
     })
+    const modelStats = sortedModels.map((model, i) => bucketToStat(model, mdlMap.get(model)!, model, FALLBACK_COLORS[i % FALLBACK_COLORS.length]))
 
-    const modelStats: ModuleStat[] = sortedModels.map((model, i) => ({
-      module: model,
-      label: model,
-      color: FALLBACK_COLORS[i % FALLBACK_COLORS.length],
-      count: modMap.get(model)!.durations.length,
-      errors: modMap.get(model)!.errors,
-      avg_duration: avg(modMap.get(model)!.durations),
-      avg_prompt: avg(modMap.get(model)!.prompts),
-      avg_completion: avg(modMap.get(model)!.completions),
-      total_tokens: modMap.get(model)!.prompts.reduce((a, b) => a + b, 0) + modMap.get(model)!.completions.reduce((a, b) => a + b, 0),
-    }))
+    const totalCalls = moduleStats.reduce((s, m) => s + m.count, 0)
+    const totalDurationAll = moduleStats.reduce((s, m) => s + m.avg_duration * m.count, 0)
 
     return {
-      moduleStats,
-      sortedModules,
-      totalCalls: calls.length,
-      avgDuration: avg(calls.map(c => c.duration_ms)),
-      totalTokens: calls.reduce((a, c) => a + (c.prompt_tokens ?? 0) + (c.completion_tokens ?? 0), 0),
-      errorCount: calls.filter(c => c.error).length,
-      endpointStats,
-      sortedEndpoints,
-      modelStats,
-      sortedModels,
+      moduleStats, sortedModules,
+      totalCalls,
+      avgDuration: totalCalls > 0 ? totalDurationAll / totalCalls : 0,
+      totalTokens: moduleStats.reduce((s, m) => s + m.total_tokens, 0),
+      totalThinking: moduleStats.reduce((s, m) => s + m.total_thinking, 0),
+      errorCount: moduleStats.reduce((s, m) => s + m.errors, 0),
+      endpointStats, sortedEndpoints,
+      modelStats, sortedModels,
     }
-  }, [calls])
+  }, [doneCalls, snapshots])
 
   const scatterByModule = useMemo(() => {
     const out = new Map<string, ScatterPoint[]>()
-    for (const call of calls) {
+    for (const call of doneCalls) {
       const ts = new Date(call.created_at.includes('T') ? call.created_at : call.created_at + 'Z').getTime()
       const arr = out.get(call.module) ?? []
       arr.push({ x: ts, y: call.duration_ms, coin: call.coin })
@@ -279,10 +311,24 @@ export default function LLMStats() {
   const weightedAvgCompletion = totalCalls > 0
     ? Math.round(moduleStats.reduce((a, s) => a + s.avg_completion * s.count, 0) / totalCalls)
     : 0
+  const weightedAvgThinking = totalCalls > 0
+    ? Math.round(moduleStats.reduce((a, s) => a + s.avg_thinking * s.count, 0) / totalCalls)
+    : 0
+  const totalThinkPct = totalTokens > 0 ? (totalThinking / totalTokens) * 100 : 0
 
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Summary stats */}
+      {hasHistorical && (
+        <div className="flex items-center gap-2 text-xs text-muted bg-surface-elevated border border-border rounded-xl px-4 py-2.5">
+          <svg className="w-4 h-4 text-accent shrink-0" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 5.625c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
+          </svg>
+          <span>
+            Includes <span className="font-semibold text-foreground">{historicalCallCount.toLocaleString()}</span> archived calls — raw records were deleted by the retention policy, but aggregate stats are preserved.
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Stat
           label="Total Calls"
@@ -307,7 +353,7 @@ export default function LLMStats() {
         <Stat
           label="Total Tokens"
           value={isEmpty ? '—' : fmtTokens(totalTokens)}
-          sub="prompt + completion"
+          sub={totalThinking > 0 ? `${fmtTokens(totalThinking)} thinking` : 'prompt + completion'}
           icon={
             <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
@@ -419,6 +465,7 @@ export default function LLMStats() {
                   name: s.label,
                   Prompt: Math.round(s.avg_prompt),
                   Completion: Math.round(s.avg_completion),
+                  ...(s.avg_thinking > 0 ? { Thinking: Math.round(s.avg_thinking) } : {}),
                 }))}
                 margin={{ top: 10, right: 24, bottom: 10, left: 0 }}
                 barGap={4}
@@ -448,6 +495,9 @@ export default function LLMStats() {
                 <Legend wrapperStyle={{ fontSize: '12px', color: 'var(--muted-fg)', paddingTop: '8px' }} />
                 <Bar dataKey="Prompt" fill="rgb(var(--accent-rgb))" radius={[4, 4, 0, 0]} maxBarSize={52} />
                 <Bar dataKey="Completion" fill="#8b5cf6" radius={[4, 4, 0, 0]} maxBarSize={52} />
+                {moduleStats.some(s => s.avg_thinking > 0) && (
+                  <Bar dataKey="Thinking" fill="#a78bfa" radius={[4, 4, 0, 0]} maxBarSize={52} />
+                )}
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -467,12 +517,13 @@ export default function LLMStats() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border">
-                  {['Module', 'Calls', 'Errors', 'Err %', 'Avg Time', 'Avg Prompt', 'Avg Completion', 'Total Tokens'].map(h => (
+                  {['Module', 'Calls', 'Errors', 'Err %', 'Avg Time', 'Avg Prompt', 'Avg Completion', 'Avg Thinking', 'Think %', 'Total Tokens'].map(h => (
                     <th
                       key={h}
                       className={cn(
                         'pb-3 text-xs font-medium text-muted uppercase tracking-wider whitespace-nowrap',
                         h === 'Module' ? 'text-left pr-4' : 'text-right pl-4',
+                        h === 'Avg Thinking' || h === 'Think %' ? 'text-violet-400/70' : '',
                       )}
                     >
                       {h}
@@ -483,6 +534,7 @@ export default function LLMStats() {
               <tbody className="divide-y divide-border/40">
                 {moduleStats.map(s => {
                   const errPct = s.count > 0 ? (s.errors / s.count) * 100 : 0
+                  const thinkPct = (s.avg_prompt + s.avg_completion) > 0 ? (s.avg_thinking / (s.avg_prompt + s.avg_completion)) * 100 : 0
                   return (
                     <tr key={s.module} className="hover:bg-surface-elevated/30 transition-colors">
                       <td className="py-3 pr-4">
@@ -513,6 +565,16 @@ export default function LLMStats() {
                       <td className="py-3 text-right pl-4 font-mono text-foreground tabular-nums">{fmtMs(s.avg_duration)}</td>
                       <td className="py-3 text-right pl-4 font-mono text-muted tabular-nums">{Math.round(s.avg_prompt).toLocaleString()}</td>
                       <td className="py-3 text-right pl-4 font-mono text-muted tabular-nums">{Math.round(s.avg_completion).toLocaleString()}</td>
+                      <td className="py-3 text-right pl-4 font-mono text-violet-400 tabular-nums">
+                        {s.avg_thinking > 0 ? Math.round(s.avg_thinking).toLocaleString() : <span className="text-muted">—</span>}
+                      </td>
+                      <td className="py-3 text-right pl-4 tabular-nums">
+                        {thinkPct > 0 ? (
+                          <span className="inline-block text-xs px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-400">
+                            {thinkPct.toFixed(0)}%
+                          </span>
+                        ) : <span className="text-muted text-xs">—</span>}
+                      </td>
                       <td className="py-3 text-right pl-4 font-mono text-foreground font-medium tabular-nums">{s.total_tokens.toLocaleString()}</td>
                     </tr>
                   )
@@ -538,6 +600,16 @@ export default function LLMStats() {
                   <td className="pt-3 text-right pl-4 font-mono text-foreground tabular-nums">{fmtMs(avgDuration)}</td>
                   <td className="pt-3 text-right pl-4 font-mono text-muted tabular-nums">{weightedAvgPrompt.toLocaleString()}</td>
                   <td className="pt-3 text-right pl-4 font-mono text-muted tabular-nums">{weightedAvgCompletion.toLocaleString()}</td>
+                  <td className="pt-3 text-right pl-4 font-mono text-violet-400 font-semibold tabular-nums">
+                    {weightedAvgThinking > 0 ? weightedAvgThinking.toLocaleString() : <span className="text-muted">—</span>}
+                  </td>
+                  <td className="pt-3 text-right pl-4 tabular-nums">
+                    {totalThinkPct > 0 ? (
+                      <span className="inline-block text-xs px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-400">
+                        {totalThinkPct.toFixed(0)}%
+                      </span>
+                    ) : <span className="text-muted text-xs">—</span>}
+                  </td>
                   <td className="pt-3 text-right pl-4 font-mono font-semibold text-foreground tabular-nums">{totalTokens.toLocaleString()}</td>
                 </tr>
               </tfoot>
@@ -559,12 +631,13 @@ export default function LLMStats() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border">
-                  {['Endpoint', 'Calls', 'Errors', 'Err %', 'Avg Time', 'Avg Prompt', 'Avg Completion', 'Total Tokens'].map(h => (
+                  {['Endpoint', 'Calls', 'Errors', 'Err %', 'Avg Time', 'Avg Prompt', 'Avg Completion', 'Avg Thinking', 'Think %', 'Total Tokens'].map(h => (
                     <th
                       key={h}
                       className={cn(
                         'pb-3 text-xs font-medium text-muted uppercase tracking-wider whitespace-nowrap',
                         h === 'Endpoint' ? 'text-left pr-4' : 'text-right pl-4',
+                        h === 'Avg Thinking' || h === 'Think %' ? 'text-violet-400/70' : '',
                       )}
                     >
                       {h}
@@ -575,6 +648,7 @@ export default function LLMStats() {
               <tbody className="divide-y divide-border/40">
                 {endpointStats.map(s => {
                   const errPct = s.count > 0 ? (s.errors / s.count) * 100 : 0
+                  const thinkPct = (s.avg_prompt + s.avg_completion) > 0 ? (s.avg_thinking / (s.avg_prompt + s.avg_completion)) * 100 : 0
                   return (
                     <tr key={s.module} className="hover:bg-surface-elevated/30 transition-colors">
                       <td className="py-3 pr-4">
@@ -600,6 +674,16 @@ export default function LLMStats() {
                       <td className="py-3 text-right pl-4 font-mono text-foreground tabular-nums">{fmtMs(s.avg_duration)}</td>
                       <td className="py-3 text-right pl-4 font-mono text-muted tabular-nums">{Math.round(s.avg_prompt).toLocaleString()}</td>
                       <td className="py-3 text-right pl-4 font-mono text-muted tabular-nums">{Math.round(s.avg_completion).toLocaleString()}</td>
+                      <td className="py-3 text-right pl-4 font-mono text-violet-400 tabular-nums">
+                        {s.avg_thinking > 0 ? Math.round(s.avg_thinking).toLocaleString() : <span className="text-muted">—</span>}
+                      </td>
+                      <td className="py-3 text-right pl-4 tabular-nums">
+                        {thinkPct > 0 ? (
+                          <span className="inline-block text-xs px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-400">
+                            {thinkPct.toFixed(0)}%
+                          </span>
+                        ) : <span className="text-muted text-xs">—</span>}
+                      </td>
                       <td className="py-3 text-right pl-4 font-mono text-foreground font-medium tabular-nums">{s.total_tokens.toLocaleString()}</td>
                     </tr>
                   )
@@ -625,6 +709,16 @@ export default function LLMStats() {
                   <td className="pt-3 text-right pl-4 font-mono text-foreground tabular-nums">{fmtMs(avgDuration)}</td>
                   <td className="pt-3 text-right pl-4 font-mono text-muted tabular-nums">{weightedAvgPrompt.toLocaleString()}</td>
                   <td className="pt-3 text-right pl-4 font-mono text-muted tabular-nums">{weightedAvgCompletion.toLocaleString()}</td>
+                  <td className="pt-3 text-right pl-4 font-mono text-violet-400 font-semibold tabular-nums">
+                    {weightedAvgThinking > 0 ? weightedAvgThinking.toLocaleString() : <span className="text-muted">—</span>}
+                  </td>
+                  <td className="pt-3 text-right pl-4 tabular-nums">
+                    {totalThinkPct > 0 ? (
+                      <span className="inline-block text-xs px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-400">
+                        {totalThinkPct.toFixed(0)}%
+                      </span>
+                    ) : <span className="text-muted text-xs">—</span>}
+                  </td>
                   <td className="pt-3 text-right pl-4 font-mono font-semibold text-foreground tabular-nums">{totalTokens.toLocaleString()}</td>
                 </tr>
               </tfoot>
@@ -646,12 +740,13 @@ export default function LLMStats() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border">
-                  {['Model', 'Calls', 'Errors', 'Err %', 'Avg Time', 'Avg Prompt', 'Avg Completion', 'Total Tokens'].map(h => (
+                  {['Model', 'Calls', 'Errors', 'Err %', 'Avg Time', 'Avg Prompt', 'Avg Completion', 'Avg Thinking', 'Think %', 'Total Tokens'].map(h => (
                     <th
                       key={h}
                       className={cn(
                         'pb-3 text-xs font-medium text-muted uppercase tracking-wider whitespace-nowrap',
                         h === 'Model' ? 'text-left pr-4' : 'text-right pl-4',
+                        h === 'Avg Thinking' || h === 'Think %' ? 'text-violet-400/70' : '',
                       )}
                     >
                       {h}
@@ -662,6 +757,7 @@ export default function LLMStats() {
               <tbody className="divide-y divide-border/40">
                 {modelStats.map(s => {
                   const errPct = s.count > 0 ? (s.errors / s.count) * 100 : 0
+                  const thinkPct = (s.avg_prompt + s.avg_completion) > 0 ? (s.avg_thinking / (s.avg_prompt + s.avg_completion)) * 100 : 0
                   return (
                     <tr key={s.module} className="hover:bg-surface-elevated/30 transition-colors">
                       <td className="py-3 pr-4">
@@ -687,6 +783,16 @@ export default function LLMStats() {
                       <td className="py-3 text-right pl-4 font-mono text-foreground tabular-nums">{fmtMs(s.avg_duration)}</td>
                       <td className="py-3 text-right pl-4 font-mono text-muted tabular-nums">{Math.round(s.avg_prompt).toLocaleString()}</td>
                       <td className="py-3 text-right pl-4 font-mono text-muted tabular-nums">{Math.round(s.avg_completion).toLocaleString()}</td>
+                      <td className="py-3 text-right pl-4 font-mono text-violet-400 tabular-nums">
+                        {s.avg_thinking > 0 ? Math.round(s.avg_thinking).toLocaleString() : <span className="text-muted">—</span>}
+                      </td>
+                      <td className="py-3 text-right pl-4 tabular-nums">
+                        {thinkPct > 0 ? (
+                          <span className="inline-block text-xs px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-400">
+                            {thinkPct.toFixed(0)}%
+                          </span>
+                        ) : <span className="text-muted text-xs">—</span>}
+                      </td>
                       <td className="py-3 text-right pl-4 font-mono text-foreground font-medium tabular-nums">{s.total_tokens.toLocaleString()}</td>
                     </tr>
                   )
@@ -712,6 +818,16 @@ export default function LLMStats() {
                   <td className="pt-3 text-right pl-4 font-mono text-foreground tabular-nums">{fmtMs(avgDuration)}</td>
                   <td className="pt-3 text-right pl-4 font-mono text-muted tabular-nums">{weightedAvgPrompt.toLocaleString()}</td>
                   <td className="pt-3 text-right pl-4 font-mono text-muted tabular-nums">{weightedAvgCompletion.toLocaleString()}</td>
+                  <td className="pt-3 text-right pl-4 font-mono text-violet-400 font-semibold tabular-nums">
+                    {weightedAvgThinking > 0 ? weightedAvgThinking.toLocaleString() : <span className="text-muted">—</span>}
+                  </td>
+                  <td className="pt-3 text-right pl-4 tabular-nums">
+                    {totalThinkPct > 0 ? (
+                      <span className="inline-block text-xs px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-400">
+                        {totalThinkPct.toFixed(0)}%
+                      </span>
+                    ) : <span className="text-muted text-xs">—</span>}
+                  </td>
                   <td className="pt-3 text-right pl-4 font-mono font-semibold text-foreground tabular-nums">{totalTokens.toLocaleString()}</td>
                 </tr>
               </tfoot>

@@ -76,6 +76,22 @@ export interface BotSettings {
   monitor_tp_pct_long: number
   /** Stop-limit buffer for the SL leg of exchange-side OCO orders, in % below the trigger. */
   oco_sl_buffer_pct: number
+  /** Minimum USDC balance required to place a new BUY from the pipeline. */
+  min_trade_usdc: number
+  /** When true, bypass risk validation for monitor SL/TP adjustments — apply LLM values directly (only SL<price / TP>price sanity enforced). */
+  monitor_trust_llm_sltp: boolean
+  /** When true, inject per-horizon behavior guidance and SL/TP targets into the monitor LLM prompt. When false, the LLM decides freely. */
+  monitor_use_horizon: boolean
+  /** Timeframe for the historical candle table shown in the monitor prompt (e.g. '1h', '4h'). */
+  monitor_history_tf: string
+  /** Number of historical candles to include in the monitor prompt (1–100). */
+  monitor_history_count: number
+  /** Hours to add to UTC when formatting dates in the monitor prompt (e.g. 5 for UTC+5, -3 for UTC-3). */
+  utc_offset_hours: number
+  /** Max rows to fetch in the LLM Debug page (default 200). */
+  llm_debug_fetch_limit: number
+  /** Delete llm_calls older than this many days, archiving aggregate stats first. 0 = keep forever. */
+  llm_retain_days: number
 }
 
 export interface DiscoveryResult {

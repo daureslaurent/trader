@@ -136,6 +136,12 @@ function fillPrice(order: { price?: number | null; average?: number | null; cost
   return 0
 }
 
+function extractFee(order: any): { fee_cost: number; fee_currency: string } {
+  const fee = (order as any).fee
+  if (fee?.cost != null && fee?.currency) return { fee_cost: Number(fee.cost), fee_currency: String(fee.currency) }
+  return { fee_cost: 0, fee_currency: 'BNB' }
+}
+
 export async function executeTrade(signal: Signal): Promise<TradeResult> {
   const ex = getExchange()
   const symbol = signal.coin
@@ -166,7 +172,7 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
       logger.info('🛸 Binance createLimitOrder IOC', { symbol, side: 'buy', qty, price })
 
       let iocFilled = 0
-      let iocResult: { id: string; price: number; quantity: number; cost: number } | null = null
+      let iocResult: { id: string; price: number; quantity: number; cost: number; fee_cost: number; fee_currency: string } | null = null
 
       try {
         const order = await ex.createLimitBuyOrder(symbol, qty, price, { timeInForce: 'IOC' })
@@ -175,14 +181,15 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
 
         if (iocFilled >= qty * 0.95) {
           logger.info('IOC limit order fully filled', { symbol, qty: iocFilled, price: actualPrice })
-          return { id: order.id, price: actualPrice, quantity: iocFilled, cost: order.cost || actualPrice * iocFilled }
+          const fee = extractFee(order)
+          return { id: order.id, price: actualPrice, quantity: iocFilled, cost: order.cost || actualPrice * iocFilled, ...fee }
         }
 
         if (iocFilled > 0) {
           logger.warn('IOC limit order partially filled — market order for remainder', {
             symbol, requested: qty, filled: iocFilled, pct: `${((iocFilled / qty) * 100).toFixed(1)}%`,
           })
-          iocResult = { id: order.id, price: actualPrice, quantity: iocFilled, cost: order.cost || actualPrice * iocFilled }
+          iocResult = { id: order.id, price: actualPrice, quantity: iocFilled, cost: order.cost || actualPrice * iocFilled, ...extractFee(order) }
         } else {
           logger.warn('IOC limit order not filled, falling back to market order', {
             symbol, limitPrice: price, bestAsk: analysis.bestAsk,
@@ -202,19 +209,22 @@ export async function executeTrade(signal: Signal): Promise<TradeResult> {
       const mktQty = mkt.amount || 0
       const mktCost = mkt.cost || cost
 
+      const mktFee = extractFee(mkt)
       if (iocResult) {
         const totalQty = iocResult.quantity + mktQty
         const totalCost = iocResult.cost + mktCost
         const blendedPrice = totalQty > 0 ? totalCost / totalQty : mktPrice
-        return { id: mkt.id, price: blendedPrice, quantity: totalQty, cost: totalCost }
+        const blendedFeeCost = iocResult.fee_cost + mktFee.fee_cost
+        const feeCurrency = iocResult.fee_currency || mktFee.fee_currency
+        return { id: mkt.id, price: blendedPrice, quantity: totalQty, cost: totalCost, fee_cost: blendedFeeCost, fee_currency: feeCurrency }
       }
-      return { id: mkt.id, price: mktPrice, quantity: mktQty, cost: mktCost }
+      return { id: mkt.id, price: mktPrice, quantity: mktQty, cost: mktCost, ...mktFee }
 
     } else {
       logger.info('🛸 Binance createMarketOrder', { symbol, side: 'sell', quantity: signal.quantity })
       const order = await ex.createMarketSellOrder(symbol, signal.quantity)
       const price = fillPrice(order)
-      return { id: order.id, price, quantity: order.amount || signal.quantity, cost: order.cost || (price * signal.quantity) }
+      return { id: order.id, price, quantity: order.amount || signal.quantity, cost: order.cost || (price * signal.quantity), ...extractFee(order) }
     }
   } catch (err) {
     throw new TradeError(`Trade failed for ${symbol}: ${err instanceof Error ? err.message : String(err)}`)

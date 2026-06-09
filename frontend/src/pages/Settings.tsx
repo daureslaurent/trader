@@ -27,6 +27,14 @@ interface SettingsData {
   monitor_tp_pct_short: number
   monitor_tp_pct_medium: number
   monitor_tp_pct_long: number
+  monitor_trust_llm_sltp: boolean
+  monitor_use_horizon: boolean
+  monitor_history_tf: string
+  monitor_history_count: number
+  utc_offset_hours: number
+  min_trade_usdc: number
+  llm_debug_fetch_limit: number
+  llm_retain_days: number
 }
 
 const CRON_PRESETS = [
@@ -112,6 +120,28 @@ export default function Settings() {
     }).catch(() => {})
   }
 
+  async function toggleMonitorTrustLlm() {
+    if (!settings) return
+    const next = !settings.monitor_trust_llm_sltp
+    set('monitor_trust_llm_sltp', next)
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_trust_llm_sltp: next }),
+    }).catch(() => {})
+  }
+
+  async function toggleMonitorUseHorizon() {
+    if (!settings) return
+    const next = !settings.monitor_use_horizon
+    set('monitor_use_horizon', next)
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_use_horizon: next }),
+    }).catch(() => {})
+  }
+
   async function toggleApproval() {
     if (!settings) return
     const next = !settings.approval_required
@@ -194,6 +224,19 @@ export default function Settings() {
           </div>
         </div>
 
+        <Row
+          label="UTC offset (hours)"
+          hint="Applied to all timestamps in the monitor prompt — e.g. 5 for UTC+5, -3 for UTC-3, 5.5 for UTC+5:30"
+        >
+          <Input
+            type="number"
+            step="0.5"
+            min="-12"
+            max="14"
+            value={settings.utc_offset_hours}
+            onChange={e => set('utc_offset_hours', parseFloat(e.target.value) || 0)}
+          />
+        </Row>
         <Row label="Watchlist" hint="Comma-separated pairs — e.g. BTC, ETH, SOL">
           <Input
             type="text"
@@ -273,6 +316,9 @@ export default function Settings() {
         </Row>
         <Row label="Max open positions">
           <Input type="number" step="1" min="1" value={settings.max_open_positions} onChange={e => set('max_open_positions', parseInt(e.target.value) || 0)} />
+        </Row>
+        <Row label="Min USDC to trade ($)" hint="Skip BUY if available USDC is below this amount">
+          <Input type="number" step="1" min="0" value={settings.min_trade_usdc} onChange={e => set('min_trade_usdc', parseFloat(e.target.value) || 0)} />
         </Row>
         <Row label="Stop loss (ATR ×)" hint="Stop loss distance in ATR multiples">
           <Input type="number" step="0.1" min="0" value={settings.stop_loss_atr} onChange={e => set('stop_loss_atr', parseFloat(e.target.value) || 0)} />
@@ -378,7 +424,73 @@ export default function Settings() {
           </Row>
         )}
 
+        {settings.monitor_adjust_sltp && (
+          <Row label="Trust LLM SL/TP" hint="Bypass risk validation — apply the monitor LLM's SL/TP values directly (only SL < price / TP > price enforced). Use with care: loosening stops is allowed.">
+            <label className="relative inline-flex items-center gap-3 cursor-pointer">
+              <div
+                onClick={toggleMonitorTrustLlm}
+                className={cn(
+                  'w-10 h-6 rounded-full transition-colors duration-200 flex items-center px-0.5',
+                  settings.monitor_trust_llm_sltp ? 'bg-sell/80' : 'bg-surface-elevated border border-border',
+                )}
+              >
+                <div className={cn(
+                  'w-5 h-5 bg-foreground rounded-full shadow transition-transform duration-200',
+                  settings.monitor_trust_llm_sltp ? 'translate-x-4' : 'translate-x-0',
+                  !settings.monitor_trust_llm_sltp && 'opacity-50',
+                )} />
+              </div>
+              <span className="text-sm text-muted">{settings.monitor_trust_llm_sltp ? 'On' : 'Off'}</span>
+            </label>
+          </Row>
+        )}
+
+        <Row label="Horizon guidance" hint="Inject per-horizon behavior rules and SL/TP targets into the monitor prompt. Disable to let the LLM decide freely.">
+          <label className="relative inline-flex items-center gap-3 cursor-pointer">
+            <div
+              onClick={toggleMonitorUseHorizon}
+              className={cn(
+                'w-10 h-6 rounded-full transition-colors duration-200 flex items-center px-0.5',
+                settings.monitor_use_horizon ? 'bg-accent' : 'bg-surface-elevated border border-border',
+              )}
+            >
+              <div className={cn(
+                'w-5 h-5 bg-foreground rounded-full shadow transition-transform duration-200',
+                settings.monitor_use_horizon ? 'translate-x-4' : 'translate-x-0',
+                !settings.monitor_use_horizon && 'opacity-50',
+              )} />
+            </div>
+            <span className="text-sm text-muted">{settings.monitor_use_horizon ? 'On' : 'Off'}</span>
+          </label>
+        </Row>
+
+        <Row label="Price history" hint="Candle timeframe and number of candles included in the monitor LLM prompt as market context.">
+          <div className="flex items-center gap-2">
+            <select
+              value={settings.monitor_history_tf}
+              onChange={e => set('monitor_history_tf', e.target.value)}
+              className="text-sm bg-surface-elevated border border-border rounded-lg px-2 py-1.5 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+            >
+              {['1m', '5m', '15m', '1h', '4h', '1d'].map(tf => (
+                <option key={tf} value={tf}>{tf}</option>
+              ))}
+            </select>
+            <span className="text-xs text-muted">×</span>
+            <Input
+              type="number"
+              step="1"
+              min="1"
+              max="100"
+              value={settings.monitor_history_count}
+              onChange={e => set('monitor_history_count', parseInt(e.target.value) || 24)}
+              className="w-20"
+            />
+            <span className="text-xs text-muted">candles</span>
+          </div>
+        </Row>
+
         {/* Per-horizon SL/TP configuration */}
+        {settings.monitor_use_horizon && (
         <div className="py-4">
           <p className="text-sm font-medium text-foreground mb-1">Horizon SL/TP targets</p>
           <p className="text-xs text-muted mb-4">
@@ -423,6 +535,7 @@ export default function Settings() {
             })}
           </div>
         </div>
+        )}
       </Card>
 
       {/* Appearance */}
@@ -454,6 +567,37 @@ export default function Settings() {
             </button>
           ))}
         </div>
+      </Card>
+
+      {/* LLM Data */}
+      <Card>
+        <CardHeader title="LLM Data" subtitle="Debug fetch limit and retention policy" />
+        <Row
+          label="Debug fetch limit"
+          hint="Max LLM calls loaded in the Debug page. Higher values may slow the page."
+        >
+          <Input
+            type="number"
+            step="50"
+            min="50"
+            max="2000"
+            value={settings.llm_debug_fetch_limit}
+            onChange={e => set('llm_debug_fetch_limit', parseInt(e.target.value) || 200)}
+          />
+        </Row>
+        <Row
+          label="Retain LLM data (days)"
+          hint="Delete raw LLM call records older than this many days, keeping aggregate stats. 0 = keep forever."
+        >
+          <Input
+            type="number"
+            step="1"
+            min="0"
+            max="3650"
+            value={settings.llm_retain_days}
+            onChange={e => set('llm_retain_days', parseInt(e.target.value) || 0)}
+          />
+        </Row>
       </Card>
 
       {/* Save */}

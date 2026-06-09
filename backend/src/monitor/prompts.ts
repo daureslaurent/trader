@@ -1,4 +1,5 @@
 import { PositionReview } from '../types.js'
+import { Candle } from '../market/index.js'
 
 export interface PositionContext {
   positionId: number | null
@@ -14,7 +15,7 @@ export interface PositionContext {
   distanceToTpPct: number | null
   entryDate: string
   ageHours: number
-  horizon: 'short' | 'medium' | 'long'
+  horizon: 'short' | 'medium' | 'long' | 'disabled' | 'llm'
   rsi14: number
   trend: 'uptrend' | 'downtrend' | 'ranging'
   volatility: 'high' | 'normal' | 'low'
@@ -31,6 +32,15 @@ export interface HorizonConfig {
 }
 
 export type HorizonConfigs = Record<'short' | 'medium' | 'long', HorizonConfig>
+
+export function fmtOffsetLabel(offsetHours: number): string {
+  if (offsetHours === 0) return 'UTC'
+  const sign = offsetHours > 0 ? '+' : '-'
+  const abs = Math.abs(offsetHours)
+  const h = Math.floor(abs)
+  const m = Math.round((abs - h) * 60)
+  return m > 0 ? `UTC${sign}${h}:${m.toString().padStart(2, '0')}` : `UTC${sign}${h}`
+}
 
 export function fmtPrice(n: number): string {
   if (!isFinite(n) || n === 0) return '0'
@@ -66,9 +76,43 @@ export function buildMonitorPrompt(
   position: PositionContext,
   history: PositionReview[],
   horizonConfigs: HorizonConfigs,
+  useHorizon = true,
+  utcOffsetHours = 0,
+  candles: Candle[] = [],
+  candleTf = '1h',
 ): { system: string; user: string } {
-  const cfg = horizonConfigs[position.horizon]
-  const horizonBehavior = HORIZON_BEHAVIOR[position.horizon]
+  const effectiveHorizon: 'short' | 'medium' | 'long' =
+    (position.horizon === 'disabled' || position.horizon === 'llm') ? 'medium' : position.horizon
+  const cfg = horizonConfigs[effectiveHorizon]
+  const horizonBehavior = HORIZON_BEHAVIOR[effectiveHorizon]
+
+  const horizonSection = useHorizon ? `
+── Horizon: ${position.horizon.toUpperCase()} ─────────────────────────────────────────────────────
+${horizonBehavior}
+
+── Configured SL/TP targets for ${position.horizon.toUpperCase()} ──────────────────────────────────
+  Stop-loss target:   -${cfg.slPct.toFixed(1)}% from current price
+  Take-profit target: +${cfg.tpPct.toFixed(1)}% from current price
+  These are the owner's risk preferences.
+  - If the current SL is not yet set, propose new_stop_loss_pct = -${cfg.slPct.toFixed(1)} (or tighter if price has moved up).
+  - If the current TP is not yet set, propose new_take_profit_pct = +${cfg.tpPct.toFixed(1)} (or higher if price has moved up).
+  - When trailing the stop, aim to stay near -${cfg.slPct.toFixed(1)}% from the recent high, not from entry.
+` : ''
+
+  const hardRules = useHorizon
+    ? `── Hard risk rules (engine-enforced) ────────────────────────────────────────
+- Stop-loss loosening is capped at -${cfg.slPct.toFixed(1)}% from current price (the horizon floor).
+  Only loosen when volatility has expanded or the original stop was structurally wrong.
+  Prefer tightening (trailing) when the trend is intact.
+- new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
+- Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).`
+    : `── Hard risk rules (engine-enforced) ────────────────────────────────────────
+- new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
+- Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).`
+
+  const adjustSeedNote = useHorizon
+    ? 'untouched side as-is (or seeds it from the horizon target if none exists),'
+    : 'untouched side as-is (or seeds it from ATR/SMAs if none exists),'
 
   const system = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST, REDUCE, or CLOSE.
 
@@ -85,29 +129,13 @@ ADJUST     Keep the position but update stop-loss and/or take-profit.
              new_stop_loss_pct   — negative = below current price (e.g. -3.5 → SL 3.5% below)
              new_take_profit_pct — positive = above current price (e.g. +8.0 → TP 8% above)
            Adjust just one side by setting the other to null — the engine keeps the
-           untouched side as-is (or seeds it from the horizon target if none exists),
+           ${adjustSeedNote}
            so a complete stop+target pair is always maintained. The "Stop"/"TP" lines
            below are already shown in this same %-from-current-price frame: to leave a
            level unchanged, repeat its shown value; do not echo it as a fresh change.
 HOLD       No change. Trend intact, SL buffer healthy, no compelling reason to act.
-
-── Horizon: ${position.horizon.toUpperCase()} ─────────────────────────────────────────────────────
-${horizonBehavior}
-
-── Configured SL/TP targets for ${position.horizon.toUpperCase()} ──────────────────────────────────
-  Stop-loss target:   -${cfg.slPct.toFixed(1)}% from current price
-  Take-profit target: +${cfg.tpPct.toFixed(1)}% from current price
-  These are the owner's risk preferences.
-  - If the current SL is not yet set, propose new_stop_loss_pct = -${cfg.slPct.toFixed(1)} (or tighter if price has moved up).
-  - If the current TP is not yet set, propose new_take_profit_pct = +${cfg.tpPct.toFixed(1)} (or higher if price has moved up).
-  - When trailing the stop, aim to stay near -${cfg.slPct.toFixed(1)}% from the recent high, not from entry.
-
-── Hard risk rules (engine-enforced) ────────────────────────────────────────
-- Stop-loss loosening is capped at -${cfg.slPct.toFixed(1)}% from current price (the horizon floor).
-  Only loosen when volatility has expanded or the original stop was structurally wrong.
-  Prefer tightening (trailing) when the trend is intact.
-- new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
-- Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).
+${horizonSection}
+${hardRules}
 
 ── Output ───────────────────────────────────────────────────────────────────
 Return a single JSON object — no markdown, no extra keys:
@@ -139,13 +167,21 @@ Use null for new_stop_loss_pct / new_take_profit_pct when not changing them.`
     : null
   const sl = slFromCurrent != null
     ? `$${fmtPrice(p.stopLoss!)} (${sgn(slFromCurrent)}${slFromCurrent.toFixed(2)}% from price)${slFromCurrent >= 0 ? ' ⚠ at/above price — SL imminent' : ''}`
-    : `not set — seed new_stop_loss_pct = -${cfg.slPct.toFixed(1)}`
+    : useHorizon
+      ? `not set — seed new_stop_loss_pct = -${cfg.slPct.toFixed(1)}`
+      : 'not set'
   const tp = tpFromCurrent != null
     ? `$${fmtPrice(p.takeProfit!)} (${sgn(tpFromCurrent)}${tpFromCurrent.toFixed(2)}% from price)`
-    : `not set — seed new_take_profit_pct = +${cfg.tpPct.toFixed(1)}`
+    : useHorizon
+      ? `not set — seed new_take_profit_pct = +${cfg.tpPct.toFixed(1)}`
+      : 'not set'
+
+  const horizonLine = (useHorizon && position.horizon !== 'llm')
+    ? `${p.horizon.toUpperCase()} (SL target: -${cfg.slPct.toFixed(1)}%, TP target: +${cfg.tpPct.toFixed(1)}% from current price)`
+    : p.horizon.toUpperCase()
 
   const positionText = `Coin:     ${p.coin}
-Horizon:  ${p.horizon.toUpperCase()} (SL target: -${cfg.slPct.toFixed(1)}%, TP target: +${cfg.tpPct.toFixed(1)}% from current price)
+Horizon:  ${horizonLine}
 Opened:   ${p.entryDate} (${p.ageHours.toFixed(1)}h ago)
 Qty:      ${p.quantity} | Entry: $${fmtPrice(p.entryPrice)} | Current: $${fmtPrice(p.currentPrice)}
 P&L:      ${pnlSign}$${p.pnlUsd.toFixed(2)} (${pnlSign}${p.pnlPct.toFixed(2)}%)
@@ -155,19 +191,46 @@ RSI(14):  ${p.rsi14.toFixed(1)} | Trend: ${p.trend} | Volatility: ${p.volatility
 24h:      ${ch24Sign}${p.change24h.toFixed(2)}% | 7d: ${p7Sign}${p.perf7d.toFixed(2)}%
 ATR(14):  $${fmtPrice(p.atr14)} | SMA7: $${fmtPrice(p.sma7)} | SMA25: $${fmtPrice(p.sma25)}`
 
-  let historyText = ''
-  if (history.length > 0) {
-    const rows = history.map(h => {
-      const md = (() => { try { return JSON.parse(h.market_data) as Record<string, unknown> } catch { return {} } })()
-      const when = h.created_at.slice(0, 16)
-      const priceStr = typeof md.currentPrice === 'number' ? ` @ $${fmtPrice(md.currentPrice)}` : ''
-      const snippet = h.reasoning.length > 120 ? h.reasoning.slice(0, 117) + '...' : h.reasoning
-      return `  [${when}] ${h.action} (conf ${h.confidence.toFixed(2)})${priceStr}: ${snippet}`
-    }).join('\n')
-    historyText = `\n\nRecent reviews for ${p.coin} (newest first):\n${rows}`
+  // ── Candle history section ────────────────────────────────────────────────
+  let candleHistoryText = ''
+  if (candles.length > 0) {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const rows = candles.map(c => {
+      const ageSec = nowSec - c.time
+      const ageH = ageSec / 3600
+      let ageLabel: string
+      if (ageH < 1) ageLabel = `${Math.round(ageSec / 60)}m ago`
+      else if (ageH < 24) ageLabel = `${Math.round(ageH)}h ago`
+      else ageLabel = `${Math.round(ageH / 24)}d ago`
+
+      const chPct = c.open > 0 ? ((c.close - c.open) / c.open) * 100 : 0
+      const chSign = chPct >= 0 ? '+' : ''
+      const vol = c.volume >= 1_000_000
+        ? `${(c.volume / 1_000_000).toFixed(1)}M`
+        : c.volume >= 1_000
+          ? `${(c.volume / 1_000).toFixed(0)}K`
+          : c.volume.toFixed(0)
+      return `  ${ageLabel.padEnd(8)} O:${fmtPrice(c.open).padEnd(10)} H:${fmtPrice(c.high).padEnd(10)} L:${fmtPrice(c.low).padEnd(10)} C:${fmtPrice(c.close).padEnd(10)} vol:${vol.padEnd(7)} Δ:${chSign}${chPct.toFixed(2)}%`
+    })
+    candleHistoryText = `\n\n── Price history (${candleTf} candles, oldest→newest) ─────────────────────────
+${rows.join('\n')}`
   }
 
-  const user = `Review this open position and recommend an action:\n\n${positionText}${historyText}\n\nRespond with a single JSON object.`
+  // ── Previous monitor decision ─────────────────────────────────────────────
+  let prevDecisionText = ''
+  if (history.length > 0) {
+    const last = history[0]
+    const when = (() => {
+      if (utcOffsetHours === 0) return last.created_at.slice(0, 16)
+      const ms = new Date(last.created_at.replace(' ', 'T') + 'Z').getTime()
+      return new Date(ms + utcOffsetHours * 3600000).toISOString().replace('T', ' ').slice(0, 16)
+    })()
+    prevDecisionText = `\n\n── Previous monitor decision (${when}) ───────────────────────────────────────
+Action: ${last.action} (conf ${last.confidence.toFixed(2)})
+Reasoning: ${last.reasoning}`
+  }
+
+  const user = `Review this open position and recommend an action:\n\n${positionText}${candleHistoryText}${prevDecisionText}\n\nRespond with a single JSON object.`
 
   return { system, user }
 }

@@ -5,10 +5,11 @@ import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { validateSlTpAdjustment } from '../portfolio/risk.js'
 import * as priceCache from '../market/index.js'
+import { getOHLCV, isTimeframe } from '../market/index.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
 import { PositionReview } from '../types.js'
-import { buildMonitorPrompt, PositionContext, HorizonConfigs } from './prompts.js'
+import { buildMonitorPrompt, fmtOffsetLabel, PositionContext, HorizonConfigs } from './prompts.js'
 import { LLMError } from '../core/errors.js'
 import { config } from '../config/index.js'
 
@@ -67,15 +68,29 @@ async function monitorCoin(
   ctx: PositionContext,
   cycleId: string,
   adjustEnabled: boolean,
+  trustLlm: boolean,
+  useHorizon: boolean,
+  utcOffsetHours: number,
   now: string,
   horizonConfigs: HorizonConfigs,
+  historyTf: string,
+  historyCount: number,
 ): Promise<PositionReview | null> {
   const history = queryAll(
-    'SELECT * FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 3',
+    'SELECT * FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 1',
     [ctx.coin],
   ) as unknown as PositionReview[]
 
-  const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs)
+  const tf = isTimeframe(historyTf) ? historyTf : '1h'
+  const count = Math.max(1, Math.min(100, historyCount))
+  let candles: Awaited<ReturnType<typeof getOHLCV>> = []
+  try {
+    candles = await getOHLCV(ctx.coin, tf, count)
+  } catch (err) {
+    logger.warn('Failed to fetch candle history for monitor prompt', { coin: ctx.coin, tf, error: (err as Error).message })
+  }
+
+  const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf)
 
   logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, model: config.monitor.model })
 
@@ -135,49 +150,63 @@ async function monitorCoin(
   let proposalToEmit: { newSl: number | null; newTp: number | null } | null = null
 
   if (raw.action === 'ADJUST' && ctx.positionId != null) {
-    // #2b: ADJUST cooldown — if an ADJUST was applied for this coin in the last 24 hours,
-    // downgrade to HOLD to prevent excessive OCO cancel/replace churn.
-    const recentAdjust = queryOne(
-      `SELECT 1 FROM position_adjustments
-       WHERE coin = ? AND status = 'APPLIED'
-         AND created_at > datetime('now', '-24 hours')
-       LIMIT 1`,
-      [ctx.coin],
-    )
-    if (recentAdjust) {
-      logger.info('ADJUST cooldown active — downgrading to HOLD', { coin: ctx.coin })
-      raw = { ...raw, action: 'HOLD' }
-    } else {
-      // #2a: LLM expresses levels as % relative to CURRENT price. A null side means
-      // "leave unchanged" — backfill it from the existing level, or (when none was
-      // ever set) from the horizon default, so the resulting OCO always carries BOTH
-      // a stop and a target. An OCO with a missing leg can't be placed and would
-      // otherwise cancel existing protection (see replaceProtection).
-      const hcfg = horizonConfigs[ctx.horizon]
-      const pctToPrice = (pct: number) => ctx.currentPrice * (1 + pct / 100)
-      const proposedSl = typeof raw.new_stop_loss_pct === 'number'
-        ? pctToPrice(raw.new_stop_loss_pct)
-        : (ctx.stopLoss ?? pctToPrice(-hcfg.slPct))
-      const proposedTp = typeof raw.new_take_profit_pct === 'number'
-        ? pctToPrice(raw.new_take_profit_pct)
-        : (ctx.takeProfit ?? pctToPrice(hcfg.tpPct))
+    // #2a: LLM expresses levels as % relative to CURRENT price. A null side means
+    // "leave unchanged" — backfill it from the existing level, or (when none was
+    // ever set) from the horizon default, so the resulting OCO always carries BOTH
+    // a stop and a target. An OCO with a missing leg can't be placed and would
+    // otherwise cancel existing protection (see replaceProtection).
+    const isLlmHorizon = ctx.horizon === 'llm'
+    const effectiveHorizon: 'short' | 'medium' | 'long' =
+      (ctx.horizon === 'disabled' || isLlmHorizon) ? 'medium' : ctx.horizon as 'short' | 'medium' | 'long'
+    const hcfg = horizonConfigs[effectiveHorizon]
+    const pctToPrice = (pct: number) => ctx.currentPrice * (1 + pct / 100)
+    // LLM-horizon: null means "keep existing" — don't seed from horizon config.
+    const proposedSl = typeof raw.new_stop_loss_pct === 'number'
+      ? pctToPrice(raw.new_stop_loss_pct)
+      : (ctx.stopLoss ?? (isLlmHorizon ? null : pctToPrice(-hcfg.slPct)))
+    const proposedTp = typeof raw.new_take_profit_pct === 'number'
+      ? pctToPrice(raw.new_take_profit_pct)
+      : (ctx.takeProfit ?? (isLlmHorizon ? null : pctToPrice(hcfg.tpPct)))
 
+    if (trustLlm) {
+      // Trust mode: bypass risk rules, only enforce SL < price and TP > price.
+      const same = (a: number, b: number) => Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b), 1) * 1e-6
+      if ((proposedSl != null && proposedSl >= ctx.currentPrice) || (proposedTp != null && proposedTp <= ctx.currentPrice)) {
+        logger.warn('ADJUST trust-mode: degenerate SL/TP, downgrading to HOLD', { coin: ctx.coin, proposedSl, proposedTp })
+        raw = { ...raw, action: 'HOLD' }
+      } else {
+        const slChanged = proposedSl != null && !(ctx.stopLoss != null && same(proposedSl, ctx.stopLoss))
+        const tpChanged = proposedTp != null && !(ctx.takeProfit != null && same(proposedTp, ctx.takeProfit))
+        if (slChanged || tpChanged) {
+          if (adjustEnabled) {
+            newStopLoss = slChanged ? proposedSl! : null
+            newTakeProfit = tpChanged ? proposedTp! : null
+            proposalToEmit = { newSl: newStopLoss, newTp: newTakeProfit }
+          }
+          logger.info('SL/TP trusted (bypass validation)', { coin: ctx.coin, sl: proposedSl, tp: proposedTp, applied: adjustEnabled })
+        } else {
+          raw = { ...raw, action: 'HOLD' }
+        }
+      }
+    } else {
       const validated = validateSlTpAdjustment({
         currentPrice: ctx.currentPrice,
         oldStopLoss: ctx.stopLoss,
         oldTakeProfit: ctx.takeProfit,
         proposedStopLoss: proposedSl,
         proposedTakeProfit: proposedTp,
-        maxSlPct: hcfg.slPct,
+        // LLM horizon: no floor — the LLM decides its own risk management.
+        maxSlPct: isLlmHorizon ? 100 : hcfg.slPct,
       })
       if (validated.notes.length > 0) {
         logger.info('SL/TP adjustment validated', { coin: ctx.coin, changed: validated.changed, notes: validated.notes })
       }
       if (validated.changed && adjustEnabled) {
         // Final safety net: never emit a half OCO. If validation left a side null
-        // (old was unset and the proposal was rejected), seed it from the horizon.
-        newStopLoss = validated.stopLoss ?? pctToPrice(-hcfg.slPct)
-        newTakeProfit = validated.takeProfit ?? pctToPrice(hcfg.tpPct)
+        // (old was unset and the proposal was rejected), seed from horizon unless in
+        // llm-horizon mode where null means "keep whatever is in the DB".
+        newStopLoss = validated.stopLoss ?? (isLlmHorizon ? null : pctToPrice(-hcfg.slPct))
+        newTakeProfit = validated.takeProfit ?? (isLlmHorizon ? null : pctToPrice(hcfg.tpPct))
         proposalToEmit = { newSl: newStopLoss, newTp: newTakeProfit }
       } else if (!validated.changed) {
         // Proposal was no-op or invalid — downgrade to HOLD
@@ -307,6 +336,21 @@ export async function runMonitor(cycleId: string): Promise<void> {
     priceCache.subscribe(entries.map(e => e.coin))
     const allPrices = priceCache.getAll()
 
+    const s = getSettings()
+    const adjustEnabled = s.monitor_adjust_sltp
+    const trustLlm = s.monitor_trust_llm_sltp
+    const useHorizon = s.monitor_use_horizon
+    const utcOffsetHours = s.utc_offset_hours
+    const historyTf = s.monitor_history_tf
+    const historyCount = s.monitor_history_count
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
+
+    const horizonConfigs: HorizonConfigs = {
+      short:  { slPct: s.monitor_sl_pct_short,  tpPct: s.monitor_tp_pct_short  },
+      medium: { slPct: s.monitor_sl_pct_medium, tpPct: s.monitor_tp_pct_medium },
+      long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
+    }
+
     const positionContexts: PositionContext[] = await Promise.all(
       entries.map(async (entry): Promise<PositionContext> => {
         const snap = allPrices.get(entry.coin)
@@ -340,12 +384,12 @@ export async function runMonitor(cycleId: string): Promise<void> {
         // JDN 2440587.5 = 1970-01-01T00:00:00Z
         const msFromJd = (entry.avg_date_jd - 2440587.5) * 86400000
         const ageHours = (Date.now() - msFromJd) / (1000 * 60 * 60)
-        // Quantity-weighted open time across all entries (UTC, second precision).
-        const entryDate = new Date(msFromJd).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+        const entryDate = new Date(msFromJd + utcOffsetHours * 3600000)
+          .toISOString().replace('T', ' ').slice(0, 19) + ' ' + fmtOffsetLabel(utcOffsetHours)
 
         const rawHorizon = position?.horizon ?? 'medium'
-        const horizon = (['short', 'medium', 'long'].includes(rawHorizon)
-          ? rawHorizon : 'medium') as 'short' | 'medium' | 'long'
+        const horizon = (['short', 'medium', 'long', 'disabled', 'llm'].includes(rawHorizon)
+          ? rawHorizon : 'medium') as 'short' | 'medium' | 'long' | 'disabled' | 'llm'
 
         return {
           positionId: position?.id ?? null,
@@ -374,22 +418,18 @@ export async function runMonitor(cycleId: string): Promise<void> {
       }),
     )
 
-    const s = getSettings()
-    const adjustEnabled = s.monitor_adjust_sltp
-    const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
-
-    const horizonConfigs: HorizonConfigs = {
-      short:  { slPct: s.monitor_sl_pct_short,  tpPct: s.monitor_tp_pct_short  },
-      medium: { slPct: s.monitor_sl_pct_medium, tpPct: s.monitor_tp_pct_medium },
-      long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
-    }
-
     logger.info('Monitor running per-coin sequentially', { cycleId, coins: positionContexts.map(c => c.coin) })
 
     const reviews: PositionReview[] = []
     for (const ctx of positionContexts) {
+      if (ctx.horizon === 'disabled') {
+        logger.info('Monitor skipping disabled position', { coin: ctx.coin, cycleId })
+        continue
+      }
+      // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
       try {
-        const review = await monitorCoin(ctx, cycleId, adjustEnabled, now, horizonConfigs)
+        const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
+        const review = await monitorCoin(ctx, cycleId, adjustEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount)
         if (review) reviews.push(review)
       } catch (err) {
         logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })

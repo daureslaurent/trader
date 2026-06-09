@@ -115,11 +115,19 @@ function AppInner() {
       pendingRef.current += 1
       setPendingCount(pendingRef.current)
       addToast('warning', `SL/TP change needs approval: ${r.coin.replace('/USDC', '')}`)
+    } else if (event === 'position_adjusted') {
+      const d = data as { coin: string; old_stop_loss: number; old_take_profit: number | null; stop_loss: number; take_profit: number | null }
+      const coin = d.coin.replace('/USDC', '')
+      const fmt = (v: number | null) => v != null ? v.toFixed(4) : '—'
+      const slChanged = d.stop_loss !== d.old_stop_loss
+      const tpChanged = d.take_profit !== d.old_take_profit
+      const parts: string[] = []
+      if (slChanged) parts.push(`SL ${fmt(d.old_stop_loss)} → ${fmt(d.stop_loss)}`)
+      if (tpChanged) parts.push(`TP ${fmt(d.old_take_profit)} → ${fmt(d.take_profit)}`)
+      addToast('success', `${coin} adjusted: ${parts.length ? parts.join(', ') : 'SL/TP updated'}`)
     } else if (event === 'adjustment_resolved') {
       pendingRef.current = Math.max(0, pendingRef.current - 1)
       setPendingCount(pendingRef.current)
-      const r = data as { status: string }
-      if (r.status === 'APPLIED') addToast('success', 'Position SL/TP updated')
     } else if (event === 'coin_discovered') {
       const d = data as { coin: string; score: number; auto_added: boolean }
       const coin = d.coin.replace('/USDC', '')

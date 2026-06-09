@@ -20,6 +20,8 @@ export interface TradeResult {
   price: number
   quantity: number
   cost: number
+  fee_cost: number
+  fee_currency: string
 }
 
 export interface CoinTradeResult {

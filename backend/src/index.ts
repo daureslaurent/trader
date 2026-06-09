@@ -1,4 +1,4 @@
-import { initDB, queryAll, queryOne, runSQL, withTransaction, saveDB, getSettings, updateSetting } from './db/index.js'
+import { initDB, queryAll, queryOne, runSQL, withTransaction, saveDB, getSettings, updateSetting, runLLMRetention } from './db/index.js'
 import { config } from './config/index.js'
 import { logger } from './core/logger.js'
 import { bus } from './core/events.js'
@@ -250,9 +250,17 @@ async function tradingLoop() {
 
   let tradesInitiated = 0
 
+  // Coins already in the portfolio are managed by the monitor (SL/TP, CLOSE).
+  // The pipeline is entry-only — skip them here.
+  const portfolioCoinSet = new Set(portfolioCoins)
+
   // Each coin runs its full pipeline sequentially; trade is proposed immediately after
   // analysis completes — not batched after all coins finish.
   for (const data of marketData) {
+    if (portfolioCoinSet.has(data.symbol)) {
+      logger.debug('Skipping pipeline for held coin — managed by monitor', { coin: data.symbol })
+      continue
+    }
     const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
     // Re-fetch portfolio state so position counts reflect any trades already done this cycle
     const portfolioState = getPortfolioState(marketData, settings)
@@ -277,7 +285,22 @@ async function tradingLoop() {
           continue
         }
 
+        const existingHolding = queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [data.symbol])
+        if (existingHolding) {
+          logger.warn('Skipping BUY — coin already held in portfolio', { coin: data.symbol })
+          logPipelineEvent('trade_skipped', data.symbol, cycleId, { reason: 'Coin already held in portfolio' })
+          continue
+        }
+
         const availableUsdc = getUsdtEntry()?.quantity ?? 0
+        if (availableUsdc < settings.min_trade_usdc) {
+          logger.warn('Skipping BUY — USDC below minimum threshold', { coin: data.symbol, availableUsdc, min: settings.min_trade_usdc })
+          logPipelineEvent('trade_skipped', data.symbol, cycleId, {
+            reason: `Insufficient USDC ($${availableUsdc.toFixed(2)} < minimum $${settings.min_trade_usdc})`,
+          })
+          continue
+        }
+
         const qty = calculatePositionSize(data.price, marketCtx.atr14, signal.confidence, portfolioState.totalValueUsd, settings, availableUsdc)
         if (qty <= 0) {
           logger.warn('Skipping BUY — insufficient USDC or zero position size', { coin: data.symbol, availableUsdc })
@@ -365,6 +388,14 @@ async function tradingLoop() {
 
 async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<void> {
   logger.info('Manual pipeline started', { symbol, cycleId })
+
+  const existingHolding = queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [symbol])
+  if (existingHolding) {
+    logger.info('Skipping manual pipeline — coin already held in portfolio', { symbol })
+    logPipelineEvent('trade_skipped', symbol, cycleId, { reason: 'Coin already held in portfolio — managed by monitor' })
+    return
+  }
+
   const settings = getSettings()
 
   const marketData = await fetchMarketData([symbol])
@@ -398,7 +429,23 @@ async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<v
         logPipelineEvent('trade_skipped', symbol, cycleId, { reason: 'Max open positions reached' })
         return
       }
+
+      const existingHolding = queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [symbol])
+      if (existingHolding) {
+        logger.warn('Skipping BUY — coin already held in portfolio', { coin: symbol })
+        logPipelineEvent('trade_skipped', symbol, cycleId, { reason: 'Coin already held in portfolio' })
+        return
+      }
+
       const availableUsdc = getUsdtEntry()?.quantity ?? 0
+      if (availableUsdc < settings.min_trade_usdc) {
+        logger.warn('Skipping BUY — USDC below minimum threshold', { coin: symbol, availableUsdc, min: settings.min_trade_usdc })
+        logPipelineEvent('trade_skipped', symbol, cycleId, {
+          reason: `Insufficient USDC ($${availableUsdc.toFixed(2)} < minimum $${settings.min_trade_usdc})`,
+        })
+        return
+      }
+
       const qty = calculatePositionSize(data.price, marketCtx.atr14, signal.confidence, portfolioState.totalValueUsd, settings, availableUsdc)
       if (qty <= 0) {
         logPipelineEvent('trade_skipped', symbol, cycleId, {
@@ -510,13 +557,13 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
     withTransaction(() => {
       if (tradeId) {
         runSQL(
-          "UPDATE trades SET price = ?, total = ?, fee_cost = 0, fee_currency = 'BNB', status = 'EXECUTED', approved = 1 WHERE id = ?",
-          [result.price, result.cost, tradeId]
+          "UPDATE trades SET price = ?, total = ?, fee_cost = ?, fee_currency = ?, status = 'EXECUTED', approved = 1 WHERE id = ?",
+          [result.price, result.cost, result.fee_cost, result.fee_currency, tradeId]
         )
       } else {
         runSQL(
-          "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-          [signal.coin, signal.action, result.quantity, result.price, result.cost]
+          "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, ?, ?, 'EXECUTED', 1)",
+          [signal.coin, signal.action, result.quantity, result.price, result.cost, result.fee_cost, result.fee_currency]
         )
       }
 
@@ -568,9 +615,9 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
 
     if (newPositionId !== undefined) {
       logger.info('Position opened', { coin: signal.coin, price: result.price })
-      // Place exchange-side OCO protection. On failure it's marked FAILED and the
-      // reconciler's software fallback covers the position.
       await placeProtection(newPositionId)
+      const openedPos = queryOne("SELECT * FROM positions WHERE id = ?", [newPositionId]) as import('./types.js').PositionRecord | null
+      if (openedPos) bus.emit('position_opened', openedPos)
     }
 
     logger.info('Trade executed', { coin: signal.coin, action: signal.action, price: result.price })
@@ -660,9 +707,20 @@ async function applyAdjustment(adjId: number): Promise<void> {
   await replaceProtection(adj.position_id)
 
   logger.info('Position SL/TP adjusted', { coin: adj.coin, positionId: adj.position_id, stop_loss: newSl, take_profit: newTp })
-  broadcast('position_adjusted', { coin: adj.coin, positionId: adj.position_id, stop_loss: newSl, take_profit: newTp })
+  broadcast('position_adjusted', { coin: adj.coin, positionId: adj.position_id, old_stop_loss: pos.stop_loss, old_take_profit: pos.take_profit, stop_loss: newSl, take_profit: newTp })
   broadcast('adjustment_resolved', { adjustmentId: adjId, status: 'APPLIED' })
   bus.emit('portfolio_updated')
+  const adjPos = queryOne("SELECT entry_price FROM positions WHERE id = ?", [adj.position_id]) as { entry_price: number } | null
+  bus.emit('sl_tp_adjusted', {
+    coin: adj.coin,
+    positionId: adj.position_id,
+    oldStopLoss: pos.stop_loss,
+    oldTakeProfit: pos.take_profit,
+    newStopLoss: newSl,
+    newTakeProfit: newTp,
+    currentPrice: price,
+    entryPrice: adjPos?.entry_price ?? null,
+  })
 }
 
 bus.on('position_adjustment_proposed', (p) => {
@@ -721,7 +779,9 @@ bus.on('adjustment_rejected', (adjId: number) => {
   logger.info('SL/TP adjustment rejected by user', { adjId })
 })
 
-// Monitor-initiated CLOSE: cancel any live OCO first, then market-sell.
+// Monitor-initiated CLOSE: move SL to current price so the OCO stop leg
+// triggers immediately on Binance (avoids the cancel-then-market-sell path
+// that fails when coins are locked in a partially-cancelled OCO).
 async function executeMonitorClose(
   positionId: number,
   coin: string,
@@ -729,9 +789,40 @@ async function executeMonitorClose(
   reasoning: string,
 ): Promise<void> {
   try {
-    const pos = queryOne("SELECT quantity FROM positions WHERE id = ? AND status = 'OPEN'", [positionId]) as { quantity: number } | null
+    const pos = queryOne(
+      "SELECT quantity, oco_status, take_profit FROM positions WHERE id = ? AND status = 'OPEN'",
+      [positionId],
+    ) as { quantity: number; oco_status: string; take_profit: number | null } | null
     if (!pos) return
+
     const qty = pos.quantity
+
+    // If an active OCO is in place, move its SL to the current price rather than
+    // cancelling it and issuing a market sell. The stop-limit triggers immediately,
+    // and the reconciler closes the ledger entry once the fill is detected.
+    if (pos.oco_status === 'ACTIVE' && pos.take_profit != null && pos.take_profit > triggerPrice) {
+      runSQL(
+        'UPDATE positions SET stop_loss = ?, current_sl = ? WHERE id = ?',
+        [triggerPrice, triggerPrice, positionId],
+      )
+      await replaceProtection(positionId)
+
+      const refreshed = queryOne(
+        "SELECT oco_status FROM positions WHERE id = ? AND status = 'OPEN'",
+        [positionId],
+      ) as { oco_status: string } | null
+
+      if (refreshed?.oco_status === 'ACTIVE') {
+        logger.warn('Monitor CLOSE: SL moved to current price, awaiting OCO fill', { coin, positionId, price: triggerPrice })
+        broadcast('monitor_position_closing', { coin, positionId, price: triggerPrice, reasoning })
+        return
+      }
+      // OCO replacement failed (e.g. Binance rejected stop at current price after
+      // the cancel succeeded) — fall through to market sell. The coins are now
+      // unlocked because the cancel step did complete.
+    }
+
+    // No active OCO or OCO replacement failed: cancel any remnants and market-sell.
     await cancelProtection(positionId)
     const result = await executeTrade({ coin, action: 'SELL', quantity: qty, reason: `Monitor close: ${reasoning}`, confidence: 1 })
     closePositionFromExit({
@@ -882,6 +973,16 @@ async function start() {
   scheduleDiscovery(settings.discover_cron)
   scheduleMonitor(settings.monitor_cron, settings.monitor_auto_run)
 
+  // Run LLM retention on startup and then daily at 03:00 UTC
+  try { runLLMRetention() } catch (err) {
+    logger.warn('LLM retention on startup failed', { error: err instanceof Error ? err.message : String(err) })
+  }
+  cron.schedule('0 3 * * *', () => {
+    try { runLLMRetention() } catch (err) {
+      logger.warn('LLM retention failed', { error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
   positionCheckInterval = setInterval(async () => {
     try { await checkOpenPositions() } catch (err) {
       logger.warn('Position check failed', { error: err instanceof Error ? err.message : String(err) })
@@ -932,7 +1033,21 @@ bus.on('trade_signal_simulated', async ({ symbol, action, confidence, reason, cy
         logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: 'Max open positions reached' })
         return
       }
+
+      const existingHolding = queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [symbol])
+      if (existingHolding) {
+        logger.warn('Skipping BUY — coin already held in portfolio', { coin: symbol })
+        logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: 'Coin already held in portfolio' })
+        return
+      }
+
       const availableUsdc = getUsdtEntry()?.quantity ?? 0
+      if (availableUsdc < settings.min_trade_usdc) {
+        logger.warn('Skipping BUY — USDC below minimum threshold', { coin: symbol, availableUsdc, min: settings.min_trade_usdc })
+        logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: `Insufficient USDC ($${availableUsdc.toFixed(2)} < minimum $${settings.min_trade_usdc})` })
+        return
+      }
+
       const marketCtx = await getMarketContext(symbol, data.price)
       const qty = calculatePositionSize(data.price, marketCtx.atr14, confidence, portfolioState.totalValueUsd, settings, availableUsdc)
       if (qty <= 0) {

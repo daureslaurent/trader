@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import { Signal, ApprovalRequest, TradeRecord, BotSettings, SlTpAdjustmentProposal } from '../types.js'
+import { Signal, ApprovalRequest, TradeRecord, BotSettings, SlTpAdjustmentProposal, PositionRecord } from '../types.js'
 
 interface EventMap {
   signal_generated: [Signal]
@@ -26,6 +26,9 @@ interface EventMap {
   trade_result: [{ tradeId: number; success: boolean; error?: string }]
   pipeline_completed: [{ total_value_usd: number; trades_initiated: number; holdings: Record<string, number> }]
   error: [Error]
+  position_opened: [PositionRecord]
+  position_closed: [{ positionId: number; coin: string; status: string; fillPrice: number; fillQty: number; pnl: number | null; reason: string; entryPrice: number | null; openedAt: string | null }]
+  sl_tp_adjusted: [{ coin: string; positionId: number; oldStopLoss: number | null; oldTakeProfit: number | null; newStopLoss: number | null; newTakeProfit: number | null; currentPrice: number | null; entryPrice: number | null }]
 }
 
 class BotEventBus extends EventEmitter {

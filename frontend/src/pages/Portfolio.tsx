@@ -85,6 +85,209 @@ function ConfidenceBar({ value }: { value: number }) {
   )
 }
 
+// ── Position Detail Modal ──────────────────────────────────────────────────
+
+function PositionDetailModal({ pos, latestReview, closingCoin, onClose, onClosePosition, onHorizonChange }: {
+  pos: ActivePosition
+  latestReview: PositionReview | null
+  closingCoin: string | null
+  onClose: () => void
+  onClosePosition: (coin: string) => void
+  onHorizonChange: (positionId: number, horizon: 'short' | 'medium' | 'long' | 'disabled' | 'llm') => void
+}) {
+  const coin = pos.coin.replace('/USDC', '')
+  const pnlPos = (pos.pnl ?? 0) >= 0
+  const pnlCls = pos.pnl != null ? (pnlPos ? 'text-buy' : 'text-sell') : 'text-muted'
+  const entryValue = pos.entry_price * pos.quantity
+  const currentValue = pos.current_price != null ? pos.current_price * pos.quantity : null
+  const isClosing = closingCoin === pos.coin
+
+  const reviewMdata = latestReview ? (() => { try { return JSON.parse(latestReview.market_data) } catch { return {} } })() : null
+
+  // Price progress: where is current price between SL and TP?
+  const slProgress = pos.stop_loss && pos.current_price && pos.entry_price
+    ? Math.max(0, Math.min(100, ((pos.current_price - pos.stop_loss) / (pos.entry_price - pos.stop_loss)) * 100))
+    : null
+
+  const tpProgress = pos.take_profit && pos.current_price && pos.entry_price
+    ? Math.max(0, Math.min(100, ((pos.current_price - pos.entry_price) / (pos.take_profit - pos.entry_price)) * 100))
+    : null
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="relative bg-surface-card border border-border rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl animate-fade-in" onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <span className="text-lg font-bold text-foreground">{coin}</span>
+            <span className={cn(
+              'text-xs px-2 py-0.5 rounded-md font-medium',
+              pos.status === 'OPEN' ? 'bg-buy/10 text-buy' : 'bg-muted/10 text-muted',
+            )}>{pos.status}</span>
+            {pos.status === 'OPEN' && pos.oco_status === 'ACTIVE' && (
+              <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-buy/10 text-buy" title="Exchange-side OCO active">🛡 OCO</span>
+            )}
+            {pos.status === 'OPEN' && pos.oco_status === 'FAILED' && (
+              <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-sell/10 text-sell" title="OCO failed — software fallback">⚠ Fallback</span>
+            )}
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-surface-elevated shrink-0">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
+
+          {/* Live P&L */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-border">
+              <p className="text-xs text-muted mb-1">Current Price</p>
+              <p className="text-base font-bold tabular-nums text-foreground">
+                {pos.current_price != null ? fmtUSD(pos.current_price) : '—'}
+              </p>
+              <p className="text-xs text-muted mt-0.5">Entry: {fmtUSD(pos.entry_price)}</p>
+            </div>
+            <div className={cn('px-4 py-3 rounded-xl border', pnlPos ? 'bg-buy/5 border-buy/20' : 'bg-sell/5 border-sell/20')}>
+              <p className="text-xs text-muted mb-1">Unrealised P&L</p>
+              <p className={cn('text-base font-bold tabular-nums', pnlCls)}>
+                {pos.pnl != null ? `${pnlPos ? '+' : ''}${fmtUSD(pos.pnl)}` : '—'}
+              </p>
+              {pos.pnl_pct != null && (
+                <p className={cn('text-xs mt-0.5', pnlCls)}>{fmtPct(pos.pnl_pct)}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Position Details */}
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+            <div>
+              <p className="text-xs text-muted mb-0.5">Quantity</p>
+              <p className="font-medium tabular-nums">{fmt(pos.quantity, 6)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted mb-0.5">Entry Value</p>
+              <p className="font-medium tabular-nums">{fmtUSD(entryValue)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted mb-0.5">Current Value</p>
+              <p className="font-medium tabular-nums">{currentValue != null ? fmtUSD(currentValue) : '—'}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted mb-0.5">Horizon</p>
+              <select
+                value={pos.horizon ?? 'medium'}
+                onChange={e => onHorizonChange(pos.id, e.target.value as 'short' | 'medium' | 'long' | 'disabled' | 'llm')}
+                className="text-sm bg-surface-elevated border border-border rounded-lg px-2 py-1 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+              >
+                <option value="short">Short</option>
+                <option value="medium">Medium</option>
+                <option value="long">Long</option>
+                <option value="llm">LLM</option>
+                <option value="disabled">Disabled</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Stop Loss */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-xs font-medium text-muted uppercase tracking-wide">Stop Loss</span>
+              <div className="flex items-center gap-3">
+                <span className="font-semibold tabular-nums text-sell">{fmtUSD(pos.stop_loss)}</span>
+                {pos.distance_to_sl_pct != null && (
+                  <span className={cn('text-xs tabular-nums', pos.distance_to_sl_pct < 2 ? 'text-sell font-semibold' : 'text-muted')}>
+                    {pos.distance_to_sl_pct.toFixed(1)}% away
+                  </span>
+                )}
+              </div>
+            </div>
+            {slProgress != null && (
+              <div className="h-1.5 rounded-full bg-surface-hover overflow-hidden">
+                <div className="h-full rounded-full bg-sell/60 transition-all" style={{ width: `${slProgress}%` }} />
+              </div>
+            )}
+          </div>
+
+          {/* Take Profit */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-xs font-medium text-muted uppercase tracking-wide">Take Profit</span>
+              <div className="flex items-center gap-3">
+                {pos.take_profit != null ? (
+                  <>
+                    <span className="font-semibold tabular-nums text-buy">{fmtUSD(pos.take_profit)}</span>
+                    {pos.distance_to_tp_pct != null && (
+                      <span className="text-xs text-buy tabular-nums">+{pos.distance_to_tp_pct.toFixed(1)}% away</span>
+                    )}
+                  </>
+                ) : <span className="text-muted text-sm">Not set</span>}
+              </div>
+            </div>
+            {tpProgress != null && (
+              <div className="h-1.5 rounded-full bg-surface-hover overflow-hidden">
+                <div className="h-full rounded-full bg-buy/60 transition-all" style={{ width: `${tpProgress}%` }} />
+              </div>
+            )}
+          </div>
+
+          {/* Latest Monitor Review */}
+          {latestReview && (
+            <div className="rounded-xl border border-border bg-surface-elevated overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-border flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-muted uppercase tracking-wide">Latest Monitor Review</span>
+                <div className="flex items-center gap-2">
+                  <ActionBadge action={latestReview.action} />
+                  <span className="text-xs text-muted">{latestReview.created_at.slice(0, 16).replace('T', ' ')}</span>
+                </div>
+              </div>
+              <div className="px-4 py-3 space-y-2.5">
+                <ConfidenceBar value={latestReview.confidence} />
+                {reviewMdata && (
+                  <div className="flex flex-wrap gap-4 text-xs text-muted">
+                    {reviewMdata.pnlPct != null && (
+                      <span className={cn('font-medium', reviewMdata.pnlPct >= 0 ? 'text-buy' : 'text-sell')}>
+                        P&L: {reviewMdata.pnlPct >= 0 ? '+' : ''}{reviewMdata.pnlPct.toFixed(2)}%
+                      </span>
+                    )}
+                    {reviewMdata.rsi14 != null && <span>RSI {reviewMdata.rsi14.toFixed(0)}</span>}
+                    {reviewMdata.change24h != null && (
+                      <span className={cn(reviewMdata.change24h >= 0 ? 'text-buy' : 'text-sell')}>
+                        24h: {reviewMdata.change24h >= 0 ? '+' : ''}{reviewMdata.change24h.toFixed(2)}%
+                      </span>
+                    )}
+                  </div>
+                )}
+                <p className="text-sm text-muted leading-relaxed">{latestReview.reasoning}</p>
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 pb-5 pt-4 border-t border-border flex gap-2 shrink-0">
+          <button onClick={onClose} className="flex-1 px-4 py-2 text-sm font-medium rounded-xl border border-border text-muted hover:text-foreground hover:bg-surface-elevated transition-colors">
+            Cancel
+          </button>
+          <Button variant="danger" size="md" loading={isClosing} disabled={isClosing} onClick={() => onClosePosition(pos.coin)} className="flex-1">
+            Close Position
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Review list (shared between current run and history modal) ────────────
 
 function ReviewList({ reviews, holdings, closingCoin, onClose }: {
@@ -187,6 +390,7 @@ export default function Portfolio() {
   const [closingCoin, setClosingCoin] = useState<string | null>(null)
   const [monitorError, setMonitorError] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [selectedPos, setSelectedPos] = useState<ActivePosition | null>(null)
 
   const livePrices = usePrices()
 
@@ -275,7 +479,7 @@ export default function Portfolio() {
     }
   }
 
-  async function handleHorizonChange(positionId: number, horizon: 'short' | 'medium' | 'long') {
+  async function handleHorizonChange(positionId: number, horizon: 'short' | 'medium' | 'long' | 'disabled' | 'llm') {
     setPositions(prev => prev.map(p => p.id === positionId ? { ...p, horizon } : p))
     await fetch(`/api/positions/${positionId}/horizon`, {
       method: 'PATCH',
@@ -322,6 +526,7 @@ export default function Portfolio() {
       setMonitorError('Request failed')
     } finally {
       setClosingCoin(null)
+      setSelectedPos(null)
     }
   }
 
@@ -394,6 +599,7 @@ export default function Portfolio() {
                   <Th right>P&L</Th>
                   <Th right>Stop Loss</Th>
                   <Th right>Take Profit</Th>
+                  <th className="py-2.5 px-3 w-10" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -429,12 +635,19 @@ export default function Portfolio() {
                       <Td>
                         <select
                           value={pos.horizon ?? 'medium'}
-                          onChange={e => handleHorizonChange(pos.id, e.target.value as 'short' | 'medium' | 'long')}
-                          className="text-xs bg-surface-elevated border border-border rounded-lg px-2 py-1 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+                          onChange={e => handleHorizonChange(pos.id, e.target.value as 'short' | 'medium' | 'long' | 'disabled' | 'llm')}
+                          className={cn(
+                            'text-xs border rounded-lg px-2 py-1 cursor-pointer focus:outline-none transition-colors',
+                            pos.horizon === 'disabled'
+                              ? 'bg-surface-elevated border-border text-muted hover:border-accent/50 focus:border-accent'
+                              : 'bg-surface-elevated border-border text-foreground hover:border-accent/50 focus:border-accent',
+                          )}
                         >
                           <option value="short">Short</option>
                           <option value="medium">Medium</option>
                           <option value="long">Long</option>
+                          <option value="llm">LLM</option>
+                          <option value="disabled">Disabled</option>
                         </select>
                       </Td>
                       <Td right>{fmt(pos.quantity, 6)}</Td>
@@ -468,6 +681,17 @@ export default function Portfolio() {
                           </div>
                         ) : <span className="text-muted">—</span>}
                       </Td>
+                      <td className="py-3 px-3">
+                        <button
+                          onClick={() => setSelectedPos(pos)}
+                          className="text-muted hover:text-foreground p-1.5 rounded-lg hover:bg-surface-elevated transition-colors"
+                          title="Position details"
+                        >
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z" />
+                          </svg>
+                        </button>
+                      </td>
                     </tr>
                   )
                 })}
@@ -714,11 +938,44 @@ export default function Portfolio() {
                     </tr>
                   )
                 })}
+                {(gains.total_bnb_fees ?? 0) > 0 && (
+                  <tr className="border-t-2 border-border/60 bg-surface-elevated/30">
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-foreground">BNB</span>
+                        <span className="inline-flex items-center px-2 py-0.5 text-xs rounded-md border font-medium bg-warn/10 text-warn border-warn/20">
+                          fees
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-right tabular-nums text-muted">—</td>
+                    <td className="py-3 px-4 text-right tabular-nums text-muted">—</td>
+                    <td className="py-3 px-4 text-right tabular-nums font-semibold text-sell">
+                      -{fmt(gains.total_bnb_fees, 6)} BNB
+                    </td>
+                    <td className="py-3 px-4 text-right tabular-nums text-muted">—</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         )}
       </Card>
+
+      {selectedPos && (() => {
+        const latestReview = latestReviews.find(r => r.coin === selectedPos.coin) ?? null
+        const livePos = livePositions.find(p => p.id === selectedPos.id) ?? selectedPos
+        return (
+          <PositionDetailModal
+            pos={livePos}
+            latestReview={latestReview}
+            closingCoin={closingCoin}
+            onClose={() => setSelectedPos(null)}
+            onClosePosition={handleClosePosition}
+            onHorizonChange={handleHorizonChange}
+          />
+        )
+      })()}
 
       <TransferModal
         open={transferOpen}
