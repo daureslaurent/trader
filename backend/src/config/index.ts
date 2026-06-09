@@ -20,16 +20,13 @@ function num(key: string, def: number): number {
   return isNaN(parsed) ? def : parsed
 }
 
-const stubMode = process.argv.includes('--stub')
-
 const llamaBaseURL = req('LLAMA_BASE_URL')
 const llamaModel = req('LLAMA_MODEL')
 
 export const config = {
-  stub: stubMode,
   binance: {
-    apiKey: stubMode ? 'stub' : req('BINANCE_API_KEY'),
-    secret: stubMode ? 'stub' : req('BINANCE_SECRET'),
+    apiKey: req('BINANCE_API_KEY'),
+    secret: req('BINANCE_SECRET'),
   },
   llama: {
     baseURL: llamaBaseURL,

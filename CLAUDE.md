@@ -24,7 +24,6 @@ docker-compose up   # backend on :3000, frontend on :5173
 ```
 
 **CLI flags** passed to the backend process:
-- `--stub` — bypass Binance API, use fake prices (`trader/stub.ts`)
 - `--approval` — require human approval for every trade signal
 
 ## Architecture

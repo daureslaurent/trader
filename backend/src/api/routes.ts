@@ -3,7 +3,6 @@ import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/in
 import { getRunningLLMCalls } from '../core/llm.js'
 import { executeTrade, executeCoinTrade } from '../trader/index.js'
 import { getExchange } from '../trader/service.js'
-import { config } from '../config/index.js'
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
 import { Signal, PortfolioEntry } from '../types.js'
@@ -38,14 +37,12 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
     const settings = getSettings()
 
     let binanceUsdc: number | null = null
-    if (!config.stub) {
-      try {
-        const exchange = getExchange()
-        const bal = await exchange.fetchBalance()
-        binanceUsdc = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
-      } catch {
-        // Binance unavailable — leave null
-      }
+    try {
+      const exchange = getExchange()
+      const bal = await exchange.fetchBalance()
+      binanceUsdc = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
+    } catch {
+      // Binance unavailable — leave null
     }
 
     const localUsdc = entries.find(e => e.coin === 'USDC')?.quantity ?? 0
@@ -92,21 +89,19 @@ router.post('/portfolio/usdc/deposit', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'amount must be a positive number' })
   }
 
-  if (!config.stub) {
-    try {
-      const exchange = getExchange()
-      logger.info('🛸 Binance fetchBalance')
-      const bal = await exchange.fetchBalance()
-      const binanceUsdc = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
-      if (binanceUsdc < amount) {
-        return res.status(400).json({
-          error: `Insufficient Binance balance: ${binanceUsdc.toFixed(2)} USDC available`,
-          binance_balance: binanceUsdc,
-        })
-      }
-    } catch (err) {
-      return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
+  try {
+    const exchange = getExchange()
+    logger.info('🛸 Binance fetchBalance')
+    const bal = await exchange.fetchBalance()
+    const binanceUsdc = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
+    if (binanceUsdc < amount) {
+      return res.status(400).json({
+        error: `Insufficient Binance balance: ${binanceUsdc.toFixed(2)} USDC available`,
+        binance_balance: binanceUsdc,
+      })
     }
+  } catch (err) {
+    return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
   }
 
   const balance = depositUsdt(amount)
@@ -119,21 +114,19 @@ router.post('/portfolio/usdc/withdraw', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'amount must be a positive number' })
   }
 
-  if (!config.stub) {
-    try {
-      const exchange = getExchange()
-      logger.info('🛸 Binance fetchBalance')
-      const bal = await exchange.fetchBalance()
-      const binanceUsdt = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
-      if (binanceUsdt < amount) {
-        return res.status(400).json({
-          error: `Insufficient Binance balance: ${binanceUsdt.toFixed(2)} USDC available`,
-          binance_balance: binanceUsdt,
-        })
-      }
-    } catch (err) {
-      return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
+  try {
+    const exchange = getExchange()
+    logger.info('🛸 Binance fetchBalance')
+    const bal = await exchange.fetchBalance()
+    const binanceUsdt = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
+    if (binanceUsdt < amount) {
+      return res.status(400).json({
+        error: `Insufficient Binance balance: ${binanceUsdt.toFixed(2)} USDC available`,
+        binance_balance: binanceUsdt,
+      })
     }
+  } catch (err) {
+    return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
   }
 
   const result = withdrawUsdt(amount)
@@ -142,9 +135,6 @@ router.post('/portfolio/usdc/withdraw', async (req: Request, res: Response) => {
 })
 
 router.get('/binance/balance', async (_req: Request, res: Response) => {
-  if (config.stub) {
-    return res.json({ BTC: 0.05, ETH: 0.5, SOL: 5, BNB: 2, USDC: 10000 })
-  }
   try {
     const exchange = getExchange()
     logger.info('🛸 Binance fetchBalance')
@@ -181,7 +171,7 @@ router.post('/portfolio/transfer', async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'buy_price required for Binance → Local transfer' })
       }
 
-      if (!config.stub) {
+      {
         const exchange = getExchange()
         logger.info('🛸 Binance fetchBalance')
         const bal = await exchange.fetchBalance()
@@ -610,14 +600,10 @@ router.get('/price/:symbol', async (req: Request, res: Response) => {
     }
 
     // Cache cold (first request for this symbol) — fall back to REST once, then WS takes over
-    if (!config.stub) {
-      logger.info('🛸 Binance fetchTicker (cache cold)', { symbol })
-      const exchange = getExchange()
-      const ticker = await exchange.fetchTicker(symbol)
-      return res.json({ symbol, price: ticker.last ?? 0, change24h: ticker.percentage ?? 0, volume: ticker.quoteVolume ?? 0 })
-    }
-
-    return res.json({ symbol, price: snap?.price ?? 10, change24h: snap?.change24h ?? 0, volume: 0 })
+    logger.info('🛸 Binance fetchTicker (cache cold)', { symbol })
+    const exchange = getExchange()
+    const ticker = await exchange.fetchTicker(symbol)
+    return res.json({ symbol, price: ticker.last ?? 0, change24h: ticker.percentage ?? 0, volume: ticker.quoteVolume ?? 0 })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
@@ -732,15 +718,13 @@ router.post('/discover/approve/:id', async (req: Request, res: Response) => {
   const discovery = queryOne('SELECT coin FROM coin_discoveries WHERE id = ?', [id]) as { coin: string } | null
   if (!discovery) return res.status(404).json({ error: 'Discovery not found' })
 
-  if (!config.stub) {
-    try {
-      const ticker = await getExchange().fetchTicker(discovery.coin)
-      if (!ticker?.last || ticker.last === 0) {
-        return res.status(400).json({ error: `${discovery.coin} has no price on Binance — may not be a valid USDC pair` })
-      }
-    } catch {
-      return res.status(400).json({ error: `${discovery.coin} is not tradeable on Binance as a USDC pair` })
+  try {
+    const ticker = await getExchange().fetchTicker(discovery.coin)
+    if (!ticker?.last || ticker.last === 0) {
+      return res.status(400).json({ error: `${discovery.coin} has no price on Binance — may not be a valid USDC pair` })
     }
+  } catch {
+    return res.status(400).json({ error: `${discovery.coin} is not tradeable on Binance as a USDC pair` })
   }
 
   const result = approveDiscovery(id)

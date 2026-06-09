@@ -10,7 +10,7 @@ import cron, { ScheduledTask } from 'node-cron'
 import { researchCoin } from './researcher/index.js'
 import { extractResearch, selectArticles } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, seedUsdtIfAbsent, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit, recordPositionOpen, recordPositionClose, recordSlTpUpdate, placeProtection, cancelProtection, replaceProtection, closePositionFromExit } from './portfolio/index.js'
+import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit, recordPositionOpen, recordPositionClose, recordSlTpUpdate, placeProtection, cancelProtection, replaceProtection, closePositionFromExit } from './portfolio/index.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 import { closeBrowser } from './scraper/browser.js'
@@ -240,11 +240,7 @@ async function tradingLoop() {
 
   const balance = await fetchBalance()
   const usdtBalance = balance['USDC']?.total || 0
-  if (config.stub) {
-    seedUsdtIfAbsent(usdtBalance)
-  } else {
-    detectExternalWithdrawal(usdtBalance)
-  }
+  detectExternalWithdrawal(usdtBalance)
 
   await checkOpenPositions()
 
@@ -407,8 +403,6 @@ async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<v
 
   const balance = await fetchBalance()
   const usdtBalance = balance['USDC']?.total || 0
-  if (config.stub) seedUsdtIfAbsent(usdtBalance)
-
   const portfolioState = getPortfolioState(marketData, settings)
 
   try {

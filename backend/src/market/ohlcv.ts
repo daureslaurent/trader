@@ -1,4 +1,3 @@
-import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { queryOne, runSQL } from '../db/index.js'
 
@@ -34,40 +33,8 @@ const TIMEFRAME_SECONDS: Record<Timeframe, number> = {
   '1d': 86_400,
 }
 
-const STUB_BASE: Record<string, number> = {
-  'BTC/USDC': 67500, 'ETH/USDC': 3450, 'SOL/USDC': 145, 'BNB/USDC': 580,
-  'XRP/USDC': 0.52, 'DOGE/USDC': 0.12, 'ADA/USDC': 0.38, 'AVAX/USDC': 28,
-}
-
 export function isTimeframe(tf: string): tf is Timeframe {
   return (SUPPORTED_TIMEFRAMES as readonly string[]).includes(tf)
-}
-
-function generateStubCandles(symbol: string, timeframe: Timeframe, limit: number): Candle[] {
-  const stepSec = TIMEFRAME_SECONDS[timeframe]
-  const base = STUB_BASE[symbol] ?? 10
-  const nowSec = Math.floor(Date.now() / 1000)
-  const startTime = nowSec - (nowSec % stepSec) - (limit - 1) * stepSec
-
-  const candles: Candle[] = []
-  let prevClose = base
-  for (let i = 0; i < limit; i++) {
-    const open = prevClose
-    const drift = (Math.random() - 0.5) * 0.02 * base
-    const close = Math.max(open + drift, base * 0.01)
-    const high = Math.max(open, close) * (1 + Math.random() * 0.008)
-    const low = Math.min(open, close) * (1 - Math.random() * 0.008)
-    candles.push({
-      time: startTime + i * stepSec,
-      open: round(open),
-      high: round(high),
-      low: round(low),
-      close: round(close),
-      volume: round(Math.random() * 1000),
-    })
-    prevClose = close
-  }
-  return candles
 }
 
 function round(n: number): number {
@@ -91,7 +58,7 @@ async function fetchFromBinance(symbol: string, timeframe: Timeframe, limit: num
 
 /**
  * Returns OHLCV candles for a symbol/timeframe, served from the cache table when
- * fresh and re-fetched from Binance (or synthesised in stub mode) otherwise.
+ * fresh and re-fetched from Binance otherwise.
  */
 export async function getOHLCV(symbol: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
   const cacheKey = `${symbol}|${timeframe}`
@@ -114,9 +81,7 @@ export async function getOHLCV(symbol: string, timeframe: Timeframe, limit: numb
   const fetchLimit = Math.min(Math.max(limit, 200), 1000)
   let candles: Candle[]
   try {
-    candles = config.stub
-      ? generateStubCandles(symbol, timeframe, fetchLimit)
-      : await fetchFromBinance(symbol, timeframe, fetchLimit)
+    candles = await fetchFromBinance(symbol, timeframe, fetchLimit)
   } catch (err) {
     // On failure, serve stale cache if we have any.
     if (cached) {
