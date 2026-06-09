@@ -73,8 +73,6 @@ export function buildMonitorPrompt(
 ): { system: string; user: string } {
   const cfg = horizonConfigs[position.horizon]
   const horizonBehavior = HORIZON_BEHAVIOR[position.horizon]
-  const targetSl = position.entryPrice * (1 - cfg.slPct / 100)
-  const targetTp = position.entryPrice * (1 + cfg.tpPct / 100)
 
   const system = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST, REDUCE, or CLOSE.
 
@@ -83,51 +81,58 @@ CLOSE      Exit entirely. Use when SL is imminent (<2% away), trend reversed to 
            with negative momentum, or deeply underwater with no recovery signals.
 REDUCE     Partial exit. Set reduce_to_pct (integer: % of current size to keep, e.g. 50 = keep half).
            Use to lock in gains near TP, or to de-risk a weakening position.
-ADJUST     Keep the position but update stop-loss and/or take-profit (absolute USD prices).
+ADJUST     Keep the position but update stop-loss and/or take-profit.
            Use to trail the stop UP as price rises, extend TP in a strong trend,
            or tighten risk when momentum weakens.
+           Express levels as PERCENTAGES relative to current price (not absolute USD):
+             new_stop_loss_pct  — negative = below current price (e.g. -3.5 means SL 3.5% below)
+             new_take_profit_pct — positive = above current price (e.g. +8.0 means TP 8% above)
 HOLD       No change. Trend intact, SL buffer healthy, no compelling reason to act.
 
 ── Horizon: ${position.horizon.toUpperCase()} ─────────────────────────────────────────────────────
 ${horizonBehavior}
 
 ── Configured SL/TP targets for ${position.horizon.toUpperCase()} ──────────────────────────────────
-  Stop-loss:   -${cfg.slPct.toFixed(1)}% from entry = $${fmtPrice(targetSl)}
-  Take-profit: +${cfg.tpPct.toFixed(1)}% from entry = $${fmtPrice(targetTp)}
+  Stop-loss target:   -${cfg.slPct.toFixed(1)}% from current price
+  Take-profit target: +${cfg.tpPct.toFixed(1)}% from current price
   These are the owner's risk preferences.
-  - If the current SL is not yet set, propose new_stop_loss = $${fmtPrice(targetSl)} (or tighter if price has moved up).
-  - If the current TP is not yet set, propose new_take_profit = $${fmtPrice(targetTp)} (or higher if price has moved up).
+  - If the current SL is not yet set, propose new_stop_loss_pct = -${cfg.slPct.toFixed(1)} (or tighter if price has moved up).
+  - If the current TP is not yet set, propose new_take_profit_pct = +${cfg.tpPct.toFixed(1)} (or higher if price has moved up).
   - When trailing the stop, aim to stay near -${cfg.slPct.toFixed(1)}% from the recent high, not from entry.
 
 ── Hard risk rules (engine-enforced) ────────────────────────────────────────
 - Stop-loss may only be TIGHTENED (raised toward price). Loosening is always rejected.
-- new_stop_loss must be strictly below current price; new_take_profit strictly above it.
-- Values must be plain floating-point USD numbers at the SAME scale as the prices shown
-  in the position data. Example: if Current = $1.1787, a valid stop is 1.1500 — NOT 11500.
-- Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks.
+- new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
+- Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).
 
 ── Output ───────────────────────────────────────────────────────────────────
 Return a single JSON object — no markdown, no extra keys:
 {
   "action": "ADJUST",
   "confidence": 0.8,
-  "reasoning": "Up 6.2%, uptrend intact, RSI 61. Trailing stop to $1.1650 (below SMA7) to lock in gains.",
+  "reasoning": "Up 6.2%, uptrend intact, RSI 61. Trailing stop to 3% below current price.",
   "reduce_to_pct": null,
-  "new_stop_loss": 1.1650,
-  "new_take_profit": null
+  "new_stop_loss_pct": -3.0,
+  "new_take_profit_pct": null
 }
-Use null for new_stop_loss / new_take_profit when not changing them.`
+Use null for new_stop_loss_pct / new_take_profit_pct when not changing them.`
 
   const p = position
   const pnlSign = p.pnlPct >= 0 ? '+' : ''
   const ch24Sign = p.change24h >= 0 ? '+' : ''
   const p7Sign = p.perf7d >= 0 ? '+' : ''
+  const slPct = p.stopLoss != null && p.entryPrice > 0
+    ? ((p.stopLoss - p.entryPrice) / p.entryPrice * 100)
+    : null
+  const tpPct = p.takeProfit != null && p.entryPrice > 0
+    ? ((p.takeProfit - p.entryPrice) / p.entryPrice * 100)
+    : null
   const sl = p.stopLoss != null
-    ? `$${fmtPrice(p.stopLoss)} (${fmtPct(p.distanceToSlPct)} away)`
-    : `none — target: $${fmtPrice(targetSl)} (-${cfg.slPct.toFixed(1)}%)`
+    ? `$${fmtPrice(p.stopLoss)} (${slPct!.toFixed(2)}%)`
+    : `not yet set (target: -${cfg.slPct.toFixed(1)}%)`
   const tp = p.takeProfit != null
-    ? `$${fmtPrice(p.takeProfit)} (+${fmtPct(p.distanceToTpPct)} away)`
-    : `none — target: $${fmtPrice(targetTp)} (+${cfg.tpPct.toFixed(1)}%)`
+    ? `$${fmtPrice(p.takeProfit)} (+${tpPct!.toFixed(2)}%)`
+    : `not yet set (target: +${cfg.tpPct.toFixed(1)}%)`
 
   const positionText = `Coin:     ${p.coin}
 Horizon:  ${p.horizon.toUpperCase()} (SL target: -${cfg.slPct.toFixed(1)}%, TP target: +${cfg.tpPct.toFixed(1)}%)
