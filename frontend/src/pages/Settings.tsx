@@ -317,7 +317,7 @@ export default function Settings() {
         <Row label="Max open positions">
           <Input type="number" step="1" min="1" value={settings.max_open_positions} onChange={e => set('max_open_positions', parseInt(e.target.value) || 0)} />
         </Row>
-        <Row label="Min USDC to trade ($)" hint="Skip BUY if available USDC is below this amount">
+        <Row label="Min order size ($)" hint="Skip BUY if the calculated order is below this USDC amount (also skips when available balance is below this threshold)">
           <Input type="number" step="1" min="0" value={settings.min_trade_usdc} onChange={e => set('min_trade_usdc', parseFloat(e.target.value) || 0)} />
         </Row>
         <Row label="Stop loss (ATR ×)" hint="Stop loss distance in ATR multiples">
@@ -574,7 +574,7 @@ export default function Settings() {
         <CardHeader title="LLM Data" subtitle="Debug fetch limit and retention policy" />
         <Row
           label="Debug fetch limit"
-          hint="Max LLM calls loaded in the Debug page. Higher values may slow the page."
+          hint="Max LLM calls loaded in the LLM Stats and Debug pages. Higher values may slow the page."
         >
           <Input
             type="number"

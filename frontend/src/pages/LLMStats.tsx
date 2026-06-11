@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, BarChart, Bar,
+  ResponsiveContainer, BarChart, Bar, AreaChart, Area,
 } from 'recharts'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Card, CardHeader } from '../components/ui/Card'
@@ -70,6 +70,22 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return `${n}`
+}
+
+function getBucketMs(range: TimeRange, spanMs: number): number {
+  if (range === 'all') {
+    const steps = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440].map(m => m * 60 * 1000)
+    const target = spanMs / 24
+    return steps.find(s => s >= target) ?? steps[steps.length - 1]
+  }
+  const map: Record<TimeRange, number> = {
+    all:  60 * 60 * 1000,
+    '1h': 5 * 60 * 1000,
+    '3h': 15 * 60 * 1000,
+    '10h': 30 * 60 * 1000,
+    '2d': 2 * 60 * 60 * 1000,
+  }
+  return map[range]
 }
 
 function hostFromUrl(url: string): string {
@@ -143,11 +159,14 @@ export default function LLMStats() {
   const [calls, setCalls] = useState<LLMCall[]>([])
   const [snapshots, setSnapshots] = useState<LLMSnapshot[]>([])
   const [loading, setLoading] = useState(true)
-  const [timeRange, setTimeRange] = useState<TimeRange>('all')
+  const [timeRange, setTimeRange] = useState<TimeRange>(() => (localStorage.getItem('llmstats_timerange') as TimeRange | null) ?? 'all')
+  const [tokenModule, setTokenModule] = useState<string>('all')
+
+  useEffect(() => { localStorage.setItem('llmstats_timerange', timeRange) }, [timeRange])
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/llm-calls?limit=500').then(r => r.json()).catch(() => [] as LLMCall[]),
+      fetch('/api/llm-calls').then(r => r.json()).catch(() => [] as LLMCall[]),
       fetch('/api/llm-stats-snapshots').then(r => r.json()).catch(() => [] as LLMSnapshot[]),
     ]).then(([liveCalls, snaps]: [LLMCall[], LLMSnapshot[]]) => {
       setCalls(liveCalls)
@@ -293,6 +312,45 @@ export default function LLMStats() {
     }
     return out
   }, [scatterByModule, timeRange])
+
+  const tokenTimelineData = useMemo(() => {
+    const rangeObj = TIME_RANGES.find(r => r.key === timeRange)
+    const cutoff = rangeObj?.ms ? Date.now() - rangeObj.ms : null
+
+    const filtered = doneCalls.filter(c => {
+      if (tokenModule !== 'all' && c.module !== tokenModule) return false
+      if (cutoff) {
+        const ts = new Date(c.created_at.includes('T') ? c.created_at : c.created_at + 'Z').getTime()
+        if (ts < cutoff) return false
+      }
+      return true
+    })
+
+    if (!filtered.length) return []
+
+    const times = filtered.map(c => new Date(c.created_at.includes('T') ? c.created_at : c.created_at + 'Z').getTime())
+    const minTs = Math.min(...times)
+    const maxTs = Math.max(...times)
+    const spanMs = maxTs - minTs || 3_600_000
+    const bucketMs = getBucketMs(timeRange, spanMs)
+
+    const buckets = new Map<number, { prompt: number; completion: number; thinking: number }>()
+    for (const call of filtered) {
+      const ts = new Date(call.created_at.includes('T') ? call.created_at : call.created_at + 'Z').getTime()
+      const key = Math.floor(ts / bucketMs) * bucketMs
+      const b = buckets.get(key) ?? { prompt: 0, completion: 0, thinking: 0 }
+      b.prompt += call.prompt_tokens ?? 0
+      b.completion += call.completion_tokens ?? 0
+      b.thinking += call.thinking_tokens ?? 0
+      buckets.set(key, b)
+    }
+
+    return [...buckets.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([ts, v]) => ({ ts, ...v }))
+  }, [doneCalls, timeRange, tokenModule])
+
+  const hasThinkingInTimeline = useMemo(() => tokenTimelineData.some(d => d.thinking > 0), [tokenTimelineData])
 
   if (loading) {
     return (
@@ -444,6 +502,131 @@ export default function LLMStats() {
                   )
                 })}
               </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </Card>
+
+      {/* Token usage over time */}
+      <Card noPad>
+        <div className="px-5 pt-5 pb-3 flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-4">
+            <CardHeader
+              title="Token Usage Over Time"
+              subtitle="Prompt, completion & thinking tokens per time bucket"
+            />
+          </div>
+          {/* Module filter pills */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <button
+              onClick={() => setTokenModule('all')}
+              className={cn(
+                'px-3 py-1 text-xs rounded-full font-medium transition-all border',
+                tokenModule === 'all'
+                  ? 'bg-accent/20 text-accent border-accent/30'
+                  : 'text-muted border-border hover:text-foreground hover:border-border/80 hover:bg-surface-elevated',
+              )}
+            >
+              All modules
+            </button>
+            {sortedModules.map((mod, i) => (
+              <button
+                key={mod}
+                onClick={() => setTokenModule(mod)}
+                className={cn(
+                  'px-3 py-1 text-xs rounded-full font-medium transition-all border flex items-center gap-1.5',
+                  tokenModule === mod
+                    ? 'border-transparent text-white'
+                    : 'text-muted border-border hover:text-foreground hover:bg-surface-elevated',
+                )}
+                style={tokenModule === mod ? { backgroundColor: modColor(mod, i), borderColor: modColor(mod, i) } : {}}
+              >
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0"
+                  style={{ backgroundColor: tokenModule === mod ? 'rgba(255,255,255,0.7)' : modColor(mod, i) }}
+                />
+                {modLabel(mod)}
+              </button>
+            ))}
+          </div>
+        </div>
+        {isEmpty || tokenTimelineData.length === 0 ? (
+          <EmptyChart />
+        ) : (
+          <div className="px-2 pb-4">
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={tokenTimelineData} margin={{ top: 10, right: 24, bottom: 10, left: 0 }}>
+                <defs>
+                  <linearGradient id="grad-prompt" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="rgb(var(--accent-rgb))" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="rgb(var(--accent-rgb))" stopOpacity={0.04} />
+                  </linearGradient>
+                  <linearGradient id="grad-completion" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.04} />
+                  </linearGradient>
+                  <linearGradient id="grad-thinking" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#c4b5fd" stopOpacity={0.4} />
+                    <stop offset="95%" stopColor="#c4b5fd" stopOpacity={0.04} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                <XAxis
+                  dataKey="ts"
+                  type="number"
+                  domain={['auto', 'auto']}
+                  scale="time"
+                  tickFormatter={fmtTime}
+                  stroke="var(--muted-fg)"
+                  tick={{ fontSize: 11, fill: 'var(--muted-fg)' }}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis
+                  tickFormatter={v => fmtTokens(v as number)}
+                  stroke="var(--muted-fg)"
+                  tick={{ fontSize: 11, fill: 'var(--muted-fg)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={52}
+                />
+                <Tooltip
+                  contentStyle={TOOLTIP_STYLE}
+                  labelFormatter={v => new Date(v as number).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  formatter={(v: number, name: string) => [v.toLocaleString() + ' tokens', name]}
+                  cursor={{ stroke: 'var(--border-color)', strokeDasharray: '3 3' }}
+                />
+                <Legend wrapperStyle={{ fontSize: '12px', color: 'var(--muted-fg)', paddingTop: '8px' }} />
+                <Area
+                  type="monotone"
+                  dataKey="prompt"
+                  name="Prompt"
+                  stackId="tokens"
+                  stroke="rgb(var(--accent-rgb))"
+                  strokeWidth={1.5}
+                  fill="url(#grad-prompt)"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="completion"
+                  name="Completion"
+                  stackId="tokens"
+                  stroke="#8b5cf6"
+                  strokeWidth={1.5}
+                  fill="url(#grad-completion)"
+                />
+                {hasThinkingInTimeline && (
+                  <Area
+                    type="monotone"
+                    dataKey="thinking"
+                    name="Thinking"
+                    stackId="tokens"
+                    stroke="#c4b5fd"
+                    strokeWidth={1.5}
+                    fill="url(#grad-thinking)"
+                  />
+                )}
+              </AreaChart>
             </ResponsiveContainer>
           </div>
         )}

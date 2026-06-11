@@ -77,7 +77,7 @@ async function monitorCoin(
   historyCount: number,
 ): Promise<PositionReview | null> {
   const history = queryAll(
-    'SELECT * FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 1',
+    'SELECT * FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 3',
     [ctx.coin],
   ) as unknown as PositionReview[]
 

@@ -405,11 +405,10 @@ export async function placeProtection(positionId: number): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
 
-    // "Insufficient balance" means the coins are already locked in an OCO that
-    // survived a backend restart but whose IDs were lost from the local DB.
-    // Scan Binance open orders and reattach to the existing OCO instead of
-    // falling back to the software stop, which would leave the position
-    // unprotected on the exchange side.
+    // "Insufficient balance" has two sub-cases:
+    //  1. Coins are locked in a surviving OCO (bot restart lost the IDs) → reattach.
+    //  2. Buy fee was taken in the base currency so actual balance < recorded
+    //     position quantity → retry with the real free balance.
     if (/insufficient balance/i.test(msg)) {
       try {
         const existing = await trader.findExistingOco(pos.coin)
@@ -422,6 +421,36 @@ export async function placeProtection(positionId: number): Promise<void> {
         }
       } catch (recErr) {
         logger.warn('OCO recovery lookup threw unexpectedly', { coin: pos.coin, error: recErr instanceof Error ? recErr.message : String(recErr) })
+      }
+
+      // No locked OCO found — try with the actual free balance (fees may have
+      // reduced it by ~0.1 %). Accept up to 2 % below the recorded quantity.
+      try {
+        const base = pos.coin.split('/')[0]
+        const bal = await trader.fetchBalance()
+        const actualQty = bal[base]?.free ?? 0
+        if (actualQty > 0 && actualQty >= pos.quantity * 0.98 && actualQty < pos.quantity) {
+          logger.info('Retrying OCO with fee-adjusted balance', {
+            coin: pos.coin, positionId, recorded: pos.quantity, actual: actualQty,
+          })
+          const res = await trader.placeOco(pos.coin, actualQty, {
+            stopLoss: pos.current_sl,
+            takeProfit: pos.take_profit!,
+            bufferPct,
+          })
+          persistOco(positionId, res)
+          // Align the recorded quantity with what Binance actually holds so
+          // future OCO replacements and close calculations use the correct value.
+          runSQL('UPDATE positions SET quantity = ? WHERE id = ?', [actualQty, positionId])
+          logger.info('OCO protection placed with fee-adjusted quantity', {
+            coin: pos.coin, positionId, orderListId: res.orderListId, qty: actualQty,
+          })
+          return
+        }
+      } catch (feeRetryErr) {
+        logger.warn('OCO fee-adjusted retry failed', {
+          coin: pos.coin, positionId, error: feeRetryErr instanceof Error ? feeRetryErr.message : String(feeRetryErr),
+        })
       }
     }
 
@@ -537,9 +566,37 @@ export async function reconcileOpenPositions(): Promise<void> {
         // Needs protection (NONE / FAILED / just-cancelled).
         await placeProtection(pos.id)
 
-        // If protection still couldn't be placed, enforce the stop in software.
+        // If protection still couldn't be placed, check whether the coin was
+        // sold on Binance externally (manually or via a fill the bot didn't see).
+        // If the balance is effectively zero the position is gone — close it.
         const refreshed = getBotPositionById(pos.id)
         if (refreshed && refreshed.status === 'OPEN' && refreshed.oco_status !== 'ACTIVE') {
+          try {
+            const base = pos.coin.split('/')[0]
+            const bal = await trader.fetchBalance()
+            const held = bal[base]?.total ?? 0
+            if (held < pos.quantity * 0.01) {
+              const price = getPrice(pos.coin)?.price ?? pos.entry_price
+              logger.warn('External position close detected — coin no longer held on Binance', {
+                coin: pos.coin, positionId: pos.id, held, expected: pos.quantity,
+              })
+              closePositionFromExit({
+                positionId: pos.id,
+                coin: pos.coin,
+                status: 'CLOSED',
+                fillPrice: price,
+                fillQty: pos.quantity,
+                reason: 'External close (coin no longer held on Binance)',
+              })
+              continue
+            }
+          } catch (balErr) {
+            logger.warn('Balance check for external-close detection failed', {
+              coin: pos.coin, error: balErr instanceof Error ? balErr.message : String(balErr),
+            })
+          }
+
+          // Coin is still held — enforce the stop in software.
           const price = getPrice(pos.coin)?.price
           if (price) {
             const hit = checkPosition(price, refreshed)

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
 import { getRunningLLMCalls } from '../core/llm.js'
-import { executeTrade, executeCoinTrade } from '../trader/index.js'
+import { executeTrade, executeCoinTrade, fetchBalance } from '../trader/index.js'
 import { getExchange } from '../trader/service.js'
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
@@ -12,7 +12,7 @@ import { getReviews, isRunning as isMonitorRunning } from '../monitor/index.js'
 import { isPipelineRunning, getPendingApprovals } from '../index.js'
 import { isTradeable } from '../core/tradeable.js'
 
-import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, closeEntry, reduceEntryQuantity, enrichPortfolioEntriesWithPrices, depositUsdt, withdrawUsdt, getUsdtEntry, updatePortfolioForTrade, getSlTpHistory, cancelProtection, getOpenPositions } from '../portfolio/index.js'
+import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, closeEntry, reduceEntryQuantity, enrichPortfolioEntriesWithPrices, depositUsdt, withdrawUsdt, getUsdtEntry, updatePortfolioForTrade, getSlTpHistory, cancelProtection, getOpenPositions, closePositionFromExit } from '../portfolio/index.js'
 
 function normalizeSymbol(coin: string): string {
   const upper = coin.trim().toUpperCase()
@@ -232,23 +232,29 @@ router.delete('/portfolio/entry/:id', (req: Request, res: Response) => {
 
 router.get('/portfolio/gains', (_req: Request, res: Response) => {
   try {
-    // Use the positions table as the authoritative source of realized P&L.
-    // positions.pnl = quantity * (exit_price - entry_price), set at close time.
-    // This avoids double-counting open-position BUY cost against SELL proceeds,
-    // which the old trades-based query did whenever a position was only partially closed.
     const rows = queryAll(`
       SELECT
-        coin,
-        SUM(pnl)                     AS realized_pnl,
-        SUM(quantity * entry_price)  AS total_bought,
-        SUM(quantity * entry_price + pnl) AS total_sold
-      FROM positions
-      WHERE status IN ('CLOSED', 'SL_HIT', 'TP_HIT')
-        AND pnl IS NOT NULL
-        AND coin != 'USDC'
-      GROUP BY coin
-      ORDER BY realized_pnl DESC
-    `) as { coin: string; total_bought: number; total_sold: number; realized_pnl: number }[]
+        p.id,
+        p.coin,
+        p.quantity,
+        p.entry_price,
+        p.status,
+        p.pnl,
+        p.created_at                                                   AS opened_at,
+        h.created_at                                                   AS closed_at,
+        CAST((julianday(COALESCE(h.created_at, 'now')) - julianday(p.created_at)) * 86400 AS INTEGER)
+                                                                       AS duration_seconds
+      FROM positions p
+      LEFT JOIN sl_tp_history h ON h.position_id = p.id AND h.event = 'close'
+      WHERE p.status IN ('CLOSED', 'SL_HIT', 'TP_HIT')
+        AND p.pnl IS NOT NULL
+        AND p.coin != 'USDC'
+      ORDER BY COALESCE(h.created_at, p.created_at) DESC
+    `) as {
+      id: number; coin: string; quantity: number; entry_price: number
+      status: string; pnl: number; opened_at: string; closed_at: string | null
+      duration_seconds: number
+    }[]
 
     const feeRow = queryOne(`
       SELECT SUM(fee_cost) AS total_bnb_fees
@@ -256,23 +262,27 @@ router.get('/portfolio/gains', (_req: Request, res: Response) => {
       WHERE fee_currency = 'BNB' AND status = 'EXECUTED' AND fee_cost > 0
     `) as { total_bnb_fees: number | null } | null
 
-    const total_pnl = rows.reduce((s, r) => s + (r.realized_pnl ?? 0), 0)
+    const total_pnl = rows.reduce((s, r) => s + (r.pnl ?? 0), 0)
     const total_bnb_fees = Math.round((feeRow?.total_bnb_fees ?? 0) * 1e8) / 1e8
 
     res.json({
       total_pnl: Math.round(total_pnl * 100) / 100,
-      total_fees: 0,
       total_bnb_fees,
-      coins: rows.map(r => ({
-        coin: r.coin,
-        total_bought: Math.round((r.total_bought ?? 0) * 100) / 100,
-        total_sold: Math.round((r.total_sold ?? 0) * 100) / 100,
-        realized_pnl: Math.round((r.realized_pnl ?? 0) * 100) / 100,
-        fees_paid: 0,
-        pnl_pct: r.total_bought > 0
-          ? Math.round(((r.realized_pnl ?? 0) / r.total_bought) * 10000) / 100
-          : 0,
-      })),
+      positions: rows.map(r => {
+        const invested = r.quantity * r.entry_price
+        return {
+          id: r.id,
+          coin: r.coin,
+          quantity: r.quantity,
+          entry_price: r.entry_price,
+          status: r.status,
+          pnl: Math.round((r.pnl ?? 0) * 100) / 100,
+          pnl_pct: invested > 0 ? Math.round(((r.pnl ?? 0) / invested) * 10000) / 100 : 0,
+          opened_at: r.opened_at,
+          closed_at: r.closed_at,
+          duration_seconds: r.duration_seconds ?? 0,
+        }
+      }),
     })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
@@ -344,6 +354,46 @@ router.patch('/positions/:id/horizon', (req: Request, res: Response) => {
     if (!pos) return res.status(404).json({ error: 'Position not found' })
     runSQL('UPDATE positions SET horizon = ? WHERE id = ?', [horizon!, id])
     res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Mark a position as closed without executing a trade — for positions already sold
+// manually on Binance. Cancels the OCO if active, then reconciles the DB.
+router.post('/positions/:id/close', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10)
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
+
+    const pos = queryOne("SELECT * FROM positions WHERE id = ? AND status = 'OPEN'", [id]) as Record<string, unknown> | null
+    if (!pos) return res.status(404).json({ error: 'Position not found or already closed' })
+
+    const coin = pos.coin as string
+    const quantity = pos.quantity as number
+
+    // Cancel OCO on Binance so the hanging orders are cleaned up.
+    await cancelProtection(id)
+
+    // Use caller-supplied fill price, or fall back to latest cached price.
+    let fillPrice = typeof req.body?.fill_price === 'number' ? req.body.fill_price : null
+    if (!fillPrice) {
+      priceCache.subscribe([coin])
+      fillPrice = priceCache.getAll().get(coin)?.price ?? (pos.entry_price as number)
+    }
+
+    const closed = closePositionFromExit({
+      positionId: id,
+      coin,
+      status: 'CLOSED',
+      fillPrice,
+      fillQty: quantity,
+      reason: 'Manual close (already sold on Binance)',
+    })
+
+    if (!closed) return res.status(409).json({ error: 'Position was already closed by a concurrent operation' })
+
+    res.json({ ok: true, coin, fillPrice })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
@@ -545,20 +595,31 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
   if (preCheck.quantity < amount) return res.status(400).json({ error: `Insufficient balance: have ${preCheck.quantity}, need ${amount}` })
 
   try {
-    // Cancel any active OCO before selling — Binance rejects a market SELL when
-    // the coins are locked in an open order-list (OCO).
+    // For sells: cap quantity to actual Binance free balance in case buy fees
+    // were taken in the base currency (actual < recorded by ~0.1 %).
+    let sellQty = amount
     if (toSymbol === 'USDC') {
       const openPos = getOpenPositions().find(p => p.coin === fromSymbol)
       if (openPos) await cancelProtection(openPos.id)
+
+      const base = fromSymbol.split('/')[0]
+      const bal = await fetchBalance()
+      const actualFree = bal[base]?.free ?? 0
+      if (actualFree < sellQty && actualFree >= sellQty * 0.98) {
+        logger.info('Sell qty capped to actual Binance free balance (fee adjustment)', {
+          coin: fromSymbol, recorded: sellQty, actual: actualFree,
+        })
+        sellQty = actualFree
+      }
     }
 
-    const result = await executeCoinTrade(fromSymbol, toSymbol, amount)
+    const result = await executeCoinTrade(fromSymbol, toSymbol, sellQty)
 
     let tradeInfo: ReturnType<typeof runSQL>
     if (toSymbol === 'USDC') {
       tradeInfo = runSQL(
         "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-        [fromSymbol, 'SELL', amount, result.fromPrice, amount * result.fromPrice]
+        [fromSymbol, 'SELL', sellQty, result.fromPrice, sellQty * result.fromPrice]
       )
     } else {
       tradeInfo = runSQL(
@@ -567,6 +628,9 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
       )
     }
 
+    // Use the original `amount` (the full recorded entry quantity) for the local
+    // ledger so fee-adjusted sells don't leave dust in portfolio_entries.
+    // The USDC credit still uses result.toAmount (actual fill).
     updatePortfolioForTrade(fromSymbol, amount, toSymbol, result.toAmount, result.toPrice, tradeInfo.lastInsertRowid)
 
     res.json({
@@ -574,7 +638,7 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
       tradeId: tradeInfo.lastInsertRowid,
       fromSymbol,
       toSymbol,
-      fromAmount: amount,
+      fromAmount: sellQty,
       toAmount: result.toAmount,
       fromPrice: result.fromPrice,
       toPrice: result.toPrice,

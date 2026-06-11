@@ -33,7 +33,7 @@ export function getSettings(): BotSettings {
     monitor_tp_pct_medium: parseFloat(map.monitor_tp_pct_medium || '10'),
     monitor_tp_pct_long: parseFloat(map.monitor_tp_pct_long || '20'),
     oco_sl_buffer_pct: parseFloat(map.oco_sl_buffer_pct || '0.5'),
-    min_trade_usdc: parseFloat(map.min_trade_usdc || '13'),
+    min_trade_usdc: parseFloat(map.min_trade_usdc || '12'),
     monitor_trust_llm_sltp: map.monitor_trust_llm_sltp === 'true',
     monitor_use_horizon: (map.monitor_use_horizon ?? 'true') === 'true',
     monitor_history_tf: map.monitor_history_tf || '1h',

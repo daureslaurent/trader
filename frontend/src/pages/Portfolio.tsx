@@ -5,7 +5,7 @@ import { Stat } from '../components/ui/Stat'
 import { Input } from '../components/ui/Input'
 import { PnlCard } from '../components/PnlCard'
 import { TransferModal } from '../components/TransferModal'
-import { PortfolioEntry, PortfolioResponse, GainsResponse, ActivePosition, PositionReview, MonitorResponse } from '../types'
+import { PortfolioEntry, PortfolioResponse, GainsResponse, ClosedPosition, ActivePosition, PositionReview, MonitorResponse } from '../types'
 import { fmtUSD, fmtPct, fmt } from '../lib/utils'
 import { cn } from '../lib/utils'
 import { usePrices } from '../hooks/usePrices'
@@ -85,14 +85,28 @@ function ConfidenceBar({ value }: { value: number }) {
   )
 }
 
+function fmtDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  const rm = m % 60
+  if (h < 24) return rm > 0 ? `${h}h ${rm}m` : `${h}h`
+  const d = Math.floor(h / 24)
+  const rh = h % 24
+  return rh > 0 ? `${d}d ${rh}h` : `${d}d`
+}
+
 // ── Position Detail Modal ──────────────────────────────────────────────────
 
-function PositionDetailModal({ pos, latestReview, closingCoin, onClose, onClosePosition, onHorizonChange }: {
+function PositionDetailModal({ pos, latestReview, closingCoin, markingClosed, onClose, onClosePosition, onMarkAlreadyClosed, onHorizonChange }: {
   pos: ActivePosition
   latestReview: PositionReview | null
   closingCoin: string | null
+  markingClosed: string | null
   onClose: () => void
   onClosePosition: (coin: string) => void
+  onMarkAlreadyClosed: (pos: ActivePosition) => void
   onHorizonChange: (positionId: number, horizon: 'short' | 'medium' | 'long' | 'disabled' | 'llm') => void
 }) {
   const coin = pos.coin.replace('/USDC', '')
@@ -101,6 +115,7 @@ function PositionDetailModal({ pos, latestReview, closingCoin, onClose, onCloseP
   const entryValue = pos.entry_price * pos.quantity
   const currentValue = pos.current_price != null ? pos.current_price * pos.quantity : null
   const isClosing = closingCoin === pos.coin
+  const isMarkingClosed = markingClosed === pos.coin
 
   const reviewMdata = latestReview ? (() => { try { return JSON.parse(latestReview.market_data) } catch { return {} } })() : null
 
@@ -275,12 +290,25 @@ function PositionDetailModal({ pos, latestReview, closingCoin, onClose, onCloseP
         </div>
 
         {/* Footer */}
-        <div className="px-6 pb-5 pt-4 border-t border-border flex gap-2 shrink-0">
-          <button onClick={onClose} className="flex-1 px-4 py-2 text-sm font-medium rounded-xl border border-border text-muted hover:text-foreground hover:bg-surface-elevated transition-colors">
-            Cancel
-          </button>
-          <Button variant="danger" size="md" loading={isClosing} disabled={isClosing} onClick={() => onClosePosition(pos.coin)} className="flex-1">
-            Close Position
+        <div className="px-6 pb-5 pt-4 border-t border-border flex flex-col gap-2 shrink-0">
+          <div className="flex gap-2">
+            <button onClick={onClose} className="flex-1 px-4 py-2 text-sm font-medium rounded-xl border border-border text-muted hover:text-foreground hover:bg-surface-elevated transition-colors">
+              Cancel
+            </button>
+            <Button variant="danger" size="md" loading={isClosing} disabled={isClosing || isMarkingClosed} onClick={() => onClosePosition(pos.coin)} className="flex-1">
+              Close Position
+            </Button>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            loading={isMarkingClosed}
+            disabled={isClosing || isMarkingClosed}
+            onClick={() => onMarkAlreadyClosed(pos)}
+            className="w-full text-muted border border-border/50 hover:border-border"
+            title="Use this if you already sold this position manually on Binance — reconciles the local DB without placing any order"
+          >
+            Already sold on Binance
           </Button>
         </div>
       </div>
@@ -409,6 +437,7 @@ export default function Portfolio() {
   const [monitorRunning, setMonitorRunning] = useState(false)
   const [reviews, setReviews] = useState<PositionReview[]>([])
   const [closingCoin, setClosingCoin] = useState<string | null>(null)
+  const [markingClosed, setMarkingClosed] = useState<string | null>(null)
   const [monitorError, setMonitorError] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [selectedPos, setSelectedPos] = useState<ActivePosition | null>(null)
@@ -551,6 +580,29 @@ export default function Portfolio() {
     }
   }
 
+  async function handleMarkAlreadyClosed(pos: ActivePosition) {
+    setMarkingClosed(pos.coin)
+    try {
+      const res = await fetch(`/api/positions/${pos.id}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMonitorError(data.error ?? 'Reconcile failed')
+      } else {
+        load()
+        loadMonitor()
+        setSelectedPos(null)
+      }
+    } catch {
+      setMonitorError('Request failed')
+    } finally {
+      setMarkingClosed(null)
+    }
+  }
+
   // Group reviews by cycle_id; latest run = most recent cycle_id
   const reviewsByCycle = reviews.reduce<Map<string, PositionReview[]>>((acc, r) => {
     const list = acc.get(r.cycle_id) ?? []
@@ -586,7 +638,7 @@ export default function Portfolio() {
       {/* ── P&L Summary ───────────────────────────────────────────────── */}
       {(() => {
         const finalUsd = gains?.total_pnl ?? 0
-        const totalBought = gains?.coins.reduce((s, c) => s + c.total_bought, 0) ?? 0
+        const totalBought = gains?.positions.reduce((s, p) => s + p.entry_price * p.quantity, 0) ?? 0
         const finalPct = totalBought > 0 ? (finalUsd / totalBought) * 100 : null
         const liveUsd = livePositions.reduce((s, p) => s + (p.pnl ?? 0), 0)
         const liveBasis = livePositions.reduce((s, p) => s + p.entry_price * p.quantity, 0)
@@ -914,8 +966,8 @@ export default function Portfolio() {
         <div className="px-5 pt-5 pb-4">
           <CardHeader
             title="Final Gains"
-            subtitle="Realized P&L from completed USDC → coin → USDC round trips"
-            action={gains && gains.coins.length > 0 ? (
+            subtitle="Realized P&L from closed positions"
+            action={gains && gains.positions.length > 0 ? (
               <div className="text-right">
                 <div className={cn('text-lg font-bold tabular-nums', gains.total_pnl >= 0 ? 'text-buy' : 'text-sell')}>
                   {gains.total_pnl >= 0 ? '+' : ''}{fmtUSD(gains.total_pnl)}
@@ -925,16 +977,16 @@ export default function Portfolio() {
           />
         </div>
 
-        {!gains || gains.coins.length === 0 ? (
+        {!gains || gains.positions.length === 0 ? (
           <div className="px-5 pb-6 text-center text-sm text-muted">
-            No completed round trips yet — sell a position to see realized gains here.
+            No closed positions yet.
           </div>
         ) : (
           <div className="overflow-x-auto pb-1">
-            <table className="w-full text-sm min-w-[520px]">
+            <table className="w-full text-sm min-w-[560px]">
               <thead>
                 <tr className="border-b border-border">
-                  {['Coin', 'Invested', 'Returned', 'P&L', '%'].map((h, i) => (
+                  {['Coin', 'Opened', 'Duration', 'Entry', 'P&L', '%'].map((h, i) => (
                     <th key={h} className={cn('py-2.5 px-4 text-xs font-medium text-muted uppercase tracking-wide', i === 0 ? 'text-left' : 'text-right')}>
                       {h}
                     </th>
@@ -942,39 +994,49 @@ export default function Portfolio() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {gains.coins.map(c => {
-                  const pos = c.realized_pnl >= 0
-                  const cls = pos ? 'text-buy' : 'text-sell'
+                {gains.positions.map((p: ClosedPosition) => {
+                  const win = p.pnl >= 0
+                  const cls = win ? 'text-buy' : 'text-sell'
+                  const statusLabel = p.status === 'SL_HIT' ? 'SL' : p.status === 'TP_HIT' ? 'TP' : null
+                  const statusCls = p.status === 'SL_HIT'
+                    ? 'bg-sell/10 text-sell border-sell/20'
+                    : p.status === 'TP_HIT'
+                    ? 'bg-buy/10 text-buy border-buy/20'
+                    : null
+                  const openedDate = p.opened_at
+                    ? new Date(p.opened_at.includes('T') ? p.opened_at : p.opened_at + 'Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                    : '—'
                   return (
-                    <tr key={c.coin} className="hover:bg-surface-elevated/50 transition-colors duration-100">
-                      <td className="py-3 px-4 font-semibold">{c.coin.replace('/USDC', '')}</td>
-                      <td className="py-3 px-4 text-right tabular-nums text-muted">{fmtUSD(c.total_bought)}</td>
-                      <td className="py-3 px-4 text-right tabular-nums text-muted">{fmtUSD(c.total_sold)}</td>
+                    <tr key={p.id} className="hover:bg-surface-elevated/50 transition-colors duration-100">
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold">{p.coin.replace('/USDC', '')}</span>
+                          {statusLabel && statusCls && (
+                            <span className={cn('inline-flex items-center px-1.5 py-0.5 text-xs rounded-md border font-medium', statusCls)}>
+                              {statusLabel}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 text-right tabular-nums text-muted text-xs">{openedDate}</td>
+                      <td className="py-3 px-4 text-right tabular-nums text-muted text-xs">{fmtDuration(p.duration_seconds)}</td>
+                      <td className="py-3 px-4 text-right tabular-nums text-muted">{fmtUSD(p.entry_price)}</td>
                       <td className={cn('py-3 px-4 text-right tabular-nums font-semibold', cls)}>
-                        {pos ? '+' : ''}{fmtUSD(c.realized_pnl)}
+                        {win ? '+' : ''}{fmtUSD(p.pnl)}
                       </td>
                       <td className={cn('py-3 px-4 text-right tabular-nums font-medium', cls)}>
-                        {pos ? '+' : ''}{c.pnl_pct.toFixed(2)}%
+                        {win ? '+' : ''}{p.pnl_pct.toFixed(2)}%
                       </td>
                     </tr>
                   )
                 })}
                 {(gains.total_bnb_fees ?? 0) > 0 && (
                   <tr className="border-t-2 border-border/60 bg-surface-elevated/30">
-                    <td className="py-3 px-4">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-foreground">BNB</span>
-                        <span className="inline-flex items-center px-2 py-0.5 text-xs rounded-md border font-medium bg-warn/10 text-warn border-warn/20">
-                          fees
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-right tabular-nums text-muted">—</td>
-                    <td className="py-3 px-4 text-right tabular-nums text-muted">—</td>
+                    <td className="py-3 px-4 font-semibold text-muted" colSpan={4}>BNB fees</td>
                     <td className="py-3 px-4 text-right tabular-nums font-semibold text-sell">
                       -{fmt(gains.total_bnb_fees, 6)} BNB
                     </td>
-                    <td className="py-3 px-4 text-right tabular-nums text-muted">—</td>
+                    <td className="py-3 px-4 text-right text-muted">—</td>
                   </tr>
                 )}
               </tbody>
@@ -991,8 +1053,10 @@ export default function Portfolio() {
             pos={livePos}
             latestReview={latestReview}
             closingCoin={closingCoin}
+            markingClosed={markingClosed}
             onClose={() => setSelectedPos(null)}
             onClosePosition={handleClosePosition}
+            onMarkAlreadyClosed={handleMarkAlreadyClosed}
             onHorizonChange={handleHorizonChange}
           />
         )

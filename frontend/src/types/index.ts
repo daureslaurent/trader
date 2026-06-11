@@ -65,20 +65,23 @@ export interface ActivePosition {
   oco_status: 'NONE' | 'ACTIVE' | 'FAILED'
 }
 
-export interface GainsCoin {
+export interface ClosedPosition {
+  id: number
   coin: string
-  total_bought: number
-  total_sold: number
-  realized_pnl: number
-  fees_paid: number
+  quantity: number
+  entry_price: number
+  status: 'CLOSED' | 'SL_HIT' | 'TP_HIT'
+  pnl: number
   pnl_pct: number
+  opened_at: string
+  closed_at: string | null
+  duration_seconds: number
 }
 
 export interface GainsResponse {
   total_pnl: number
-  total_fees: number
   total_bnb_fees: number
-  coins: GainsCoin[]
+  positions: ClosedPosition[]
 }
 
 

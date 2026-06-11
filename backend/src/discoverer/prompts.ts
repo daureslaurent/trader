@@ -28,10 +28,15 @@ Return ONLY valid JSON with this exact schema:
 }
 
 Scoring guide:
-- 0.80–1.00: Strong candidate — high liquidity, clear trend, favorable RSI, positive news sentiment, good setup
+- 0.80–1.00: Strong candidate — high liquidity, established uptrend with RSI 40–65 (room to run), price near or pulling back toward SMA7/SMA25, positive news sentiment
 - 0.60–0.80: Good candidate — meets most criteria with minor concerns
 - 0.40–0.60: Marginal — lacks trend clarity, mixed news, or notable risks
-- 0.00–0.40: Not recommended — too volatile, low volume, overbought, negative news, or poor setup`
+- 0.00–0.40: Not recommended — too volatile, low volume, overbought, negative news, or poor setup
+
+Anti-chasing rules (override the guide above):
+- A large 24h pump (> +10%) with RSI > 70 means the entry is late, not strong — cap the score at 0.40
+- A pullback within an intact uptrend scores HIGHER than a fresh vertical breakout
+- Down-trending coins need a concrete bullish catalyst in the news to score above 0.40; oversold alone is not a setup`
 
   const coin = symbol.replace('/USDC', '')
 

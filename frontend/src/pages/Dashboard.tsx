@@ -247,7 +247,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
   const liveList = Array.from(liveCoins.values())
 
   const finalGainUsd = gains?.total_pnl ?? 0
-  const totalBought = gains?.coins.reduce((s, c) => s + c.total_bought, 0) ?? 0
+  const totalBought = gains?.positions.reduce((s, p) => s + p.entry_price * p.quantity, 0) ?? 0
   const finalGainPct = totalBought > 0 ? (finalGainUsd / totalBought) * 100 : null
   const liveGainUsd = positions.reduce((s, p) => s + (p.pnl ?? 0), 0)
   const liveCostBasis = positions.reduce((s, p) => s + p.entry_price * p.quantity, 0)

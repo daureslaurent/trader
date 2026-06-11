@@ -297,13 +297,19 @@ async function tradingLoop() {
           continue
         }
 
-        const qty = calculatePositionSize(data.price, marketCtx.atr14, signal.confidence, portfolioState.totalValueUsd, settings, availableUsdc)
+        let qty = calculatePositionSize(data.price, marketCtx.atr14, signal.confidence, portfolioState.totalValueUsd, settings, availableUsdc)
         if (qty <= 0) {
           logger.warn('Skipping BUY — insufficient USDC or zero position size', { coin: data.symbol, availableUsdc })
           logPipelineEvent('trade_skipped', data.symbol, cycleId, {
             reason: `Insufficient USDC (available: $${availableUsdc.toFixed(2)})`,
           })
           continue
+        }
+
+        const minQty = settings.min_trade_usdc / data.price
+        if (qty < minQty) {
+          logger.info('BUY qty floored to minimum order size', { coin: data.symbol, originalUsd: qty * data.price, minUsd: settings.min_trade_usdc })
+          qty = minQty
         }
 
         const sl = signal.stop_loss_pct != null
@@ -440,13 +446,20 @@ async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<v
         return
       }
 
-      const qty = calculatePositionSize(data.price, marketCtx.atr14, signal.confidence, portfolioState.totalValueUsd, settings, availableUsdc)
+      let qty = calculatePositionSize(data.price, marketCtx.atr14, signal.confidence, portfolioState.totalValueUsd, settings, availableUsdc)
       if (qty <= 0) {
         logPipelineEvent('trade_skipped', symbol, cycleId, {
           reason: `Insufficient USDC (available: $${availableUsdc.toFixed(2)})`,
         })
         return
       }
+
+      const minQty = settings.min_trade_usdc / data.price
+      if (qty < minQty) {
+        logger.info('BUY qty floored to minimum order size', { coin: symbol, originalUsd: qty * data.price, minUsd: settings.min_trade_usdc })
+        qty = minQty
+      }
+
       const sl = signal.stop_loss_pct != null
         ? data.price * (1 - signal.stop_loss_pct / 100)
         : calculateStopLoss(data.price, marketCtx.atr14, settings)

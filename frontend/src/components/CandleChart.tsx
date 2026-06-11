@@ -159,6 +159,34 @@ function LivePriceTag(props: any) {
   )
 }
 
+// Outlined SL/TP tag — same position as LivePriceTag but with border-only style.
+// nudge=true shifts it down by TAG_H+2 to avoid colliding with the live price tag.
+function SlTpPriceTag(props: any) {
+  const { viewBox, value, color, nudge } = props
+  if (!viewBox) return null
+  const { x, y, width } = viewBox
+  const w = 54, h = 16
+  const tx = x + width + 1
+  const ty = nudge ? y + h + 2 : y
+  return (
+    <g>
+      <rect x={tx} y={ty - h / 2} width={w} height={h} rx={3}
+        fill="var(--surface-elevated)" stroke={color} strokeWidth={1} />
+      <text x={tx + w / 2} y={ty + 3.5} textAnchor="middle"
+        fontSize={10} fontWeight={600} fill={color}>
+        {value}
+      </text>
+    </g>
+  )
+}
+
+// Convert a price to its approximate pixel Y inside the chart.
+// margin.top=12, height=300, margin.bottom=4 → innerH=284
+function pixelY(price: number, domain: [number, number]): number {
+  const [min, max] = domain
+  return 12 + ((max - price) / (max - min)) * 284
+}
+
 function CandleTooltip({ active, payload }: { active?: boolean; payload?: { payload: ChartDatum }[] }) {
   if (!active || !payload?.length) return null
   const d = payload[0].payload
@@ -208,7 +236,7 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
   decisions?: Decision[]
   trades?: Trade[]
 }) {
-  const [tf, setTf] = useState<Timeframe>('1h')
+  const [tf, setTf] = useState<Timeframe>(() => (localStorage.getItem('chart_tf') as Timeframe | null) ?? '1h')
   const [candles, setCandles] = useState<Candle[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -216,6 +244,8 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
   const [showTp, setShowTp] = useState(true)
   const [slTpEvents, setSlTpEvents] = useState<SlTpEvent[]>([])
   const reqId = useRef(0)
+
+  useEffect(() => { localStorage.setItem('chart_tf', tf) }, [tf])
 
   const livePrices = usePrices()
   const liveSnap = livePrices.get(symbol)
@@ -340,6 +370,29 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
     return [min - pad, max + pad]
   }, [data, livePrice, showSl, showTp])
 
+  const currentSl = useMemo(() => {
+    if (!showSl) return null
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].sl != null) return data[i].sl as number
+    }
+    return null
+  }, [data, showSl])
+
+  const currentTp = useMemo(() => {
+    if (!showTp) return null
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].tp != null) return data[i].tp as number
+    }
+    return null
+  }, [data, showTp])
+
+  const TAG_H = 16
+  const livePixelY = livePrice > 0 ? pixelY(livePrice, domain) : null
+  const slNudge = currentSl != null && livePixelY != null
+    ? Math.abs(pixelY(currentSl, domain) - livePixelY) < TAG_H : false
+  const tpNudge = currentTp != null && livePixelY != null
+    ? Math.abs(pixelY(currentTp, domain) - livePixelY) < TAG_H : false
+
   const periodChange = first && first.open > 0 ? ((livePrice - first.open) / first.open) * 100 : 0
   const liveColor = periodChange >= 0 ? 'rgb(var(--buy-rgb))' : 'rgb(var(--sell-rgb))'
 
@@ -407,17 +460,17 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-72">
+        <div className="flex items-center justify-center h-96">
           <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
         </div>
       ) : error ? (
-        <div className="flex items-center justify-center h-72 text-sm text-muted px-5 text-center">{error}</div>
+        <div className="flex items-center justify-center h-96 text-sm text-muted px-5 text-center">{error}</div>
       ) : data.length === 0 ? (
-        <div className="flex items-center justify-center h-72 text-sm text-muted">No candle data.</div>
+        <div className="flex items-center justify-center h-96 text-sm text-muted">No candle data.</div>
       ) : (
         <>
           <div className="px-2 pb-2">
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={400}>
               <ComposedChart data={data} margin={{ top: 12, right: 12, bottom: 4, left: 0 }}>
                 <XAxis
                   dataKey="time"
@@ -480,6 +533,18 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
                     shape={<TradeMarker side={t.side} />}
                   />
                 ))}
+
+                {/* SL/TP current-level price tags on Y-axis */}
+                {showSl && currentSl != null && (
+                  <ReferenceLine y={currentSl} stroke="transparent" ifOverflow="extendDomain"
+                    label={<SlTpPriceTag value={fmtPrice(currentSl)} color="rgb(var(--sell-rgb))" nudge={slNudge} />}
+                  />
+                )}
+                {showTp && currentTp != null && (
+                  <ReferenceLine y={currentTp} stroke="transparent" ifOverflow="extendDomain"
+                    label={<SlTpPriceTag value={fmtPrice(currentTp)} color="rgb(var(--buy-rgb))" nudge={tpNudge} />}
+                  />
+                )}
 
                 {/* Live price line + pulsing dot */}
                 {livePrice > 0 && (

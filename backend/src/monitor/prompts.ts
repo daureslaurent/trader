@@ -99,14 +99,27 @@ ${horizonBehavior}
   - When trailing the stop, aim to stay near -${cfg.slPct.toFixed(1)}% from the recent high, not from entry.
 ` : ''
 
+  const breakEvenTrigger = useHorizon ? (cfg.tpPct / 2).toFixed(1) : '3.0'
+
+  const profitProtection = `── Profit protection (apply in order) ───────────────────────────────────────
+- Once P&L ≥ +${breakEvenTrigger}%, the stop must sit at break-even or better (SL ≥ entry price).
+  If it doesn't, ADJUST now — never let a meaningful winner turn into a loser.
+- While in profit, the stop only ratchets UP. Never widen the SL or lower the TP of a winning position.
+- Lock gains against the price structure: trail under the most recent higher low or SMA7,
+  not a fixed % below a spike high.`
+
   const hardRules = useHorizon
-    ? `── Hard risk rules (engine-enforced) ────────────────────────────────────────
+    ? `${profitProtection}
+
+── Hard risk rules (engine-enforced) ────────────────────────────────────────
 - Stop-loss loosening is capped at -${cfg.slPct.toFixed(1)}% from current price (the horizon floor).
   Only loosen when volatility has expanded or the original stop was structurally wrong.
   Prefer tightening (trailing) when the trend is intact.
 - new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
 - Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).`
-    : `── Hard risk rules (engine-enforced) ────────────────────────────────────────
+    : `${profitProtection}
+
+── Hard risk rules (engine-enforced) ────────────────────────────────────────
 - new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
 - Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).`
 
@@ -134,6 +147,12 @@ ADJUST     Keep the position but update stop-loss and/or take-profit.
            below are already shown in this same %-from-current-price frame: to leave a
            level unchanged, repeat its shown value; do not echo it as a fresh change.
 HOLD       No change. Trend intact, SL buffer healthy, no compelling reason to act.
+
+── Decision consistency ──────────────────────────────────────────────────────
+The past 3 decisions are provided for context. Use them to:
+- Avoid flip-flopping: if you just HOLDed and nothing structural has changed, HOLD again.
+- Recognize a trend: repeated HOLD + rising price → trail the stop UP (ADJUST), don't keep holding a stale SL.
+- Not repeat the same ADJUST twice in a row if price barely moved since the last one.
 ${horizonSection}
 ${hardRules}
 
@@ -216,18 +235,29 @@ ATR(14):  $${fmtPrice(p.atr14)} | SMA7: $${fmtPrice(p.sma7)} | SMA25: $${fmtPric
 ${rows.join('\n')}`
   }
 
-  // ── Previous monitor decision ─────────────────────────────────────────────
+  // ── Previous monitor decisions (up to 3, relative age) ───────────────────
   let prevDecisionText = ''
   if (history.length > 0) {
-    const last = history[0]
-    const when = (() => {
-      if (utcOffsetHours === 0) return last.created_at.slice(0, 16)
-      const ms = new Date(last.created_at.replace(' ', 'T') + 'Z').getTime()
-      return new Date(ms + utcOffsetHours * 3600000).toISOString().replace('T', ' ').slice(0, 16)
-    })()
-    prevDecisionText = `\n\n── Previous monitor decision (${when}) ───────────────────────────────────────
-Action: ${last.action} (conf ${last.confidence.toFixed(2)})
-Reasoning: ${last.reasoning}`
+    const nowMs = Date.now()
+    const rows = history.map((rev, i) => {
+      const ageMs = nowMs - new Date(rev.created_at.replace(' ', 'T') + 'Z').getTime()
+      const ageH = ageMs / 3_600_000
+      const ago = ageH < 1
+        ? `${Math.round(ageMs / 60_000)}m ago`
+        : ageH < 48
+          ? `${Math.round(ageH)}h ago`
+          : `${Math.round(ageH / 24)}d ago`
+      const slDelta = rev.new_stop_loss != null && rev.old_stop_loss != null
+        ? ` · SL ${rev.old_stop_loss > rev.new_stop_loss ? '▼' : '▲'} $${fmtPrice(rev.new_stop_loss)}`
+        : rev.new_stop_loss != null ? ` · SL set $${fmtPrice(rev.new_stop_loss)}` : ''
+      const tpDelta = rev.new_take_profit != null && rev.old_take_profit != null
+        ? ` · TP ${rev.old_take_profit > rev.new_take_profit ? '▼' : '▲'} $${fmtPrice(rev.new_take_profit)}`
+        : rev.new_take_profit != null ? ` · TP set $${fmtPrice(rev.new_take_profit)}` : ''
+      const label = i === 0 ? 'Latest' : `${i + 1}. earlier`
+      return `${label} (${ago}): ${rev.action} conf=${rev.confidence.toFixed(2)}${slDelta}${tpDelta}\n  "${rev.reasoning}"`
+    })
+    prevDecisionText = `\n\n── Past monitor decisions (newest first) ────────────────────────────────────
+${rows.join('\n')}`
   }
 
   const user = `Review this open position and recommend an action:\n\n${positionText}${candleHistoryText}${prevDecisionText}\n\nRespond with a single JSON object.`

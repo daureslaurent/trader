@@ -22,8 +22,11 @@ interface TradeResult {
 
 export default function Trade() {
   // Form state
-  const [coinInput, setCoinInput] = useState('BTC')
-  const [symbol, setSymbol] = useState('BTC/USDC')
+  const [coinInput, setCoinInput] = useState(() => localStorage.getItem('trade_coin') ?? 'BTC')
+  const [symbol, setSymbol] = useState(() => {
+    const saved = localStorage.getItem('trade_coin')
+    return saved ? `${saved}/USDC` : 'BTC/USDC'
+  })
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
   const [amount, setAmount] = useState('')
   const [priceLoading, setPriceLoading] = useState(false)
@@ -49,6 +52,8 @@ export default function Trade() {
   const price: PriceData | null = liveSnap
     ? { symbol, price: liveSnap.price, change24h: liveSnap.change24h }
     : seedPrice
+
+  useEffect(() => { localStorage.setItem('trade_coin', symbol.replace('/USDC', '')) }, [symbol])
 
   const base = symbol.replace('/USDC', '')
 
@@ -160,10 +165,10 @@ export default function Trade() {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="h-full flex flex-col gap-6 animate-fade-in">
 
       {/* Price candlestick chart with analyst signals overlaid */}
-      <Card noPad>
+      <Card noPad className="shrink-0">
         <div className="px-5 pt-5 pb-2">
           <CardHeader
             title={`${base}/USDC`}
@@ -174,10 +179,10 @@ export default function Trade() {
       </Card>
 
       {/* Trade form + Trade history */}
-      <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6 items-start">
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-6">
 
         {/* Trade form */}
-        <div className="space-y-4">
+        <div className="space-y-4 overflow-y-auto">
 
           {/* Pair selector */}
           <div className="bg-surface-card border border-border rounded-2xl neon-border p-4 space-y-3">
@@ -379,7 +384,7 @@ export default function Trade() {
         </div>
 
         {/* Trade history */}
-        <Card noPad>
+        <Card noPad className="h-full flex flex-col overflow-hidden">
           <div className="px-5 pt-5 pb-3">
             <CardHeader title="Trade History" subtitle={`${trades.length} total`} />
             <div className="flex items-center justify-between -mt-2">
@@ -424,7 +429,7 @@ export default function Trade() {
               )}
             </div>
           </div>
-          <div className="px-5 pb-5">
+          <div className="px-5 pb-5 overflow-y-auto flex-1 min-h-0">
             <TradeHistory trades={filteredTrades} />
           </div>
         </Card>

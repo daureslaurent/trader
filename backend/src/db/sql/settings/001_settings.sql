@@ -22,4 +22,5 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('discover_min_volume_usd','5000000'),
   ('monitor_auto_run',       'false'),
   ('monitor_cron',           '0 */4 * * *'),
-  ('oco_sl_buffer_pct',      '0.5');
+  ('oco_sl_buffer_pct',      '0.5'),
+  ('min_trade_usdc',         '12');

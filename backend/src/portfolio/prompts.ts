@@ -60,14 +60,23 @@ export function buildAnalysisPrompt(
   const system = `You are a crypto trading decision engine. Date: ${now}.
 The market regime, technical indicators, and risk levels are ALREADY computed and given to you as facts — do not recompute or second-guess them. Decide only ONE thing: whether to BUY, SELL, or HOLD this coin now.
 
-RULES
-- BUY only with MEDIUM/HIGH confidence, a free slot, and regime + catalysts aligned in your favour.
-- SELL only on a clear negative catalyst, severe overextension, or an imminent stop-out. Never SELL a coin not held.
-- HOLD when signals are mixed or conviction is low — a missed move beats a bad trade.
-- Never add to a losing position unless the thesis has materially improved.
+PROFIT DISCIPLINE
+- Every round trip costs ~0.2% in fees plus slippage. Only trade when the expected edge clearly exceeds that cost; HOLD is the correct call on most cycles. Overtrading erodes returns faster than missed moves.
+- Trade WITH the regime. The best long entries are pullbacks toward SMA7/SMA25 within an uptrend — not vertical green candles, not falling knives.
+
+BUY only when ALL of these hold:
+- MEDIUM/HIGH confidence, a free slot, and regime + catalyst aligned in your favour.
+- Not chasing: avoid buying when momentum is overbought (RSI ≥ 70) or price is stretched far above SMA7 after a sharp run — that is where pumps top out.
+- In a downtrend or ranging regime, a BUY needs a concrete fresh catalyst (adoption, upgrade, listing, partnership) — oversold alone is not a reason.
+
+SELL only when:
+- A clear negative catalyst (hack, regulatory action, broken fundamentals), a confirmed trend reversal against the position, or severe overextension. Ordinary downside is already covered by the stop-loss — do not SELL on noise.
+- Never SELL a coin not held. Never add to a losing position unless the thesis has materially improved.
+
+HOLD when signals are mixed or conviction is low — a missed move beats a bad trade.
 
 CONFIDENCE
-- HIGH: multiple confirming factors and a clear catalyst.
+- HIGH: regime, technicals, and a concrete catalyst all point the same way.
 - MEDIUM: a moderate edge with reasonable risk/reward.
 - LOW: weak or conflicting — prefer HOLD.
 
@@ -83,11 +92,14 @@ OUTPUT — JSON only, no markdown, no extra keys:
     ? `\nLiquidity: ${orderBook.liquidityScore.toUpperCase()} (spread ${orderBook.spreadPct.toFixed(3)}%)`
     : ''
 
+  const volM = `$${(market.volume / 1_000_000).toFixed(1)}M`
+  const stretchPct = market.sma7 > 0 ? ((market.price - market.sma7) / market.sma7 * 100) : 0
+
   const user = `COIN: ${coin.replace('/USDC', '')}
 
 REGIME (precomputed): ${regime.summary}
-Price $${market.price} | 24h ${ch24} | 7d ${p7}
-SMA7 $${market.sma7} | SMA25 $${market.sma25}${market.sma99 ? ` | SMA99 $${market.sma99}` : ''} | ATR14 $${market.atr14}${orderBookLine}
+Price $${market.price} | 24h ${ch24} | 7d ${p7} | 24h vol ${volM}
+SMA7 $${market.sma7} (price ${stretchPct >= 0 ? '+' : ''}${stretchPct.toFixed(2)}% vs SMA7) | SMA25 $${market.sma25}${market.sma99 ? ` | SMA99 $${market.sma99}` : ''} | ATR14 $${market.atr14}${orderBookLine}
 
 POSITION: ${coinPositionBlock}
 PORTFOLIO: ${portfolio.openPositionCount}/${portfolio.maxOpenPositions} slots used (${openSlots} free) | other holdings: ${otherPositionsList}
