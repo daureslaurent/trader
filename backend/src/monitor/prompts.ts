@@ -1,5 +1,6 @@
 import { PositionReview } from '../types.js'
 import { Candle } from '../market/index.js'
+import { minStopGapPct } from '../portfolio/risk.js'
 
 export interface PositionContext {
   positionId: number | null
@@ -33,6 +34,11 @@ export interface HorizonConfig {
 
 export type HorizonConfigs = Record<'short' | 'medium' | 'long', HorizonConfig>
 
+export interface MonitorNotes {
+  notes: string
+  updated_at: string
+}
+
 export function fmtOffsetLabel(offsetHours: number): string {
   if (offsetHours === 0) return 'UTC'
   const sign = offsetHours > 0 ? '+' : '-'
@@ -62,7 +68,7 @@ const HORIZON_BEHAVIOR: Record<'short' | 'medium' | 'long', string> = {
   - Standard risk management — balance protection against normal market noise.
   - Hold through minor pullbacks if the trend and RSI are broadly intact.
   - Trail stop conservatively (below SMA25 or ATR×2 from price) once meaningfully in profit.
-  - CLOSE only on confirmed trend reversal or if SL is imminent (<2% away).`,
+  - CLOSE only on confirmed trend reversal — otherwise let the stop-loss handle downside exits.`,
 
   long: `LONG horizon (months to years):
   - Patient positioning — short-term noise should not trigger action.
@@ -80,6 +86,9 @@ export function buildMonitorPrompt(
   utcOffsetHours = 0,
   candles: Candle[] = [],
   candleTf = '1h',
+  reviewIntervalMin: number | null = null,
+  notes: MonitorNotes | null = null,
+  breakevenPct = 3,
 ): { system: string; user: string } {
   const effectiveHorizon: 'short' | 'medium' | 'long' =
     (position.horizon === 'disabled' || position.horizon === 'llm') ? 'medium' : position.horizon
@@ -99,11 +108,16 @@ ${horizonBehavior}
   - When trailing the stop, aim to stay near -${cfg.slPct.toFixed(1)}% from the recent high, not from entry.
 ` : ''
 
-  const breakEvenTrigger = useHorizon ? (cfg.tpPct / 2).toFixed(1) : '3.0'
+  const breakEvenTrigger = useHorizon ? (cfg.tpPct / 2).toFixed(1) : breakevenPct.toFixed(1)
+  const minGap = minStopGapPct(useHorizon ? cfg.slPct : null).toFixed(1)
 
   const profitProtection = `── Profit protection (apply in order) ───────────────────────────────────────
 - Once P&L ≥ +${breakEvenTrigger}%, the stop must sit at break-even or better (SL ≥ entry price).
   If it doesn't, ADJUST now — never let a meaningful winner turn into a loser.
+- BELOW +${breakEvenTrigger}% P&L, do NOT move the stop to break-even "to protect" a tiny gain —
+  a stop within noise distance of the price guarantees a fee-paying scratch exit.
+  The engine rejects break-even stops before +${breakEvenTrigger}% and any stop closer than
+  ${minGap}% to the current price. Leave the original stop alone and let the trade breathe.
 - While in profit, the stop only ratchets UP. Never widen the SL or lower the TP of a winning position.
 - Lock gains against the price structure: trail under the most recent higher low or SMA7,
   not a fixed % below a spike high.`
@@ -112,6 +126,9 @@ ${horizonBehavior}
     ? `${profitProtection}
 
 ── Hard risk rules (engine-enforced) ────────────────────────────────────────
+- While the position is in profit, the engine REJECTS any SL loosening or TP lowering.
+- The engine also rejects loosening shortly after a tightening — pick ONE trailing
+  distance and stick with it; do not alternate between distances across reviews.
 - Stop-loss loosening is capped at -${cfg.slPct.toFixed(1)}% from current price (the horizon floor).
   Only loosen when volatility has expanded or the original stop was structurally wrong.
   Prefer tightening (trailing) when the trend is intact.
@@ -120,6 +137,9 @@ ${horizonBehavior}
     : `${profitProtection}
 
 ── Hard risk rules (engine-enforced) ────────────────────────────────────────
+- While the position is in profit, the engine REJECTS any SL loosening or TP lowering.
+- The engine also rejects loosening shortly after a tightening — pick ONE trailing
+  distance and stick with it; do not alternate between distances across reviews.
 - new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
 - Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).`
 
@@ -127,12 +147,22 @@ ${horizonBehavior}
     ? 'untouched side as-is (or seeds it from the horizon target if none exists),'
     : 'untouched side as-is (or seeds it from ATR/SMAs if none exists),'
 
+  const cadenceText = reviewIntervalMin != null
+    ? reviewIntervalMin < 60
+      ? `every ${reviewIntervalMin} minutes`
+      : `every ${Math.round(reviewIntervalMin / 60)} hour(s)`
+    : 'periodically'
+
   const system = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST, REDUCE, or CLOSE.
 
 ── Actions ──────────────────────────────────────────────────────────────────
-CLOSE      Exit entirely. Use when SL is imminent (<2% away), trend reversed to downtrend
-           with negative momentum, or deeply underwater with no recovery signals.
-REDUCE     Partial exit. Set reduce_to_pct (integer: % of current size to keep, e.g. 50 = keep half).
+CLOSE      Exit the whole position now (market sell). Use on confirmed trend reversal
+           with negative momentum, or when deeply underwater with no recovery signals.
+           Do NOT close merely because price is approaching the stop-loss — the
+           exchange-side stop exists exactly for that; closing early converts every
+           ordinary dip into a realized loss.
+REDUCE     Partial exit now (market sell of part of the position). REQUIRED:
+           reduce_to_pct (integer: % of current size to KEEP, e.g. 50 = keep half, sell half).
            Use to lock in gains near TP, or to de-risk a weakening position.
 ADJUST     Keep the position but update stop-loss and/or take-profit.
            Use to trail the stop UP as price rises, extend TP in a strong trend,
@@ -141,18 +171,33 @@ ADJUST     Keep the position but update stop-loss and/or take-profit.
            absolute USD, never relative to entry):
              new_stop_loss_pct   — negative = below current price (e.g. -3.5 → SL 3.5% below)
              new_take_profit_pct — positive = above current price (e.g. +8.0 → TP 8% above)
-           Adjust just one side by setting the other to null — the engine keeps the
+           null means "leave this side unchanged" — the engine keeps the
            ${adjustSeedNote}
-           so a complete stop+target pair is always maintained. The "Stop"/"TP" lines
-           below are already shown in this same %-from-current-price frame: to leave a
-           level unchanged, repeat its shown value; do not echo it as a fresh change.
+           so a complete stop+target pair is always maintained. NEVER re-state the
+           current level as a "new" value: only propose a level that differs from the
+           shown one by at least 0.5%; otherwise use HOLD or set that side to null.
 HOLD       No change. Trend intact, SL buffer healthy, no compelling reason to act.
 
 ── Decision consistency ──────────────────────────────────────────────────────
+This review runs automatically ${cadenceText}. The default outcome of any single
+review is HOLD — act only when something structural changed since the last review.
 The past 3 decisions are provided for context. Use them to:
 - Avoid flip-flopping: if you just HOLDed and nothing structural has changed, HOLD again.
 - Recognize a trend: repeated HOLD + rising price → trail the stop UP (ADJUST), don't keep holding a stale SL.
 - Not repeat the same ADJUST twice in a row if price barely moved since the last one.
+
+── Persistent notes (your memory) ───────────────────────────────────────────
+You keep ONE persistent note for this position. Unlike the decision history
+(only the last 3 reviews), the note survives every review until the position
+closes — it is your long-term memory. Use it for durable facts you will need
+in future reviews: the position thesis, key support/resistance levels, the
+swing high you are trailing against, invalidation conditions, what to watch.
+- The "notes" output field REPLACES the stored note entirely. Always rewrite
+  the complete note — never a diff or an addition.
+- Return "notes": null to keep the existing note unchanged.
+- Keep it under 500 characters. Terse facts and levels, not prose.
+- Refresh it when something durable changes (new swing high, level broken,
+  thesis weakening). A stale note is worse than none.
 ${horizonSection}
 ${hardRules}
 
@@ -164,9 +209,11 @@ Return a single JSON object — no markdown, no extra keys:
   "reasoning": "Up 6.2%, uptrend intact, RSI 61. Trailing stop to 3% below current price.",
   "reduce_to_pct": null,
   "new_stop_loss_pct": -3.0,
-  "new_take_profit_pct": null
+  "new_take_profit_pct": null,
+  "notes": "Thesis: breakout above $3.20 held. Trailing vs swing high $3.42. Invalidation: 1h close below $3.05. Watch RSI cooling from 70."
 }
-Use null for new_stop_loss_pct / new_take_profit_pct when not changing them.`
+Use null for new_stop_loss_pct / new_take_profit_pct when not changing them,
+and null for notes to keep the stored note as-is.`
 
   const p = position
   const pnlSign = p.pnlPct >= 0 ? '+' : ''
@@ -235,6 +282,23 @@ ATR(14):  $${fmtPrice(p.atr14)} | SMA7: $${fmtPrice(p.sma7)} | SMA25: $${fmtPric
 ${rows.join('\n')}`
   }
 
+  // ── Persistent notes (LLM's own memory from previous reviews) ────────────
+  let notesText = ''
+  if (notes) {
+    const ageMs = Date.now() - new Date(notes.updated_at.replace(' ', 'T') + 'Z').getTime()
+    const ageH = ageMs / 3_600_000
+    const ago = ageH < 1
+      ? `${Math.round(ageMs / 60_000)}m ago`
+      : ageH < 48
+        ? `${Math.round(ageH)}h ago`
+        : `${Math.round(ageH / 24)}d ago`
+    notesText = `\n\n── Your persistent notes (written by you, ${ago}) ───────────────────────────
+${notes.notes}`
+  } else {
+    notesText = `\n\n── Your persistent notes ─────────────────────────────────────────────────────
+(none yet — write the initial note: thesis, key levels, invalidation conditions)`
+  }
+
   // ── Previous monitor decisions (up to 3, relative age) ───────────────────
   let prevDecisionText = ''
   if (history.length > 0) {
@@ -260,7 +324,7 @@ ${rows.join('\n')}`
 ${rows.join('\n')}`
   }
 
-  const user = `Review this open position and recommend an action:\n\n${positionText}${candleHistoryText}${prevDecisionText}\n\nRespond with a single JSON object.`
+  const user = `Review this open position and recommend an action:\n\n${positionText}${candleHistoryText}${notesText}${prevDecisionText}\n\nRespond with a single JSON object.`
 
   return { system, user }
 }

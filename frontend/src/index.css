@@ -4,21 +4,25 @@
 
 /* ============================================================
    THEMES  — applied via data-theme attribute on <html>
+   Each theme defines a primary accent + secondary accent (accent2)
+   used for gradients, plus a theme-aware card shadow.
    ============================================================ */
 
 :root,
 [data-theme='dark'] {
   --surface-base: #09090b;
-  --surface-card: #111115;
-  --surface-elevated: #18181c;
-  --surface-hover: #1e1e24;
+  --surface-card: #111114;
+  --surface-elevated: #18181d;
+  --surface-hover: #1f1f26;
   --accent-rgb: 34 197 94;
+  --accent2-rgb: 45 212 191;
   --buy-rgb: 34 197 94;
   --sell-rgb: 239 68 68;
   --warn-rgb: 245 158 11;
   --foreground: #fafafa;
-  --muted-fg: #71717a;
-  --border-color: rgba(255, 255, 255, 0.06);
+  --muted-fg: #7c7c87;
+  --border-color: rgba(255, 255, 255, 0.07);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 30px -12px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
 }
 
@@ -28,12 +32,14 @@
   --surface-elevated: #111e38;
   --surface-hover: #162544;
   --accent-rgb: 96 165 250;
+  --accent2-rgb: 167 139 250;
   --buy-rgb: 52 211 153;
   --sell-rgb: 248 113 113;
   --warn-rgb: 251 191 36;
   --foreground: #e2e8f0;
-  --muted-fg: #64748b;
+  --muted-fg: #6b7e99;
   --border-color: rgba(96, 165, 250, 0.1);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px -12px rgba(2, 8, 23, 0.6);
   color-scheme: dark;
 }
 
@@ -43,12 +49,14 @@
   --surface-elevated: #0f1830;
   --surface-hover: #141f3a;
   --accent-rgb: 34 211 238;
+  --accent2-rgb: 192 132 252;
   --buy-rgb: 74 222 128;
   --sell-rgb: 248 113 113;
   --warn-rgb: 251 191 36;
   --foreground: #f0f9ff;
-  --muted-fg: #4c7399;
+  --muted-fg: #557ea6;
   --border-color: rgba(34, 211, 238, 0.08);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px -12px rgba(3, 7, 18, 0.6);
   color-scheme: dark;
 }
 
@@ -58,12 +66,31 @@
   --surface-elevated: #1a1530;
   --surface-hover: #221d3c;
   --accent-rgb: 168 85 247;
+  --accent2-rgb: 129 140 248;
   --buy-rgb: 52 211 153;
   --sell-rgb: 251 113 133;
   --warn-rgb: 251 191 36;
   --foreground: #f0ebff;
-  --muted-fg: #7c6fa0;
+  --muted-fg: #8a7cb0;
   --border-color: rgba(168, 85, 247, 0.12);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px -12px rgba(13, 8, 20, 0.6);
+  color-scheme: dark;
+}
+
+[data-theme='synthwave'] {
+  --surface-base: #0a0118;
+  --surface-card: #120524;
+  --surface-elevated: #1a0b33;
+  --surface-hover: #231040;
+  --accent-rgb: 236 72 153;
+  --accent2-rgb: 251 146 60;
+  --buy-rgb: 52 211 153;
+  --sell-rgb: 248 113 113;
+  --warn-rgb: 250 204 21;
+  --foreground: #fdf2f8;
+  --muted-fg: #9b7ab8;
+  --border-color: rgba(236, 72, 153, 0.12);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px -12px rgba(236, 72, 153, 0.12);
   color-scheme: dark;
 }
 
@@ -73,12 +100,14 @@
   --surface-elevated: #f1f5f9;
   --surface-hover: #e9eef5;
   --accent-rgb: 22 163 74;
+  --accent2-rgb: 13 148 136;
   --buy-rgb: 22 163 74;
   --sell-rgb: 220 38 38;
   --warn-rgb: 217 119 6;
   --foreground: #0f172a;
   --muted-fg: #64748b;
   --border-color: #e2e8f0;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px -12px rgba(15, 23, 42, 0.1);
   color-scheme: light;
 }
 
@@ -113,6 +142,52 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+::selection {
+  background: rgb(var(--accent-rgb) / 0.25);
+}
+
+/* Ambient backdrop — soft accent glows behind the whole app */
+body::before {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 60% 42% at 78% -10%, rgb(var(--accent-rgb) / 0.08) 0%, transparent 70%),
+    radial-gradient(ellipse 44% 32% at -10% 70%, rgb(var(--accent2-rgb) / 0.06) 0%, transparent 70%);
+}
+
+[data-theme='light'] body::before {
+  background:
+    radial-gradient(ellipse 60% 42% at 78% -10%, rgb(var(--accent-rgb) / 0.05) 0%, transparent 70%),
+    radial-gradient(ellipse 44% 32% at -10% 70%, rgb(var(--accent2-rgb) / 0.04) 0%, transparent 70%);
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* ============================================================
+   UTILITIES
+   ============================================================ */
+
+/* Frosted glass surface (sticky header, overlays) */
+.glass {
+  background: color-mix(in srgb, var(--surface-card) 78%, transparent);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+}
+
+/* Gradient text using the theme accent pair */
+.text-gradient {
+  background: linear-gradient(135deg, rgb(var(--accent-rgb)) 0%, rgb(var(--accent2-rgb)) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 /* ============================================================
    NEON THEME — subtle glow accents
    ============================================================ */
@@ -134,10 +209,6 @@ body {
   border-right-color: rgba(168, 85, 247, 0.14);
 }
 
-[data-theme='aurora'] aside .aurora-brand {
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.2) 0%, rgba(99, 102, 241, 0.15) 100%);
-}
-
 @keyframes aurora-pulse {
   0%, 100% { opacity: 0.6; }
   50%       { opacity: 1; }
@@ -147,18 +218,35 @@ body {
   animation: aurora-pulse 2.5s ease-in-out infinite;
 }
 
-[data-theme='aurora'] body::before {
+/* ============================================================
+   SYNTHWAVE THEME — retro-futuristic sunset glow + horizon grid
+   ============================================================ */
+
+[data-theme='synthwave'] body::before {
+  background:
+    radial-gradient(ellipse 60% 42% at 78% -10%, rgb(var(--accent-rgb) / 0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 44% 32% at -10% 70%, rgb(var(--accent2-rgb) / 0.08) 0%, transparent 70%);
+}
+
+/* Faint perspective grid fading up from the bottom edge */
+[data-theme='synthwave'] body::after {
   content: '';
   pointer-events: none;
   position: fixed;
   inset: 0;
-  background:
-    radial-gradient(ellipse 60% 40% at 70% -10%, rgba(168, 85, 247, 0.07) 0%, transparent 70%),
-    radial-gradient(ellipse 40% 30% at -10% 60%, rgba(99, 102, 241, 0.06) 0%, transparent 70%);
   z-index: 0;
+  background:
+    repeating-linear-gradient(90deg, rgb(var(--accent-rgb) / 0.05) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(0deg, rgb(var(--accent-rgb) / 0.05) 0 1px, transparent 1px 48px);
+  mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, transparent 28%);
+  -webkit-mask-image: linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, transparent 28%);
 }
 
-[data-theme='aurora'] #root {
-  position: relative;
-  z-index: 1;
+[data-theme='synthwave'] aside {
+  background: linear-gradient(180deg, #170628 0%, #120524 100%);
+  border-right-color: rgba(236, 72, 153, 0.16);
+}
+
+[data-theme='synthwave'] .neon-border {
+  box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.2), 0 0 20px rgba(236, 72, 153, 0.07);
 }

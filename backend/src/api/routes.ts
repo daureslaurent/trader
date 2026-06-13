@@ -8,7 +8,7 @@ import { logger } from '../core/logger.js'
 import { Signal, PortfolioEntry } from '../types.js'
 import * as priceCache from '../market/index.js'
 import { getDiscoveries, approveDiscovery, rejectDiscovery, deleteDiscovery, isRunning } from '../discoverer/index.js'
-import { getReviews, isRunning as isMonitorRunning } from '../monitor/index.js'
+import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning } from '../monitor/index.js'
 import { isPipelineRunning, getPendingApprovals } from '../index.js'
 import { isTradeable } from '../core/tradeable.js'
 
@@ -306,6 +306,28 @@ router.get('/portfolio/history', (_req: Request, res: Response) => {
   }
 })
 
+router.get('/portfolio/snapshots', (req: Request, res: Response) => {
+  try {
+    const RANGES: Record<string, string> = {
+      '24h': '-24 hours',
+      '7d': '-7 days',
+      '30d': '-30 days',
+    }
+    const range = String(req.query.range ?? 'all')
+    const modifier = RANGES[range]
+    const rows = (modifier
+      ? queryAll(
+          "SELECT total_value_usd, created_at FROM portfolio_snapshots WHERE created_at >= datetime('now', ?) ORDER BY created_at ASC",
+          [modifier]
+        )
+      : queryAll('SELECT total_value_usd, created_at FROM portfolio_snapshots ORDER BY created_at ASC')
+    ) as { total_value_usd: number; created_at: string }[]
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
 router.get('/positions', (_req: Request, res: Response) => {
   try {
     const positions = queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as Record<string, unknown>[]
@@ -335,6 +357,7 @@ router.get('/positions', (_req: Request, res: Response) => {
         status: pos.status,
         horizon: pos.horizon ?? 'medium',
         oco_status: pos.oco_status ?? 'NONE',
+        created_at: pos.created_at,
       }
     })
     res.json(enriched)
@@ -817,7 +840,7 @@ router.get('/monitor', (_req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((_req.query.limit as string) || '100', 10), 1), 500)
     const reviews = getReviews(limit)
-    res.json({ running: isMonitorRunning(), reviews })
+    res.json({ running: isMonitorRunning(), reviews, notes: getMonitorNotes() })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
@@ -827,6 +850,21 @@ router.post('/monitor/run', (_req: Request, res: Response) => {
   const cycleId = `${Date.now().toString(36)}-monitor`
   bus.emit('monitor_run_requested', { cycle_id: cycleId })
   res.json({ ok: true, cycle_id: cycleId })
+})
+
+router.get('/monitor/reviews/:coin', (req: Request, res: Response) => {
+  try {
+    const raw = decodeURIComponent(req.params.coin).trim().toUpperCase()
+    const coin = raw.includes('/') ? raw : `${raw}/USDC`
+    const reviews = queryAll(
+      `SELECT id, coin, action, confidence, reasoning, created_at
+       FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 200`,
+      [coin],
+    )
+    res.json(reviews)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 // ── Position SL/TP adjustments ──────────────────────────────────────────────

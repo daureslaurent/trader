@@ -309,11 +309,19 @@ export function closePositionFromExit(exit: PositionExit): boolean {
     | { entry_price: number; quantity: number; created_at: string }
     | null
 
+  // Exchange fees are not reported for OCO fills, so estimate from the configured
+  // rate: one side on the entry notional, one on the exit notional. Without this
+  // every scratch exit shows pnl = 0 when it actually lost the round-trip cost.
+  const feeRate = getSettings().fee_rate
+  const feeEst = preClose != null
+    ? feeRate * exit.fillQty * (preClose.entry_price + exit.fillPrice)
+    : 0
+
   // Atomic: position close + ledger update + USDC credit
   const committed = withTransaction(() => {
     const r = runSQL(
-      "UPDATE positions SET status = ?, pnl = (quantity * (? - entry_price)) WHERE id = ? AND status = 'OPEN'",
-      [exit.status, exit.fillPrice, exit.positionId]
+      "UPDATE positions SET status = ?, pnl = (quantity * (? - entry_price)) - ? WHERE id = ? AND status = 'OPEN'",
+      [exit.status, exit.fillPrice, feeEst, exit.positionId]
     )
     if (r.changes === 0) return false  // already closed by a concurrent pass
 
@@ -344,9 +352,12 @@ export function closePositionFromExit(exit: PositionExit): boolean {
       })
     }
 
+    // Estimated sell-side fee; the USDC credit above stays gross because the
+    // periodic Binance balance sync only ever corrects downward — under-crediting
+    // would register as a phantom external withdrawal.
     runSQL(
-      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-      [exit.coin, exit.fillQty, exit.fillPrice, exit.fillPrice * exit.fillQty]
+      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, ?, 'USDC', 'EXECUTED', 1)",
+      [exit.coin, exit.fillQty, exit.fillPrice, exit.fillPrice * exit.fillQty, feeRate * exit.fillPrice * exit.fillQty]
     )
     return true
   })

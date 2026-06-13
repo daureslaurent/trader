@@ -3,13 +3,13 @@ import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
 import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
-import { validateSlTpAdjustment } from '../portfolio/risk.js'
+import { validateSlTpAdjustment, minStopGapPct } from '../portfolio/risk.js'
 import * as priceCache from '../market/index.js'
 import { getOHLCV, isTimeframe } from '../market/index.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
 import { PositionReview } from '../types.js'
-import { buildMonitorPrompt, fmtOffsetLabel, PositionContext, HorizonConfigs } from './prompts.js'
+import { buildMonitorPrompt, fmtOffsetLabel, PositionContext, HorizonConfigs, MonitorNotes } from './prompts.js'
 import { LLMError } from '../core/errors.js'
 import { config } from '../config/index.js'
 
@@ -25,7 +25,13 @@ interface RawReview {
   // #2a: LLM returns percentages relative to current price — engine converts to abs prices
   new_stop_loss_pct?: number | null
   new_take_profit_pct?: number | null
+  // Persistent per-coin memory: a non-empty string replaces the stored note, null keeps it
+  notes?: string | null
 }
+
+// Hard cap on stored note size — the prompt asks for ≤500 chars, this guards
+// against a runaway model flooding the prompt of every future review.
+const MAX_NOTES_LENGTH = 1000
 
 function parseReview(content: string): RawReview {
   const stripped = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
@@ -53,6 +59,22 @@ function parseReview(content: string): RawReview {
   return candidate as unknown as RawReview
 }
 
+// Approximate review cadence from the monitor cron expression, for the prompt.
+// Returns minutes between runs, or null when the pattern isn't a simple interval.
+function cronIntervalMinutes(expr: string): number | null {
+  const parts = expr.trim().split(/\s+/)
+  if (parts.length !== 5) return null
+  const [min, hour, dom, mon, dow] = parts
+  if (dom !== '*' || mon !== '*' || dow !== '*') return null
+  const everyMin = min.match(/^\*\/(\d+)$/)
+  if (everyMin && hour === '*') return parseInt(everyMin[1], 10)
+  if (min === '*' && hour === '*') return 1
+  const everyHour = hour.match(/^\*\/(\d+)$/)
+  if (everyHour && /^\d+$/.test(min)) return parseInt(everyHour[1], 10) * 60
+  if (/^\d+$/.test(min) && hour === '*') return 60
+  return null
+}
+
 function pruneMonitorHistory(maxCycles = 20): void {
   runSQL(`
     DELETE FROM position_reviews
@@ -75,11 +97,21 @@ async function monitorCoin(
   horizonConfigs: HorizonConfigs,
   historyTf: string,
   historyCount: number,
+  minConfidence: number,
+  reviewIntervalMin: number | null,
+  breakevenPct: number,
+  feeRate: number,
+  adjustCooldownMin: number,
 ): Promise<PositionReview | null> {
   const history = queryAll(
     'SELECT * FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 3',
     [ctx.coin],
   ) as unknown as PositionReview[]
+
+  const storedNotes = queryOne(
+    'SELECT notes, updated_at FROM monitor_notes WHERE coin = ?',
+    [ctx.coin],
+  ) as MonitorNotes | null
 
   const tf = isTimeframe(historyTf) ? historyTf : '1h'
   const count = Math.max(1, Math.min(100, historyCount))
@@ -90,7 +122,7 @@ async function monitorCoin(
     logger.warn('Failed to fetch candle history for monitor prompt', { coin: ctx.coin, tf, error: (err as Error).message })
   }
 
-  const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf)
+  const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf, reviewIntervalMin, storedNotes, breakevenPct)
 
   logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, model: config.monitor.model })
 
@@ -141,9 +173,50 @@ async function monitorCoin(
   if (!raw) throw new LLMError('Monitor returned no valid review after retries')
 
   const confidence = Math.min(1, Math.max(0, raw.confidence))
-  const reduceToPct = raw.action === 'REDUCE' && typeof raw.reduce_to_pct === 'number'
+  let reduceToPct = raw.action === 'REDUCE' && typeof raw.reduce_to_pct === 'number'
     ? Math.min(99, Math.max(1, Math.round(raw.reduce_to_pct)))
     : null
+
+  // Downgrade actions the engine cannot or should not execute. The stored review keeps
+  // an honest record — otherwise the LLM sees its own unexecuted CLOSE/REDUCE in the
+  // decision history and assumes it already happened.
+  if (raw.action !== 'HOLD' && ctx.positionId == null) {
+    logger.warn('Monitor action has no position record to act on — storing as HOLD', { coin: ctx.coin, action: raw.action })
+    raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} not executable — no position record] ${raw.reasoning}` }
+    reduceToPct = null
+  }
+  if (raw.action === 'REDUCE' && reduceToPct == null) {
+    logger.warn('Monitor REDUCE missing reduce_to_pct — storing as HOLD', { coin: ctx.coin })
+    raw = { ...raw, action: 'HOLD', reasoning: `[REDUCE missing reduce_to_pct — not executed] ${raw.reasoning}` }
+  }
+  if ((raw.action === 'CLOSE' || raw.action === 'REDUCE') && confidence < minConfidence) {
+    logger.warn('Monitor action below confidence threshold — storing as HOLD', { coin: ctx.coin, action: raw.action, confidence, minConfidence })
+    raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} suppressed: confidence ${confidence.toFixed(2)} < required ${minConfidence.toFixed(2)}] ${raw.reasoning}` }
+    reduceToPct = null
+  }
+
+  // Adjustment cooldown: one applied SL/TP change per window, scaled by horizon.
+  // The 5-min review cadence runs a different clock than a medium/long-horizon
+  // trade — without this, the LLM re-trails the stop dozens of times per position
+  // (58× observed), each costing an exchange-side OCO cancel+replace.
+  // Seeding (no SL or TP yet) is exempt: protection must never wait.
+  if (raw.action === 'ADJUST' && ctx.positionId != null && adjustCooldownMin > 0 &&
+      ctx.stopLoss != null && ctx.takeProfit != null) {
+    const horizonFactor = ctx.horizon === 'short' ? 0.5 : ctx.horizon === 'long' ? 2 : 1
+    const cooldownMs = adjustCooldownMin * horizonFactor * 60_000
+    const last = queryOne(
+      "SELECT created_at FROM position_adjustments WHERE position_id = ? AND status = 'APPLIED' ORDER BY id DESC LIMIT 1",
+      [ctx.positionId],
+    ) as { created_at: string } | null
+    if (last) {
+      const elapsed = Date.now() - new Date(last.created_at.replace(' ', 'T') + 'Z').getTime()
+      if (elapsed >= 0 && elapsed < cooldownMs) {
+        const waitMin = Math.ceil((cooldownMs - elapsed) / 60_000)
+        logger.info('Monitor ADJUST suppressed by cooldown', { coin: ctx.coin, positionId: ctx.positionId, waitMin })
+        raw = { ...raw, action: 'HOLD', reasoning: `[ADJUST suppressed: adjustment cooldown, ~${waitMin}m left] ${raw.reasoning}` }
+      }
+    }
+  }
 
   let newStopLoss: number | null = null
   let newTakeProfit: number | null = null
@@ -170,7 +243,10 @@ async function monitorCoin(
 
     if (trustLlm) {
       // Trust mode: bypass risk rules, only enforce SL < price and TP > price.
-      const same = (a: number, b: number) => Math.abs(a - b) <= Math.max(Math.abs(a), Math.abs(b), 1) * 1e-6
+      // 0.25%-of-price deadband: an LLM echoing the displayed (2-dp rounded) level must
+      // not register as a change — each one costs an OCO cancel+replace on the exchange.
+      const deadband = ctx.currentPrice * 0.0025
+      const same = (a: number, b: number) => Math.abs(a - b) <= deadband
       if ((proposedSl != null && proposedSl >= ctx.currentPrice) || (proposedTp != null && proposedTp <= ctx.currentPrice)) {
         logger.warn('ADJUST trust-mode: degenerate SL/TP, downgrading to HOLD', { coin: ctx.coin, proposedSl, proposedTp })
         raw = { ...raw, action: 'HOLD' }
@@ -189,6 +265,12 @@ async function monitorCoin(
         }
       }
     } else {
+      // Anti flip-flop: a recent (≤24h, last 3 reviews) tightening blocks loosening,
+      // so the LLM can't alternate "trail to -2%" / "widen to -3%" every cycle.
+      const slRecentlyTightened = history.some(r =>
+        r.new_stop_loss != null && r.old_stop_loss != null &&
+        r.new_stop_loss > r.old_stop_loss &&
+        Date.now() - new Date(r.created_at.replace(' ', 'T') + 'Z').getTime() < 24 * 3_600_000)
       const validated = validateSlTpAdjustment({
         currentPrice: ctx.currentPrice,
         oldStopLoss: ctx.stopLoss,
@@ -197,6 +279,15 @@ async function monitorCoin(
         proposedTakeProfit: proposedTp,
         // LLM horizon: no floor — the LLM decides its own risk management.
         maxSlPct: isLlmHorizon ? 100 : hcfg.slPct,
+        entryPrice: ctx.entryPrice,
+        slRecentlyTightened,
+        feeRoundTripPct: feeRate * 2 * 100,
+        // Same trigger the prompt's profit-protection rule announces — the engine
+        // rejects break-even stops before it instead of trusting the LLM to wait.
+        breakevenTriggerPct: useHorizon ? hcfg.tpPct / 2 : breakevenPct,
+        // Same gap the prompt announces: horizon-scaled when guidance is on,
+        // the 0.5% floor when the LLM manages risk freely.
+        minSlGapPct: minStopGapPct(useHorizon && !isLlmHorizon ? hcfg.slPct : null),
       })
       if (validated.notes.length > 0) {
         logger.info('SL/TP adjustment validated', { coin: ctx.coin, changed: validated.changed, notes: validated.notes })
@@ -244,6 +335,16 @@ async function monitorCoin(
     return null
   }
 
+  // Persist the LLM's note: a non-empty string replaces the stored one, null/absent keeps it.
+  if (typeof raw.notes === 'string' && raw.notes.trim().length > 0) {
+    const notes = raw.notes.trim().slice(0, MAX_NOTES_LENGTH)
+    runSQL(`
+      INSERT INTO monitor_notes (coin, notes, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(coin) DO UPDATE SET notes = excluded.notes, updated_at = excluded.updated_at
+    `, [ctx.coin, notes])
+    logger.info('Monitor notes updated', { coin: ctx.coin, length: notes.length })
+  }
+
   const { lastInsertRowid } = runSQL(
     'INSERT INTO position_reviews (coin, action, confidence, reasoning, reduce_to_pct, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, market_data, cycle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [ctx.coin, raw.action, confidence, raw.reasoning, reduceToPct, ctx.stopLoss ?? null, ctx.takeProfit ?? null, newStopLoss, newTakeProfit, marketData, cycleId],
@@ -280,6 +381,19 @@ async function monitorCoin(
     })
   }
 
+  // Fire partial exit immediately — don't wait for other coins
+  if (raw.action === 'REDUCE' && ctx.positionId != null && reduceToPct != null) {
+    bus.emit('monitor_reduce_requested', {
+      positionId: ctx.positionId,
+      coin: ctx.coin,
+      currentPrice: ctx.currentPrice,
+      reduceToPct,
+      reasoning: raw.reasoning,
+      confidence,
+      cycleId,
+    })
+  }
+
   // Fire adjustment immediately — don't wait for other coins
   if (proposalToEmit && ctx.positionId != null) {
     bus.emit('position_adjustment_proposed', {
@@ -304,6 +418,7 @@ export function isRunning(): boolean {
 
 export function clearReviewsForCoin(coin: string): void {
   runSQL('DELETE FROM position_reviews WHERE coin = ?', [coin])
+  runSQL('DELETE FROM monitor_notes WHERE coin = ?', [coin])
   logger.info('Monitor history cleared for closed position', { coin })
 }
 
@@ -346,6 +461,11 @@ export async function runMonitor(cycleId: string): Promise<void> {
     const utcOffsetHours = s.utc_offset_hours
     const historyTf = s.monitor_history_tf
     const historyCount = s.monitor_history_count
+    const minConfidence = Math.min(1, Math.max(0, s.monitor_min_confidence))
+    const breakevenPct = s.monitor_breakeven_pct > 0 ? s.monitor_breakeven_pct : 3
+    const feeRate = s.fee_rate
+    const adjustCooldownMin = s.monitor_adjust_cooldown_min
+    const reviewIntervalMin = s.monitor_auto_run ? cronIntervalMinutes(s.monitor_cron) : null
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
 
     const horizonConfigs: HorizonConfigs = {
@@ -432,7 +552,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
       // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
       try {
         const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
-        const review = await monitorCoin(ctx, cycleId, adjustEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount)
+        const review = await monitorCoin(ctx, cycleId, adjustEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
         if (review) reviews.push(review)
       } catch (err) {
         logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })
@@ -451,6 +571,19 @@ export async function runMonitor(cycleId: string): Promise<void> {
   } finally {
     running = false
   }
+}
+
+export function getNotes(): (MonitorNotes & { coin: string })[] {
+  // Same open-position filter as getReviews: hide notes left behind by a race
+  // between position close and a monitor run.
+  return queryAll(
+    `SELECT mn.coin, mn.notes, mn.updated_at FROM monitor_notes mn
+     WHERE EXISTS (
+       SELECT 1 FROM portfolio_entries pe
+       WHERE pe.coin = mn.coin AND pe.status = 'OPEN'
+     )
+     ORDER BY mn.coin`,
+  ) as unknown as (MonitorNotes & { coin: string })[]
 }
 
 export function getReviews(limit = 100): PositionReview[] {

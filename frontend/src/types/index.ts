@@ -1,4 +1,9 @@
-export type Page = 'dashboard' | 'portfolio' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
+
+export interface PortfolioSnapshot {
+  total_value_usd: number
+  created_at: string
+}
 
 export interface Trade {
   id: number
@@ -63,6 +68,7 @@ export interface ActivePosition {
   horizon: 'short' | 'medium' | 'long' | 'disabled' | 'llm'
   /** Exchange-side OCO protection state: ACTIVE = enforced on Binance, FAILED = software fallback. */
   oco_status: 'NONE' | 'ACTIVE' | 'FAILED'
+  created_at: string
 }
 
 export interface ClosedPosition {
@@ -217,9 +223,16 @@ export interface PositionAdjustment {
   created_at: string
 }
 
+export interface MonitorNote {
+  coin: string
+  notes: string
+  updated_at: string
+}
+
 export interface MonitorResponse {
   running: boolean
   reviews: PositionReview[]
+  notes?: MonitorNote[]
 }
 
 export interface SlTpEvent {

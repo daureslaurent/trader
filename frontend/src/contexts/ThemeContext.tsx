@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 
-export type Theme = 'dark' | 'midnight' | 'neon' | 'light' | 'aurora'
+export type Theme = 'dark' | 'midnight' | 'neon' | 'light' | 'aurora' | 'synthwave'
 
 interface ThemeContextValue {
   theme: Theme
@@ -14,6 +14,7 @@ export const THEMES: { id: Theme; label: string; swatch: string; bg: string }[] 
   { id: 'midnight', label: 'Midnight', swatch: '#60a5fa', bg: '#0c1528' },
   { id: 'neon',     label: 'Neon',     swatch: '#22d3ee', bg: '#0a0f1e' },
   { id: 'aurora',   label: 'Aurora',   swatch: '#a855f7', bg: '#120f1e' },
+  { id: 'synthwave', label: 'Synthwave', swatch: '#ec4899', bg: '#120524' },
   { id: 'light',    label: 'Light',    swatch: '#16a34a', bg: '#ffffff' },
 ]
 

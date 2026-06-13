@@ -6,7 +6,9 @@ import { Page, Toast, ApprovalRequest } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
 import Dashboard from './pages/Dashboard'
+import TradingState from './pages/TradingState'
 import Portfolio from './pages/Portfolio'
+import Monitor from './pages/Monitor'
 import Trade from './pages/Trade'
 import Logs from './pages/Logs'
 import Settings from './pages/Settings'
@@ -19,7 +21,9 @@ import LLMStats from './pages/LLMStats'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
+  'trading-state': 'Trading State',
   portfolio: 'Portfolio',
+  monitor: 'Position Monitor',
   trade: 'Trade',
   pipeline: 'Pipeline',
   charts: 'Signals',
@@ -158,19 +162,16 @@ function AppInner() {
       {/* Main content area */}
       <div className="flex-1 flex flex-col min-w-0 ml-[220px]">
         {/* Header */}
-        <header className="flex items-center justify-between px-8 h-16 border-b border-border bg-surface-card shrink-0 sticky top-0 z-20">
-          <div>
-            <h1 className="text-base font-semibold text-foreground">{PAGE_TITLES[page]}</h1>
-          </div>
+        <header className="flex items-center justify-between px-8 h-16 border-b border-border glass shrink-0 sticky top-0 z-20">
+          <h1 className="text-[15px] font-semibold text-foreground tracking-tight">{PAGE_TITLES[page]}</h1>
           <div className="flex items-center gap-3">
-            <div className={cn(
-              'flex items-center gap-1.5 text-xs',
-              wsConnected ? 'text-buy' : 'text-muted',
+            <span className={cn(
+              'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border',
+              wsConnected ? 'text-buy bg-buy/10 border-buy/20' : 'text-muted bg-surface-elevated border-border',
             )}>
-              <span className={cn('w-1.5 h-1.5 rounded-full', wsConnected ? 'bg-buy animate-pulse' : 'bg-muted')} />
-              <span>{wsConnected ? 'Live' : 'Offline'}</span>
-            </div>
-            <div className="w-px h-4 bg-border" />
+              <span className={cn('w-1.5 h-1.5 rounded-full bg-current', wsConnected && 'animate-pulse')} />
+              {wsConnected ? 'Live' : 'Offline'}
+            </span>
             <ThemeSelector />
           </div>
         </header>
@@ -178,7 +179,9 @@ function AppInner() {
         {/* Page */}
         <main className="flex-1 overflow-y-auto p-8">
           {page === 'dashboard' && <Dashboard onApprovalAction={clearPending} />}
+          {page === 'trading-state' && <TradingState />}
           {page === 'portfolio' && <Portfolio />}
+          {page === 'monitor' && <Monitor />}
           {page === 'trade' && <Trade />}
           {page === 'pipeline' && <LLM />}
           {page === 'charts' && <Charts />}

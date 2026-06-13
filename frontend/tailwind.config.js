@@ -13,6 +13,9 @@ export default {
         accent: {
           DEFAULT: 'rgb(var(--accent-rgb) / <alpha-value>)',
         },
+        accent2: {
+          DEFAULT: 'rgb(var(--accent2-rgb) / <alpha-value>)',
+        },
         buy: {
           DEFAULT: 'rgb(var(--buy-rgb) / <alpha-value>)',
         },
@@ -30,6 +33,10 @@ export default {
         sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
       },
+      boxShadow: {
+        soft: 'var(--shadow-card)',
+        glow: '0 0 0 1px rgb(var(--accent-rgb) / 0.2), 0 4px 24px -4px rgb(var(--accent-rgb) / 0.35)',
+      },
       keyframes: {
         slideDown: {
           from: { transform: 'translateY(-8px)', opacity: '0' },
@@ -43,11 +50,16 @@ export default {
           from: { opacity: '0' },
           to: { opacity: '1' },
         },
+        scaleIn: {
+          from: { transform: 'scale(0.97)', opacity: '0' },
+          to: { transform: 'scale(1)', opacity: '1' },
+        },
       },
       animation: {
         'slide-down': 'slideDown 0.2s ease-out',
         'slide-up': 'slideUp 0.2s ease-out',
         'fade-in': 'fadeIn 0.15s ease-out',
+        'scale-in': 'scaleIn 0.18s ease-out',
       },
     },
   },

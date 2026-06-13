@@ -78,6 +78,8 @@ export interface BotSettings {
   oco_sl_buffer_pct: number
   /** Minimum USDC balance required to place a new BUY from the pipeline. */
   min_trade_usdc: number
+  /** Exchange taker fee per side as a fraction (0.001 = 0.1%). Drives fee-aware PnL, break-even and edge checks. */
+  fee_rate: number
   /** When true, bypass risk validation for monitor SL/TP adjustments — apply LLM values directly (only SL<price / TP>price sanity enforced). */
   monitor_trust_llm_sltp: boolean
   /** When true, inject per-horizon behavior guidance and SL/TP targets into the monitor LLM prompt. When false, the LLM decides freely. */
@@ -86,6 +88,14 @@ export interface BotSettings {
   monitor_history_tf: string
   /** Number of historical candles to include in the monitor prompt (1–100). */
   monitor_history_count: number
+  /** Minimum LLM confidence required to execute a monitor CLOSE or REDUCE; lower-confidence proposals are downgraded to HOLD. */
+  monitor_min_confidence: number
+  /** P&L % above which the monitor prompt requires the stop-loss to sit at break-even or better (profit protection trigger).
+   *  Applies when horizon guidance is off (or the position uses the 'llm' horizon); with horizon guidance on, the trigger is half the horizon's TP target.
+   *  Also enforced engine-side: break-even-or-better stops proposed below this P&L are rejected. */
+  monitor_breakeven_pct: number
+  /** Minimum minutes between applied SL/TP adjustments per position (×0.5 for short horizon, ×2 for long). 0 disables the cooldown. */
+  monitor_adjust_cooldown_min: number
   /** Hours to add to UTC when formatting dates in the monitor prompt (e.g. 5 for UTC+5, -3 for UTC-3). */
   utc_offset_hours: number
   /** Max rows to fetch in the LLM Debug page (default 200). */

@@ -3,7 +3,7 @@ import {
   ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine,
   ResponsiveContainer,
 } from 'recharts'
-import type { Decision, Trade, SlTpEvent } from '../types'
+import type { Decision, Trade, SlTpEvent, PositionReview } from '../types'
 import { fmtUSD, fmt, cn } from '../lib/utils'
 import { usePrices } from '../hooks/usePrices'
 
@@ -38,10 +38,18 @@ interface TradeMark {
   quantity: number
 }
 
+interface ReviewMark {
+  id: number
+  action: PositionReview['action']
+  confidence: number
+  reasoning: string
+}
+
 interface ChartDatum extends Candle {
   range: [number, number]   // [low, high] — drives the floating bar
   signal?: Signal
   trades?: TradeMark[]
+  reviews?: ReviewMark[]    // monitor runs that reviewed the position during this candle
   sl?: number | null        // active stop-loss at this candle's time
   tp?: number | null        // active take-profit at this candle's time
 }
@@ -108,6 +116,32 @@ function SignalMarker(props: any) {
       fill="rgb(var(--sell-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
   }
   return <circle cx={cx} cy={cy} r={3} fill="rgb(var(--warn-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
+}
+
+function reviewColor(action: ReviewMark['action']): string {
+  if (action === 'CLOSE') return 'rgb(var(--sell-rgb))'
+  if (action === 'HOLD') return 'rgb(var(--accent-rgb))'
+  return 'rgb(var(--warn-rgb))' // REDUCE / ADJUST
+}
+
+// Monitor review marker: diamond above the candle high (stacked above any SELL signal).
+function MonitorMarker(props: any) {
+  const { cx, cy, reviews } = props as { cx?: number; cy?: number; reviews: ReviewMark[] }
+  if (cx == null || cy == null) return null
+  const s = 4.5
+  const y = cy - 22
+  const color = reviewColor(reviews[reviews.length - 1].action)
+  return (
+    <g>
+      <path d={`M${cx},${y - s} L${cx + s},${y} L${cx},${y + s} L${cx - s},${y} Z`}
+        fill={color} stroke="var(--surface-card)" strokeWidth={0.75} />
+      {reviews.length > 1 && (
+        <text x={cx} y={y - s - 3} textAnchor="middle" fontSize={8} fontWeight={700} fill={color}>
+          {reviews.length}
+        </text>
+      )}
+    </g>
+  )
 }
 
 // Executed-trade marker: filled badge at the fill price with B / S label.
@@ -227,6 +261,20 @@ function CandleTooltip({ active, payload }: { active?: boolean; payload?: { payl
           ))}
         </div>
       )}
+      {d.reviews && d.reviews.length > 0 && (
+        <div className="pt-1 mt-1 border-t border-border/50 space-y-1">
+          {d.reviews.map(r => (
+            <div key={r.id} className="space-y-0.5">
+              <p className="text-[11px] font-bold" style={{ color: reviewColor(r.action) }}>
+                ◆ Monitor: {r.action} — {Math.round(r.confidence * 100)}%
+              </p>
+              {r.reasoning && (
+                <p className="text-[11px] text-muted leading-snug line-clamp-3">{r.reasoning}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -243,6 +291,7 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
   const [showSl, setShowSl] = useState(true)
   const [showTp, setShowTp] = useState(true)
   const [slTpEvents, setSlTpEvents] = useState<SlTpEvent[]>([])
+  const [monitorReviews, setMonitorReviews] = useState<PositionReview[]>([])
   const reqId = useRef(0)
 
   useEffect(() => { localStorage.setItem('chart_tf', tf) }, [tf])
@@ -250,7 +299,7 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
   const livePrices = usePrices()
   const liveSnap = livePrices.get(symbol)
 
-  // SL/TP change history for the coin (refetched when coin changes).
+  // SL/TP change history + monitor review history for the coin (refetched when coin changes).
   useEffect(() => {
     let cancelled = false
     const base = symbol.replace('/USDC', '')
@@ -258,6 +307,10 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
       .then(r => r.json())
       .then(d => { if (!cancelled) setSlTpEvents(Array.isArray(d) ? d : []) })
       .catch(() => { if (!cancelled) setSlTpEvents([]) })
+    fetch(`/api/monitor/reviews/${base}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setMonitorReviews(Array.isArray(d) ? d : []) })
+      .catch(() => { if (!cancelled) setMonitorReviews([]) })
     return () => { cancelled = true }
   }, [symbol])
 
@@ -318,6 +371,19 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
         tradesByTime.set(key, arr)
       })
 
+    // Monitor reviews — grouped by candle, in chronological order.
+    const reviewsByTime = new Map<number, ReviewMark[]>()
+    monitorReviews
+      .map(r => ({ ...r, ts: parseTime(r.created_at) }))
+      .sort((a, b) => a.ts - b.ts)
+      .forEach(r => {
+        if (!inRange(r.ts)) return
+        const key = candleTimeFor(r.ts)
+        const arr = reviewsByTime.get(key) ?? []
+        arr.push({ id: r.id, action: r.action, confidence: r.confidence, reasoning: r.reasoning })
+        reviewsByTime.set(key, arr)
+      })
+
     // SL/TP active-state timeline: replay events to know the level at any time.
     // One open position per coin, so at most one active level at a time.
     const timeline: { ts: number; sl: number | null; tp: number | null }[] = []
@@ -346,11 +412,12 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
         range: [c.low, c.high] as [number, number],
         signal: signalByTime.get(c.time),
         trades: tradesByTime.get(c.time),
+        reviews: reviewsByTime.get(c.time),
         sl,
         tp,
       }
     })
-  }, [candles, decisions, trades, slTpEvents, symbol])
+  }, [candles, decisions, trades, slTpEvents, monitorReviews, symbol])
 
   const last = candles[candles.length - 1]
   const first = candles[0]
@@ -522,6 +589,18 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
                   />
                 ))}
 
+                {/* Monitor review markers (diamond above the candle) */}
+                {data.filter(d => d.reviews?.length).map(d => (
+                  <ReferenceDot
+                    key={`rev-${d.time}`}
+                    x={d.time}
+                    y={d.high}
+                    ifOverflow="extendDomain"
+                    isFront
+                    shape={<MonitorMarker reviews={d.reviews!} />}
+                  />
+                ))}
+
                 {/* Executed trade markers (at fill price) */}
                 {tradeMarkers.map(t => (
                   <ReferenceDot
@@ -580,6 +659,9 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
               <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-sell text-white text-[7px] font-bold">S</span>
               Executed trade
             </span>
+            {data.some(d => d.reviews?.length) && (
+              <span className="flex items-center gap-1.5"><span className="text-accent">◆</span> Monitor review</span>
+            )}
             {showSl && (
               <span className="flex items-center gap-1.5">
                 <span className="w-4 border-t-2 border-dashed border-sell" /> Stop loss

@@ -13,9 +13,9 @@ export function Card({ children, className, onClick, noPad }: CardProps) {
     <div
       onClick={onClick}
       className={cn(
-        'bg-surface-card border border-border rounded-2xl neon-border',
+        'bg-surface-card border border-border rounded-2xl neon-border shadow-soft',
         !noPad && 'p-5',
-        onClick && 'cursor-pointer transition-colors duration-150 hover:bg-surface-elevated',
+        onClick && 'cursor-pointer transition-all duration-200 hover:bg-surface-elevated hover:border-accent/25 hover:-translate-y-0.5',
         className,
       )}
     >
@@ -35,7 +35,7 @@ export function CardHeader({ title, subtitle, action, className }: CardHeaderPro
   return (
     <div className={cn('flex items-start justify-between mb-4', className)}>
       <div>
-        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        <h3 className="text-sm font-semibold text-foreground tracking-tight">{title}</h3>
         {subtitle && <p className="text-xs text-muted mt-0.5">{subtitle}</p>}
       </div>
       {action && <div className="flex-shrink-0">{action}</div>}

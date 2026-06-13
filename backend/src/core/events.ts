@@ -21,6 +21,7 @@ interface EventMap {
   adjustment_approved: [number]
   adjustment_rejected: [number]
   monitor_close_requested: [{ positionId: number; coin: string; currentPrice: number; reasoning: string; confidence: number; cycleId: string }]
+  monitor_reduce_requested: [{ positionId: number; coin: string; currentPrice: number; reduceToPct: number; reasoning: string; confidence: number; cycleId: string }]
   coin_discovered: [{ id: number; coin: string; score: number; reasoning: string; market_data: string; status: string; cycle_id: string; created_at: string }]
   trade_failed: [{ coin: string; side: string; error: string }]
   trade_result: [{ tradeId: number; success: boolean; error?: string }]

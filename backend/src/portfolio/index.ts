@@ -62,5 +62,8 @@ export {
   computeRiskLevels,
   checkPosition,
   validateSlTpAdjustment,
+  minStopGapPct,
+  netRealizedPnl,
+  hasSufficientEdge,
 } from './risk.js'
 export type { SlTpProposal, SlTpValidation, RiskLevels } from './risk.js'

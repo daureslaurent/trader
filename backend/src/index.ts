@@ -10,7 +10,7 @@ import cron, { ScheduledTask } from 'node-cron'
 import { researchCoin } from './researcher/index.js'
 import { extractResearch, selectArticles } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit, recordPositionOpen, recordPositionClose, recordSlTpUpdate, placeProtection, cancelProtection, replaceProtection, closePositionFromExit } from './portfolio/index.js'
+import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, seedUsdtIfAbsent, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit, recordPositionOpen, recordPositionClose, recordSlTpUpdate, placeProtection, cancelProtection, replaceProtection, closePositionFromExit, netRealizedPnl, hasSufficientEdge } from './portfolio/index.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 import { closeBrowser } from './scraper/browser.js'
@@ -318,6 +318,19 @@ async function tradingLoop() {
         const tp = signal.take_profit_pct != null
           ? data.price * (1 + signal.take_profit_pct / 100)
           : calculateTakeProfit(data.price, marketCtx.atr14, settings)
+
+        // Fee-edge gate: the profit target must clear a multiple of the round-trip
+        // cost, otherwise fees + spread consume most realistic outcomes.
+        const tpPct = data.price > 0 ? ((tp - data.price) / data.price) * 100 : 0
+        const edge = hasSufficientEdge(tpPct, settings.fee_rate)
+        if (!edge.ok) {
+          logger.info('Skipping BUY — profit target below fee-edge minimum', { coin: data.symbol, tpPct, requiredPct: edge.requiredPct })
+          logPipelineEvent('trade_skipped', data.symbol, cycleId, {
+            reason: `TP +${tpPct.toFixed(2)}% below fee-edge minimum +${edge.requiredPct.toFixed(2)}%`,
+          })
+          continue
+        }
+
         const buySignal: Signal = { ...signal, quantity: qty }
         const { outcome, error: tradeErr } = await handleTradeSignal(buySignal, data.price, marketCtx.atr14, settings)
         logPipelineEvent('trade_executed', data.symbol, cycleId, {
@@ -466,6 +479,17 @@ async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<v
       const tp = signal.take_profit_pct != null
         ? data.price * (1 + signal.take_profit_pct / 100)
         : calculateTakeProfit(data.price, marketCtx.atr14, settings)
+
+      const tpPct = data.price > 0 ? ((tp - data.price) / data.price) * 100 : 0
+      const edge = hasSufficientEdge(tpPct, settings.fee_rate)
+      if (!edge.ok) {
+        logger.info('Skipping BUY — profit target below fee-edge minimum', { coin: symbol, tpPct, requiredPct: edge.requiredPct })
+        logPipelineEvent('trade_skipped', symbol, cycleId, {
+          reason: `TP +${tpPct.toFixed(2)}% below fee-edge minimum +${edge.requiredPct.toFixed(2)}%`,
+        })
+        return
+      }
+
       const { outcome, error: tradeErr } = await handleTradeSignal({ ...signal, quantity: qty }, data.price, marketCtx.atr14, settings)
       logPipelineEvent('trade_executed', symbol, cycleId, {
         action: 'BUY', price: data.price, quantity: qty,
@@ -545,13 +569,29 @@ async function handleTradeSignal(signal: Signal, price: number, atr?: number, se
   }
 }
 
+// Exit claims: only one path (analyst SELL, monitor CLOSE/REDUCE, software SL/TP
+// fallback) may be market-selling a given position at a time. Without this, two
+// near-simultaneous triggers both pass the status='OPEN' check before either
+// closes the position, and the same exit gets sold/recorded twice.
+const exitsInFlight = new Set<number>()
+
 async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: number, atr?: number, settings?: any): Promise<{ ok: boolean; error?: string }> {
+  let claimedPositionId: number | undefined
   try {
     // Cancel exchange-side OCO before our own market sell — the coins are locked
     // in the open OCO and Binance would otherwise reject the sell.
     if (signal.action === 'SELL') {
       const openPos = queryOne("SELECT id FROM positions WHERE coin = ? AND status = 'OPEN'", [signal.coin])
-      if (openPos) await cancelProtection(openPos.id as number)
+      if (openPos) {
+        const posId = openPos.id as number
+        if (exitsInFlight.has(posId)) {
+          logger.warn('SELL skipped — another exit is already in flight for this position', { coin: signal.coin, positionId: posId })
+          return { ok: false, error: 'Exit already in progress for this position' }
+        }
+        exitsInFlight.add(posId)
+        claimedPositionId = posId
+        await cancelProtection(posId)
+      }
     }
 
     // Exchange API call — must happen OUTSIDE the transaction (async)
@@ -599,9 +639,10 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
           const posId = existingPos.id as number
           const qty = result.quantity || (existingPos.quantity as number)
           recordPositionClose(posId, result.price)
+          const pnl = netRealizedPnl(qty, existingPos.entry_price as number, result.price, getSettings().fee_rate)
           runSQL(
-            "UPDATE positions SET status = 'CLOSED', pnl = (? * (? - entry_price)) WHERE id = ?",
-            [qty, result.price, posId]
+            "UPDATE positions SET status = 'CLOSED', pnl = ? WHERE id = ?",
+            [pnl, posId]
           )
           const sellEntries = queryAll(
             "SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
@@ -648,6 +689,8 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
     broadcast('trade_failed', failedTrade)
     bus.emit('trade_failed', { coin: signal.coin, side: signal.action, error: errMsg })
     return { ok: false, error: errMsg }
+  } finally {
+    if (claimedPositionId !== undefined) exitsInFlight.delete(claimedPositionId)
   }
 }
 
@@ -795,6 +838,11 @@ async function executeMonitorClose(
   triggerPrice: number,
   reasoning: string,
 ): Promise<void> {
+  if (exitsInFlight.has(positionId)) {
+    logger.warn('Monitor CLOSE skipped — another exit is already in flight', { coin, positionId })
+    return
+  }
+  exitsInFlight.add(positionId)
   try {
     const pos = queryOne(
       "SELECT quantity, oco_status, take_profit FROM positions WHERE id = ? AND status = 'OPEN'",
@@ -852,6 +900,8 @@ async function executeMonitorClose(
     const failedTrade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
     broadcast('trade_failed', failedTrade)
     bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+  } finally {
+    exitsInFlight.delete(positionId)
   }
 }
 
@@ -859,6 +909,117 @@ bus.on('monitor_close_requested', ({ positionId, coin, currentPrice, reasoning }
   logger.warn('Monitor CLOSE requested', { coin, positionId, currentPrice })
   executeMonitorClose(positionId, coin, currentPrice, reasoning).catch(err =>
     logger.error('Monitor close handler error', { coin, error: err instanceof Error ? err.message : String(err) })
+  )
+})
+
+// Monitor-initiated REDUCE: partial market sell, then re-protect the remainder.
+const MIN_REDUCE_NOTIONAL_USD = 5 // Binance spot minimum order notional
+
+async function executeMonitorReduce(
+  positionId: number,
+  coin: string,
+  reduceToPct: number,
+  triggerPrice: number,
+  reasoning: string,
+): Promise<void> {
+  if (exitsInFlight.has(positionId)) {
+    logger.warn('Monitor REDUCE skipped — another exit is already in flight', { coin, positionId })
+    return
+  }
+  exitsInFlight.add(positionId)
+
+  const pos = queryOne(
+    "SELECT quantity FROM positions WHERE id = ? AND status = 'OPEN'",
+    [positionId],
+  ) as { quantity: number } | null
+  if (!pos) {
+    exitsInFlight.delete(positionId)
+    return
+  }
+
+  const sellQty = pos.quantity * (1 - reduceToPct / 100)
+  const keepQty = pos.quantity - sellQty
+
+  if (sellQty * triggerPrice < MIN_REDUCE_NOTIONAL_USD) {
+    logger.warn('Monitor REDUCE skipped — sell amount below exchange minimum', { coin, positionId, sellQty, reduceToPct })
+    exitsInFlight.delete(positionId)
+    return
+  }
+  if (keepQty * triggerPrice < MIN_REDUCE_NOTIONAL_USD) {
+    // Remainder would be untradeable dust — exit fully instead. Release the claim
+    // first so the delegated close can take it.
+    logger.warn('Monitor REDUCE remainder below exchange minimum — closing position instead', { coin, positionId, keepQty })
+    exitsInFlight.delete(positionId)
+    await executeMonitorClose(positionId, coin, triggerPrice, `${reasoning} (REDUCE remainder below minimum)`)
+    return
+  }
+
+  try {
+    // The coins are locked in the OCO; cancel before selling, re-place after.
+    await cancelProtection(positionId)
+    const result = await executeTrade({ coin, action: 'SELL', quantity: sellQty, reason: `Monitor reduce: ${reasoning}`, confidence: 1 })
+    const fillQty = result.quantity || sellQty
+    const fillPrice = result.price || triggerPrice
+    const proceeds = fillQty * fillPrice
+
+    withTransaction(() => {
+      runSQL('UPDATE positions SET quantity = quantity - ? WHERE id = ?', [fillQty, positionId])
+
+      // FIFO-reduce the local ledger entries for the coin.
+      let remaining = fillQty
+      const entries = queryAll(
+        "SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
+        [coin],
+      ) as { id: number; quantity: number }[]
+      for (const e of entries) {
+        if (remaining <= 0) break
+        const take = Math.min(e.quantity, remaining)
+        reduceEntryQuantity(e.id, take)
+        remaining -= take
+      }
+
+      let usdtEntry = getUsdtEntry()
+      if (!usdtEntry) {
+        seedUsdtIfAbsent(0)
+        usdtEntry = getUsdtEntry()
+      }
+      if (usdtEntry) increaseEntryQuantity(usdtEntry.id, proceeds)
+      else logger.error('Monitor REDUCE: USDC entry missing after seed attempt — proceeds lost', { coin, proceeds })
+
+      runSQL(
+        "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, ?, 'USDC', 'EXECUTED', 1)",
+        [coin, fillQty, fillPrice, proceeds, getSettings().fee_rate * proceeds],
+      )
+    })
+
+    // Re-place the OCO for the remaining quantity at the existing SL/TP levels.
+    await replaceProtection(positionId)
+
+    const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
+    if (trade) broadcast('trade_executed', trade)
+    broadcast('monitor_position_reduced', { coin, positionId, soldQty: fillQty, keptQty: keepQty, price: fillPrice, reduceToPct, reasoning })
+    bus.emit('portfolio_updated')
+    logger.warn('Monitor REDUCE executed', { coin, positionId, soldQty: fillQty, keptPct: reduceToPct, price: fillPrice })
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    logger.error('Monitor reduce failed', { coin, error: errMsg })
+    runSQL(
+      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved, error) VALUES (?, 'SELL', 0, 0, 0, 0, 'USDC', 'FAILED', 1, ?)",
+      [coin, errMsg],
+    )
+    broadcast('trade_failed', queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1'))
+    bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+    // The sell may have failed after the OCO cancel — re-protect whatever remains.
+    await replaceProtection(positionId).catch(() => {})
+  } finally {
+    exitsInFlight.delete(positionId)
+  }
+}
+
+bus.on('monitor_reduce_requested', ({ positionId, coin, currentPrice, reduceToPct, reasoning }) => {
+  logger.warn('Monitor REDUCE requested', { coin, positionId, reduceToPct, currentPrice })
+  executeMonitorReduce(positionId, coin, reduceToPct, currentPrice, reasoning).catch(err =>
+    logger.error('Monitor reduce handler error', { coin, error: err instanceof Error ? err.message : String(err) })
   )
 })
 
@@ -874,6 +1035,11 @@ async function executeFallbackExit(
   status: 'SL_HIT' | 'TP_HIT',
   label: string,
 ): Promise<void> {
+  if (exitsInFlight.has(positionId)) {
+    logger.warn('Fallback exit skipped — another exit is already in flight', { coin, positionId, label })
+    return
+  }
+  exitsInFlight.add(positionId)
   try {
     const pos = queryOne("SELECT quantity FROM positions WHERE id = ? AND status = 'OPEN'", [positionId])
     if (!pos) return
@@ -897,6 +1063,8 @@ async function executeFallbackExit(
     const failedId = (queryOne('SELECT last_insert_rowid() AS id') as any)?.id
     broadcast('trade_failed', failedId ? queryOne('SELECT * FROM trades WHERE id = ?', [failedId]) : null)
     bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+  } finally {
+    exitsInFlight.delete(positionId)
   }
 }
 

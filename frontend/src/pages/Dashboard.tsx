@@ -2,12 +2,10 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { TradeApproval } from '../components/TradeApproval'
 import { TradeHistory } from '../components/TradeHistory'
-import { Stat } from '../components/ui/Stat'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Badge, actionBadge } from '../components/ui/Badge'
 import { ApprovalRequest, Trade, ActivePosition, Decision, PortfolioResponse, AdjustmentRequest, PositionAdjustment, GainsResponse } from '../types'
 import { Button } from '../components/ui/Button'
-import { PnlCard } from '../components/PnlCard'
 import { fmtUSD, fmtPct, cn } from '../lib/utils'
 
 interface Alert {
@@ -283,47 +281,66 @@ export default function Dashboard({ onApprovalAction }: Props) {
         </div>
       )}
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Stat label="Portfolio Value" value={fmtUSD(totalValue)} icon={<WalletIcon />} />
-        <Stat
-          label="Available USDC"
-          value={availableUsdc != null ? fmtUSD(availableUsdc) : '—'}
-          sub={availableUsdc != null ? 'on Binance' : 'Binance offline'}
-          icon={<CoinsIcon />}
-        />
-        <Stat
-          label="Bot Positions"
-          value={`${openPositions} / ${maxPositions}`}
-          sub={openPositions >= maxPositions ? 'limit reached' : `${maxPositions - openPositions} slots free`}
-          icon={<ChartBarIcon />}
-        />
-        <Stat
-          label="Pending Approval"
-          value={approvals.length}
-          trend={approvals.length > 0 ? 'down' : 'neutral'}
-          icon={<ClockIcon />}
-        />
-      </div>
-
-      {/* P&L Summary */}
-      <PnlCard
-        finalUsd={finalGainUsd}
-        finalPct={finalGainPct}
-        liveUsd={liveGainUsd}
-        livePct={liveGainPct}
-      />
+      {/* Hero — portfolio value + P&L + key metrics */}
+      <Card className="relative overflow-hidden">
+        <div aria-hidden className="absolute -top-28 -right-20 w-80 h-80 rounded-full bg-accent/10 blur-3xl pointer-events-none" />
+        <div aria-hidden className="absolute -bottom-32 left-1/3 w-72 h-72 rounded-full bg-accent2/[0.07] blur-3xl pointer-events-none" />
+        <div className="relative flex flex-col lg:flex-row lg:items-center gap-8">
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] font-semibold text-muted uppercase tracking-wider">Portfolio Value</p>
+            <p className="mt-2.5 text-4xl font-bold text-foreground tabular-nums tracking-tight leading-none">
+              {fmtUSD(totalValue)}
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <PnlChip label="Realized" usd={finalGainUsd} pct={finalGainPct} />
+              <PnlChip label="Open" usd={liveGainUsd} pct={liveGainPct} />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:w-[440px] shrink-0">
+            <HeroMetric
+              icon={<CoinsIcon />}
+              label="Available"
+              value={availableUsdc != null ? fmtUSD(availableUsdc) : '—'}
+              sub={availableUsdc != null ? 'USDC on Binance' : 'Binance offline'}
+            />
+            <HeroMetric
+              icon={<ChartBarIcon />}
+              label="Positions"
+              value={`${openPositions} / ${maxPositions}`}
+              sub={openPositions >= maxPositions ? 'limit reached' : `${maxPositions - openPositions} slots free`}
+            >
+              <div className="mt-2 flex items-center gap-1">
+                {Array.from({ length: Math.min(maxPositions, 12) }).map((_, i) => (
+                  <span
+                    key={i}
+                    className={cn('h-1.5 flex-1 rounded-full', i < openPositions ? 'bg-accent' : 'bg-border')}
+                  />
+                ))}
+              </div>
+            </HeroMetric>
+            <HeroMetric
+              icon={<ClockIcon />}
+              label="Pending"
+              value={approvals.length + adjustments.length}
+              sub={approvals.length + adjustments.length > 0 ? 'awaiting approval' : 'all clear'}
+              highlight={approvals.length + adjustments.length > 0}
+            />
+          </div>
+        </div>
+      </Card>
 
       {/* Bot Services */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <ServiceCard
           label="Trading Pipeline"
+          icon={<BoltIcon />}
           running={pipelineRunning}
           statusText={pipelineRunning ? 'Running' : 'Idle'}
           detail={watchlistCount > 0 ? `${watchlistCount} coin${watchlistCount !== 1 ? 's' : ''} on watchlist` : 'No watchlist'}
         />
         <ServiceCard
           label="Discovery"
+          icon={<RadarIcon />}
           running={discoveryRunning}
           statusText={discoveryRunning ? 'Scanning' : 'Idle'}
           detail={pendingDiscoveries > 0 ? `${pendingDiscoveries} pending review` : 'No pending reviews'}
@@ -331,6 +348,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
         />
         <ServiceCard
           label="Position Monitor"
+          icon={<EyeIcon />}
           running={monitorRunning}
           statusText={monitorRunning ? 'Checking' : 'Idle'}
           detail={`${openPositions} position${openPositions !== 1 ? 's' : ''} tracked`}
@@ -368,7 +386,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
                   </span>
                   {c.confidence != null && (
                     <div className="flex items-center gap-1.5">
-                      <div className="flex-1 h-1 bg-surface rounded-full overflow-hidden">
+                      <div className="flex-1 h-1 bg-border rounded-full overflow-hidden">
                         <div
                           className={cn('h-full rounded-full', c.action === 'BUY' ? 'bg-buy' : c.action === 'SELL' ? 'bg-sell' : 'bg-warn')}
                           style={{ width: `${Math.round(c.confidence * 100)}%` }}
@@ -423,14 +441,15 @@ export default function Dashboard({ onApprovalAction }: Props) {
             <CardHeader title="Active Positions" subtitle={`${positions.length} open`} />
           </div>
           {positions.length === 0 ? (
-            <p className="px-5 pb-5 text-sm text-muted">No active bot positions.</p>
+            <EmptyState message="No active bot positions." />
           ) : (
             <div className="divide-y divide-border">
               {positions.map(p => (
-                <div key={p.id} className="px-5 py-3 flex items-center gap-4">
+                <div key={p.id} className="px-5 py-3 flex items-center gap-3 hover:bg-surface-elevated/40 transition-colors duration-100">
+                  <CoinAvatar coin={p.coin} />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-foreground">{p.coin.replace('/USDC', '')}</p>
-                    <p className="text-xs text-muted">Entry {fmtUSD(p.entry_price)}</p>
+                    <p className="text-xs text-muted tabular-nums">Entry {fmtUSD(p.entry_price)}</p>
                   </div>
                   <div className="text-right shrink-0">
                     {p.pnl_pct != null ? (
@@ -465,11 +484,11 @@ export default function Dashboard({ onApprovalAction }: Props) {
             <CardHeader title="Recent Signals" subtitle="Analyst decisions" />
           </div>
           {decisions.length === 0 ? (
-            <p className="px-5 pb-5 text-sm text-muted">No signals yet.</p>
+            <EmptyState message="No signals yet." />
           ) : (
             <div className="divide-y divide-border">
               {decisions.slice(0, 7).map(d => (
-                <div key={d.id} className="px-5 py-3 flex items-start gap-3">
+                <div key={d.id} className="px-5 py-3 flex items-start gap-3 hover:bg-surface-elevated/40 transition-colors duration-100">
                   <div className="shrink-0 mt-0.5">{actionBadge(d.action)}</div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
@@ -641,24 +660,98 @@ function AdjustmentApproval({ request, onAction }: {
   )
 }
 
-function ServiceCard({ label, running, statusText, detail, extra }: {
+function PnlChip({ label, usd, pct }: { label: string; usd: number; pct: number | null }) {
+  const pos = usd >= 0
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-1.5 pl-2.5 pr-3 py-1.5 rounded-full border text-xs font-semibold tabular-nums',
+      pos ? 'bg-buy/10 border-buy/20 text-buy' : 'bg-sell/10 border-sell/20 text-sell',
+    )}>
+      <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d={pos ? 'M4.5 15.75l7.5-7.5 7.5 7.5' : 'M19.5 8.25l-7.5 7.5-7.5-7.5'} />
+      </svg>
+      <span className="opacity-70 font-medium">{label}</span>
+      <span>
+        {pos ? '+' : ''}{fmtUSD(usd)}
+        {pct != null && ` (${pos ? '+' : ''}${pct.toFixed(2)}%)`}
+      </span>
+    </span>
+  )
+}
+
+function HeroMetric({ icon, label, value, sub, highlight, children }: {
+  icon: React.ReactNode
   label: string
+  value: string | number
+  sub?: string
+  highlight?: boolean
+  children?: React.ReactNode
+}) {
+  return (
+    <div className={cn(
+      'rounded-xl border p-3.5 bg-surface-elevated/60',
+      highlight ? 'border-warn/30' : 'border-border',
+    )}>
+      <div className="flex items-center gap-2">
+        <span className={cn(highlight ? 'text-warn' : 'text-accent/80')}>{icon}</span>
+        <span className="text-[11px] font-semibold text-muted uppercase tracking-wider truncate">{label}</span>
+      </div>
+      <p className="mt-2 text-lg font-bold text-foreground tabular-nums tracking-tight leading-none">{value}</p>
+      {children}
+      {sub && <p className={cn('mt-1.5 text-[11px]', highlight ? 'text-warn' : 'text-muted')}>{sub}</p>}
+    </div>
+  )
+}
+
+function CoinAvatar({ coin }: { coin: string }) {
+  return (
+    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent/20 to-accent2/10 ring-1 ring-accent/15 flex items-center justify-center shrink-0">
+      <span className="text-[10px] font-bold text-accent">{coin.replace('/USDC', '').slice(0, 3)}</span>
+    </div>
+  )
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="px-5 pb-6 pt-2 flex flex-col items-center text-center">
+      <div className="w-9 h-9 rounded-full bg-surface-elevated flex items-center justify-center mb-2">
+        <svg className="w-4 h-4 text-muted" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 13.5h3.86a2.25 2.25 0 012.012 1.244l.256.512a2.25 2.25 0 002.013 1.244h3.218a2.25 2.25 0 002.013-1.244l.256-.512a2.25 2.25 0 012.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18v-4.162c0-.224-.034-.447-.1-.661l-2.074-6.742a2.25 2.25 0 00-2.15-1.588H6.574a2.25 2.25 0 00-2.15 1.588l-2.075 6.742a2.25 2.25 0 00-.1.661z" />
+        </svg>
+      </div>
+      <p className="text-sm text-muted">{message}</p>
+    </div>
+  )
+}
+
+function ServiceCard({ label, icon, running, statusText, detail, extra }: {
+  label: string
+  icon: React.ReactNode
   running: boolean
   statusText: string
   detail: string
   extra?: string
 }) {
   return (
-    <Card>
+    <Card className={cn('relative overflow-hidden transition-colors duration-200', running && 'border-accent/25')}>
+      {running && (
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
+      )}
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span className={cn(
-            'w-2 h-2 rounded-full shrink-0',
-            running ? 'bg-accent animate-pulse' : 'bg-border',
-          )} />
+            'w-8 h-8 rounded-lg flex items-center justify-center shrink-0',
+            running ? 'bg-accent/15 text-accent' : 'bg-surface-elevated text-muted',
+          )}>
+            {icon}
+          </span>
           <span className="text-xs font-semibold text-foreground">{label}</span>
         </div>
-        <span className={cn('text-xs font-medium', running ? 'text-accent' : 'text-muted')}>
+        <span className={cn(
+          'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold',
+          running ? 'bg-accent/10 text-accent' : 'bg-surface-elevated text-muted',
+        )}>
+          <span className={cn('w-1 h-1 rounded-full bg-current', running && 'animate-pulse')} />
           {statusText}
         </span>
       </div>
@@ -668,17 +761,9 @@ function ServiceCard({ label, running, statusText, detail, extra }: {
   )
 }
 
-function WalletIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a2.25 2.25 0 00-2.25-2.25H15a3 3 0 11-6 0H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18-3a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0v3M3 9v3" />
-    </svg>
-  )
-}
-
 function CoinsIcon() {
   return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33" />
     </svg>
   )
@@ -686,16 +771,41 @@ function CoinsIcon() {
 
 function ChartBarIcon() {
   return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5" />
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
     </svg>
   )
 }
 
 function ClockIcon() {
   return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  )
+}
+
+function BoltIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+    </svg>
+  )
+}
+
+function RadarIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+    </svg>
+  )
+}
+
+function EyeIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
   )
 }

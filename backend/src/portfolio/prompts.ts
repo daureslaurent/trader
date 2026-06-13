@@ -75,10 +75,14 @@ SELL only when:
 
 HOLD when signals are mixed or conviction is low — a missed move beats a bad trade.
 
-CONFIDENCE
-- HIGH: regime, technicals, and a concrete catalyst all point the same way.
-- MEDIUM: a moderate edge with reasonable risk/reward.
+CONFIDENCE — calibrate honestly; defaulting everything to MEDIUM makes the field useless:
+- HIGH: regime, technicals, AND a concrete fresh catalyst all align, the entry is a pullback
+  (not a chase), and nothing material argues against the trade. Rare — expect roughly 1 in 10.
+- MEDIUM: regime and technicals align but the catalyst is generic or stale, or exactly one
+  minor factor conflicts.
 - LOW: weak or conflicting — prefer HOLD.
+Consistency rules: if regime and technicals disagree, confidence cannot be HIGH. If two or
+more of {regime, technicals, news} argue against the trade, it must be LOW.
 
 OUTPUT — JSON only, no markdown, no extra keys:
 {"action":"BUY|SELL|HOLD","confidence":"HIGH|MEDIUM|LOW","reason":"<1-2 sentences: regime → technicals → news → position fit → decision>"}`

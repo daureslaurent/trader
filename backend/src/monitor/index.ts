@@ -1,1 +1,1 @@
-export { runMonitor, getReviews, isRunning, clearReviewsForCoin } from './service.js'
+export { runMonitor, getReviews, getNotes, isRunning, clearReviewsForCoin } from './service.js'
