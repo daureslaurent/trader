@@ -32,14 +32,15 @@ There are no unit tests; `npm run lint` (type-check) is the only automated gate.
 
 Monorepo with two independent Node packages: `backend/` (Node.js + TypeScript ESM) and `frontend/` (React + Vite + Tailwind). No shared package — they talk over HTTP + a WebSocket at `ws://localhost:3000/ws`. The backend is a single long-running process orchestrated by `backend/src/index.ts` (~1400 lines — the trade-execution brain).
 
-### The four cron-driven engines
+### The cron-driven engines
 
-`index.ts` schedules four independent loops, each with its own cron expression stored in settings:
+`index.ts` schedules several independent loops, each with its own cron expression stored in settings:
 
 1. **Pipeline** (`pipeline_cron`) — the entry engine. For each watched/held coin runs: **Researcher** (Puppeteer/DuckDuckGo web search) → **Extractor** (LLM compresses articles to structured sentiment) → article **selection** (LLM) → **Analyst** (LLM produces BUY/SELL/HOLD + confidence + SL/TP %). A BUY passes a gauntlet of gates (max positions, already-held, pending-intent, min-USDC, position size, **fee-edge** gate) before executing or being handed to the entry-timing engine. Coins already held are **skipped** — they belong to the monitor.
 2. **Discoverer** (`discover_cron`, `discoverer/`) — LLM-scored search for new candidate coins; approved discoveries feed the watchlist.
 3. **Monitor** (`monitor_cron`, `monitor/`) — reviews **open positions** and proposes SL/TP adjustments, CLOSE, or REDUCE. This is the only engine that manages held coins.
-4. **Position check** — a 30s `setInterval` (not cron) reconciling open positions against live prices and exchange OCO fills.
+4. **Summary** (`summary_cron`, `summary/`) — when `summary_auto_run`, an LLM portfolio strategist that bundles the whole portfolio + per-coin live Binance market context (price, 24h, RSI, trend, regime), recent trades, and recently closed positions into a narrative + structured briefing (health, risk level, observations, suggestions). Read-only: it never trades. Rows persist to `portfolio_summaries` (pruned by `summary_retain_days`), broadcast to the Summary page, and pushed to Telegram via `portfolio_summary_created`.
+5. **Position check** — a 30s `setInterval` (not cron) reconciling open positions against live prices and exchange OCO fills.
 
 When the frontend saves settings, `settings_updated` reschedules the affected crons live.
 
@@ -59,13 +60,13 @@ When `entry_timing_enabled`, a BUY signal is not filled at the cron tick. It's r
 
 ### LLM integration (`core/llm.ts` + per-module config)
 
-All LLM calls use the OpenAI SDK pointed at local OpenAI-compatible endpoints (Ollama / llama.cpp). Each module has its **own** base URL + model + max-tokens, configured in `config/index.ts` from env vars that all fall back to `LLAMA_BASE_URL` / `LLAMA_MODEL`: `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` (with an A/B slot — `MONITOR_*` and `MONITOR_*_B` — selected at runtime via the `monitor_model` setting).
+All LLM calls use the OpenAI SDK pointed at local OpenAI-compatible endpoints (Ollama / llama.cpp). Each module has its **own** base URL + model + max-tokens, configured in `config/index.ts` from env vars that all fall back to `LLAMA_BASE_URL` / `LLAMA_MODEL`: `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` (with an A/B slot — `MONITOR_*` and `MONITOR_*_B` — selected at runtime via the `monitor_model` setting), `SUMMARY_*`.
 
 `core/llm.ts` **serializes calls per base URL** by default (`_urlChains`): a local server processes one request at a time, so calls to the same URL chain sequentially while calls to *different* URLs run in parallel. `llm_allow_parallel_same_url` disables this. Every call is recorded to `llm_calls` and live ones are broadcast to the frontend's LLM activity view.
 
 ### Database (`db/`)
 
-SQLite via **sql.js** (in-memory; loaded from and persisted to `data/cryptobot.db`). Saved on graceful shutdown and via `scheduleSave()`. Schema is managed by **versioned migrations** (`db/migrations.ts`) that execute the namespaced `.sql` files in `db/sql/{settings,trading,pipeline,cache}/` — a broken migration crashes startup (fail-fast) rather than leaving a half-migrated DB. Access only via the helpers: `queryAll`, `queryOne`, `runSQL`, `withTransaction`. Key tables: `trades`, `decisions`, `positions`, `position_adjustments`, `position_reviews`, `portfolio_entries`, `portfolio_snapshots`, `pipeline_events`, `coin_discoveries`, `llm_calls`, `settings`.
+SQLite via **sql.js** (in-memory; loaded from and persisted to `data/cryptobot.db`). Saved on graceful shutdown and via `scheduleSave()`. Schema is managed by **versioned migrations** (`db/migrations.ts`) that execute the namespaced `.sql` files in `db/sql/{settings,trading,pipeline,cache}/` — a broken migration crashes startup (fail-fast) rather than leaving a half-migrated DB. Access only via the helpers: `queryAll`, `queryOne`, `runSQL`, `withTransaction`. Key tables: `trades`, `decisions`, `positions`, `position_adjustments`, `position_reviews`, `portfolio_entries`, `portfolio_snapshots`, `portfolio_summaries`, `pipeline_events`, `coin_discoveries`, `llm_calls`, `settings`.
 
 Settings live in the `settings` key-value table via `getSettings()` / `updateSetting()`. Env vars seed the corresponding DB setting on every startup, so `.env` stays authoritative for things like crons.
 
@@ -97,5 +98,5 @@ Single-page app, **no router library** — page switching is `useState<Page>` in
 ## Environment variables
 
 Required: `BINANCE_API_KEY`, `BINANCE_SECRET`, `LLAMA_BASE_URL`, `LLAMA_MODEL`.
-Optional per-module LLM overrides (default to the `LLAMA_*` values): `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` / `MONITOR_*_B` (each `_BASE_URL`, `_MODEL`, `_MAX_TOKENS`).
+Optional per-module LLM overrides (default to the `LLAMA_*` values): `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` / `MONITOR_*_B`, `SUMMARY_*` (each `_BASE_URL`, `_MODEL`, `_MAX_TOKENS`).
 Optional other: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PORT` (3000), `APPROVAL_TIMEOUT_MINUTES` (5), `PIPELINE_CRON`.

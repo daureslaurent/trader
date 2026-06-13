@@ -39,6 +39,8 @@ export default function Trade() {
 
   // Extra coins from watchlist / portfolio not in QUICK_COINS
   const [extraCoins, setExtraCoins] = useState<string[]>([])
+  // Full portfolio entries — used to flag coins currently held
+  const [entries, setEntries] = useState<PortfolioEntry[]>([])
 
   // Signal + history state
   const [decisions, setDecisions] = useState<Decision[]>([])
@@ -63,6 +65,7 @@ export default function Trade() {
       fetch('/api/settings').then(r => r.json()),
     ]).then(([portfolioData, settingsData]) => {
       const entries: PortfolioEntry[] = portfolioData.entries ?? []
+      setEntries(entries)
       setUsdcBalance(entries.find(e => e.coin === 'USDC')?.quantity ?? 0)
       setCoinBalance(entries.find(e => e.coin === symbol)?.quantity ?? 0)
 
@@ -116,6 +119,14 @@ export default function Trade() {
     setError(null)
     setResult(null)
   }
+
+  // Map of base coin -> held portfolio entry (non-USDC holdings with a quantity)
+  const holdingMap = new Map(
+    entries
+      .filter(e => e.coin !== 'USDC' && e.coin.includes('/') && e.quantity > 0)
+      .map(e => [e.coin.replace('/USDC', ''), e]),
+  )
+  const currentHolding = holdingMap.get(base) ?? null
 
   const parsedAmount = parseFloat(amount) || 0
   const currentPrice = price?.price ?? 0
@@ -222,13 +233,14 @@ export default function Trade() {
                   key={c}
                   onClick={() => { setCoinInput(c); commitCoin(c) }}
                   className={cn(
-                    'px-2.5 py-1 text-xs font-medium rounded-lg border transition-all duration-150',
+                    'relative px-2.5 py-1 text-xs font-medium rounded-lg border transition-all duration-150',
                     symbol === `${c}/USDC`
                       ? 'bg-accent/10 border-accent/40 text-accent'
                       : 'bg-surface-elevated border-border text-muted hover:text-foreground',
                   )}
                 >
                   {c}
+                  <HeldDot entry={holdingMap.get(c)} />
                 </button>
               ))}
             </div>
@@ -239,13 +251,14 @@ export default function Trade() {
                     key={c}
                     onClick={() => { setCoinInput(c); commitCoin(c) }}
                     className={cn(
-                      'px-2.5 py-1 text-xs font-medium rounded-lg border transition-all duration-150',
+                      'relative px-2.5 py-1 text-xs font-medium rounded-lg border transition-all duration-150',
                       symbol === `${c}/USDC`
                         ? 'bg-accent/10 border-accent/40 text-accent'
                         : 'bg-surface-elevated border-border text-muted hover:text-foreground',
                     )}
                   >
                     {c}
+                    <HeldDot entry={holdingMap.get(c)} />
                   </button>
                 ))}
               </div>
@@ -276,6 +289,54 @@ export default function Trade() {
               </div>
             )}
           </div>
+
+          {/* In-portfolio indicator — shown when the selected coin is currently held */}
+          {currentHolding && (
+            <div className="relative bg-gradient-to-br from-accent/[0.07] to-transparent border border-accent/30 rounded-2xl neon-border px-4 py-3 animate-fade-in">
+              <div className="flex items-center justify-between mb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-accent" />
+                  </span>
+                  <span className="text-xs font-bold text-accent uppercase tracking-wide">In Portfolio</span>
+                </div>
+                {currentHolding.delta_pct != null && (
+                  <span className={cn(
+                    'px-2 py-0.5 rounded-lg text-xs font-bold tabular-nums',
+                    currentHolding.delta_pct >= 0 ? 'bg-buy/10 text-buy' : 'bg-sell/10 text-sell',
+                  )}>
+                    {fmtPct(currentHolding.delta_pct)}
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <p className="text-muted mb-0.5">Holdings</p>
+                  <p className="font-semibold tabular-nums">{fmt(currentHolding.quantity, 6)} {base}</p>
+                </div>
+                <div>
+                  <p className="text-muted mb-0.5">Value</p>
+                  <p className="font-semibold tabular-nums">{fmtUSD(currentHolding.current_value ?? currentHolding.quantity * currentPrice)}</p>
+                </div>
+                <div>
+                  <p className="text-muted mb-0.5">Avg cost</p>
+                  <p className="font-semibold tabular-nums">{fmtUSD(currentHolding.buy_price)}</p>
+                </div>
+              </div>
+              {currentHolding.delta_usd != null && (
+                <div className="mt-2 pt-2 border-t border-border/40 flex items-center justify-between text-xs">
+                  <span className="text-muted">Unrealized P/L</span>
+                  <span className={cn(
+                    'font-semibold tabular-nums',
+                    currentHolding.delta_usd >= 0 ? 'text-buy' : 'text-sell',
+                  )}>
+                    {currentHolding.delta_usd >= 0 ? '+' : ''}{fmtUSD(currentHolding.delta_usd)}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Order form */}
           <div className="bg-surface-card border border-border rounded-2xl neon-border overflow-hidden">
@@ -436,6 +497,21 @@ export default function Trade() {
 
       </div>
     </div>
+  )
+}
+
+/** Small corner dot marking a quick-pick coin that is currently held, tinted by P/L. */
+function HeldDot({ entry }: { entry?: PortfolioEntry }) {
+  if (!entry) return null
+  const up = (entry.delta_pct ?? 0) >= 0
+  return (
+    <span
+      className={cn(
+        'absolute -top-1 -right-1 w-2 h-2 rounded-full ring-2 ring-surface-card',
+        up ? 'bg-buy' : 'bg-sell',
+      )}
+      title={`Held — ${fmt(entry.quantity, 6)}${entry.delta_pct != null ? ` (${fmtPct(entry.delta_pct)})` : ''}`}
+    />
   )
 }
 

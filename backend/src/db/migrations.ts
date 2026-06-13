@@ -224,6 +224,9 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     ['oco_sl_buffer_pct', '0.5'],
     ['llm_debug_fetch_limit', '200'],
     ['llm_retain_days', '0'],
+    ['summary_auto_run', 'false'],
+    ['summary_cron', '0 */6 * * *'],
+    ['summary_retain_days', '30'],
   ]
   for (const [key, value] of seeds) {
     settings.run('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', [key, value])

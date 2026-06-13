@@ -67,6 +67,12 @@ interface SettingsData {
   llm_monitor_b_base_url: string
   llm_monitor_b_model: string
   llm_monitor_b_max_tokens: number
+  llm_summary_base_url: string
+  llm_summary_model: string
+  llm_summary_max_tokens: number
+  summary_auto_run: boolean
+  summary_cron: string
+  summary_retain_days: number
 }
 
 const CRON_PRESETS = [
@@ -101,6 +107,7 @@ const SECTIONS = [
   { id: 'entry',      label: 'Entry Timing',     icon: 'M12 8v4l3 3M3 12a9 9 0 1018 0 9 9 0 00-18 0z' },
   { id: 'risk',       label: 'Risk Management',  icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
   { id: 'monitor',    label: 'Position Monitor', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+  { id: 'summary',    label: 'Portfolio Summary', icon: 'M9 17v-6h13M9 11V5h13M3 5h.01M3 11h.01M3 17h.01' },
   { id: 'models',     label: 'LLM Models',       icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z' },
   { id: 'appearance', label: 'Appearance',       icon: 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z' },
   { id: 'llm',        label: 'LLM Data',         icon: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5' },
@@ -354,6 +361,7 @@ const LLM_MODULES: {
   { key: 'discovererExtractor', label: 'Discoverer extractor', hint: 'Extractor used inside the discovery pipeline.',            urlKey: 'llm_discoverer_extractor_base_url', modelKey: 'llm_discoverer_extractor_model', maxTokensKey: 'llm_discoverer_extractor_max_tokens' },
   { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     urlKey: 'llm_monitor_a_base_url',           modelKey: 'llm_monitor_a_model',           maxTokensKey: 'llm_monitor_a_max_tokens' },
   { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — alternate model for the position monitor (used in B / Alternate mode).', urlKey: 'llm_monitor_b_base_url', modelKey: 'llm_monitor_b_model', maxTokensKey: 'llm_monitor_b_max_tokens' },
+  { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', urlKey: 'llm_summary_base_url', modelKey: 'llm_summary_model', maxTokensKey: 'llm_summary_max_tokens' },
 ]
 
 /* ------------------------------------- Page ------------------------------------- */
@@ -422,7 +430,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -851,8 +859,33 @@ export default function Settings() {
           )}
         </Section>
 
+        {/* Portfolio Summary */}
+        <Section id="summary" title="Portfolio Summary" subtitle="LLM briefing of the whole portfolio on a schedule" icon={SECTIONS[4].icon}>
+          <Row label="Auto-run" hint="Periodically generate a portfolio summary (narrative + health/risk read + suggestions) from your holdings and live Binance market data. Configure the model in the LLM Models section below.">
+            <Toggle label="Auto-run summary" checked={settings.summary_auto_run} onChange={() => toggle('summary_auto_run')} />
+          </Row>
+
+          {settings.summary_auto_run && (
+            <Row stacked label="Summary schedule" hint="How often the portfolio summary is generated.">
+              <CronEditor value={settings.summary_cron} onChange={v => set('summary_cron', v)} />
+            </Row>
+          )}
+
+          <Row label="Retain summaries" hint="Delete portfolio summaries older than this many days. 0 = keep forever.">
+            <UnitInput
+              type="number"
+              step="1"
+              min="0"
+              max="3650"
+              unit="days"
+              value={settings.summary_retain_days}
+              onChange={e => set('summary_retain_days', parseInt(e.target.value) || 0)}
+            />
+          </Row>
+        </Section>
+
         {/* LLM Models */}
-        <Section id="models" title="LLM Models" subtitle="Pick the endpoint, model & max tokens each module uses. Leave a field blank (max tokens 0) to use the env-var default." icon={SECTIONS[4].icon}>
+        <Section id="models" title="LLM Models" subtitle="Pick the endpoint, model & max tokens each module uses. Leave a field blank (max tokens 0) to use the env-var default." icon={SECTIONS[5].icon}>
           <Row
             label="Parallel calls per endpoint"
             hint="Off (recommended): calls to the same base URL queue and run one at a time — best for a local server that handles one request at a time. On: allow concurrent calls to the same endpoint. Different endpoints always run in parallel either way."
@@ -903,7 +936,7 @@ export default function Settings() {
         </Section>
 
         {/* Appearance */}
-        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={SECTIONS[5].icon}>
+        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={SECTIONS[6].icon}>
           <div className="py-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
             {THEMES.map(t => (
               <button
@@ -935,7 +968,7 @@ export default function Settings() {
         </Section>
 
         {/* LLM Data */}
-        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={SECTIONS[6].icon}>
+        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={SECTIONS[7].icon}>
           <Row
             label="Debug fetch limit"
             hint="Max LLM calls loaded in the LLM Stats and Debug pages. Higher values may slow the page."

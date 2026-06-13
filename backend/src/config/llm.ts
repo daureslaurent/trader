@@ -14,6 +14,7 @@ export type LLMModule =
   | 'discovererExtractor'
   | 'monitorA'
   | 'monitorB'
+  | 'summary'
 
 interface ModuleSpec {
   urlKey: keyof BotSettings
@@ -62,6 +63,12 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     modelKey: 'llm_monitor_b_model',
     maxTokensKey: 'llm_monitor_b_max_tokens',
     fallback: { baseURL: config.monitor.baseURLB, model: config.monitor.modelB, maxTokens: config.monitor.maxTokens },
+  },
+  summary: {
+    urlKey: 'llm_summary_base_url',
+    modelKey: 'llm_summary_model',
+    maxTokensKey: 'llm_summary_max_tokens',
+    fallback: config.summary,
   },
 }
 

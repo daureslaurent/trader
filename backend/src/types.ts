@@ -148,6 +148,38 @@ export interface BotSettings {
   llm_monitor_b_base_url: string
   llm_monitor_b_model: string
   llm_monitor_b_max_tokens: number
+  llm_summary_base_url: string
+  llm_summary_model: string
+  llm_summary_max_tokens: number
+  /** When true, the portfolio-summary engine runs on its own cron. */
+  summary_auto_run: boolean
+  /** Cron expression for the portfolio-summary engine. */
+  summary_cron: string
+  /** Delete portfolio summaries older than this many days. 0 = keep forever. */
+  summary_retain_days: number
+}
+
+/** One run of the portfolio-summary engine: an LLM narrative + structured read of
+ *  the whole portfolio at a point in time, persisted to `portfolio_summaries`. */
+export interface PortfolioSummary {
+  id: number
+  /** Prose overview of the portfolio's current state. */
+  summary: string
+  /** What changed since the previous summary (recent trades, fills, P&L moves). */
+  what_happened: string | null
+  /** Coarse health label: 'strong' | 'stable' | 'cautious' | 'at_risk'. */
+  health: string | null
+  /** Risk label: 'low' | 'moderate' | 'elevated' | 'high'. */
+  risk_level: string | null
+  /** JSON array of short key observations. */
+  observations: string | null
+  /** JSON array of short, actionable suggestions. */
+  suggestions: string | null
+  /** JSON snapshot of the portfolio + market data fed to the LLM. */
+  snapshot: string
+  model: string | null
+  cycle_id: string
+  created_at: string
 }
 
 export interface DiscoveryResult {

@@ -64,6 +64,13 @@ export const config = {
     modelB: opt('MONITOR_MODEL_B', opt('MONITOR_MODEL', llamaModel)),
     maxTokens: num('MONITOR_MAX_TOKENS', 2048),
   },
+  summary: {
+    // Portfolio-summary engine model. A larger context window helps here since the
+    // prompt bundles the whole portfolio + per-coin market context. Falls back to llama.
+    baseURL: opt('SUMMARY_BASE_URL', llamaBaseURL),
+    model: opt('SUMMARY_MODEL', llamaModel),
+    maxTokens: num('SUMMARY_MAX_TOKENS', 3072),
+  },
   telegram: {
     botToken: opt('TELEGRAM_BOT_TOKEN', ''),
     chatId: opt('TELEGRAM_CHAT_ID', ''),

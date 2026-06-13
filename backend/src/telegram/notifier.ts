@@ -3,7 +3,7 @@ import { logger } from '../core/logger.js'
 import { queryAll } from '../db/index.js'
 import { formatCurrency, esc, coinLabel, formatPnlPct, pnlEmoji } from './components/formatting.js'
 import { getBot, getChatId } from './bot.js'
-import type { PositionRecord } from '../types.js'
+import type { PositionRecord, PortfolioSummary } from '../types.js'
 
 function send(text: string): void {
   const bot = getBot()
@@ -176,6 +176,40 @@ export function startNotifier() {
   // ── System error ─────────────────────────────────────────────────────────────
   bus.on('error', (err: Error) => {
     send(`❌ <b>Error:</b> ${esc(err.message)}`)
+  })
+
+  // ── Portfolio summary produced ───────────────────────────────────────────────
+  bus.on('portfolio_summary_created', (s: PortfolioSummary) => {
+    const healthEmoji: Record<string, string> = { strong: '🟢', stable: '🟢', cautious: '🟡', at_risk: '🔴' }
+    const riskEmoji: Record<string, string> = { low: '🟢', moderate: '🟡', elevated: '🟠', high: '🔴' }
+    let totalLine = ''
+    try {
+      const snap = JSON.parse(s.snapshot) as { totalValueUsd?: number; valueChangePct?: number | null }
+      if (typeof snap.totalValueUsd === 'number') {
+        const chg = typeof snap.valueChangePct === 'number' ? `  <i>(${snap.valueChangePct >= 0 ? '+' : ''}${snap.valueChangePct.toFixed(2)}%)</i>` : ''
+        totalLine = `  Value         ${formatCurrency(snap.totalValueUsd)}${chg}`
+      }
+    } catch { /* snapshot not parseable — skip the value line */ }
+
+    const parseList = (raw: string | null): string[] => {
+      if (!raw) return []
+      try { const a = JSON.parse(raw); return Array.isArray(a) ? a.map(String) : [] } catch { return [] }
+    }
+    const suggestions = parseList(s.suggestions).slice(0, 3)
+
+    const lines = [
+      `🧭 <b>PORTFOLIO SUMMARY</b>`,
+      `<code>${SEP}</code>`,
+      s.health ? `  Health        ${healthEmoji[s.health] ?? ''} ${esc(s.health.replace('_', ' '))}` : '',
+      s.risk_level ? `  Risk          ${riskEmoji[s.risk_level] ?? ''} ${esc(s.risk_level)}` : '',
+      totalLine,
+      ``,
+      `${esc(s.summary)}`,
+      s.what_happened ? `\n<b>What happened</b>\n${esc(s.what_happened)}` : '',
+      suggestions.length ? `\n<b>Suggestions</b>\n${suggestions.map(x => `  • ${esc(x)}`).join('\n')}` : '',
+    ].filter(Boolean)
+
+    send(lines.join('\n'))
   })
 
   // ── New coin discovered ───────────────────────────────────────────────────────

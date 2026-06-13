@@ -1,4 +1,29 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
+
+/** One portfolio-summary run, from GET /api/summary. Mirrors the backend row. */
+export interface PortfolioSummary {
+  id: number
+  summary: string
+  what_happened: string | null
+  health: string | null
+  risk_level: string | null
+  /** JSON-encoded string[] — parse before rendering. */
+  observations: string | null
+  /** JSON-encoded string[] — parse before rendering. */
+  suggestions: string | null
+  /** JSON-encoded snapshot of the data fed to the LLM. */
+  snapshot: string
+  model: string | null
+  cycle_id: string
+  created_at: string
+}
+
+export interface SummaryResponse {
+  running: boolean
+  latest: PortfolioSummary | null
+  history: PortfolioSummary[]
+  model: { model: string; baseURL: string }
+}
 
 export interface PortfolioSnapshot {
   total_value_usd: number
@@ -280,6 +305,7 @@ export type LLMModuleKey =
   | 'discovererExtractor'
   | 'monitorA'
   | 'monitorB'
+  | 'summary'
 
 /** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */
 export interface LLMDefault {

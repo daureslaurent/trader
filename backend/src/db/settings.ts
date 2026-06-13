@@ -72,6 +72,12 @@ export function getSettings(): BotSettings {
     llm_monitor_b_base_url: map.llm_monitor_b_base_url || '',
     llm_monitor_b_model: map.llm_monitor_b_model || '',
     llm_monitor_b_max_tokens: parseInt(map.llm_monitor_b_max_tokens || '0', 10),
+    llm_summary_base_url: map.llm_summary_base_url || '',
+    llm_summary_model: map.llm_summary_model || '',
+    llm_summary_max_tokens: parseInt(map.llm_summary_max_tokens || '0', 10),
+    summary_auto_run: map.summary_auto_run === 'true',
+    summary_cron: map.summary_cron || '0 */6 * * *',
+    summary_retain_days: parseInt(map.summary_retain_days || '30', 10),
   }
 }
 

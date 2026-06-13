@@ -5,11 +5,13 @@ import { BotSettings } from '../types.js'
 import { checkOpenPositions } from '../portfolio/index.js'
 import { runDiscovery } from '../discoverer/index.js'
 import { runMonitor } from '../monitor/index.js'
+import { runPortfolioSummary } from '../summary/index.js'
 import { runPipeline } from '../pipeline/index.js'
 
 let cronTask: ScheduledTask | null = null
 let discoveryCronTask: ScheduledTask | null = null
 let monitorCronTask: ScheduledTask | null = null
+let summaryCronTask: ScheduledTask | null = null
 let positionCheckInterval: ReturnType<typeof setInterval> | null = null
 
 const POSITION_CHECK_INTERVAL_MS = 30 * 1000 // every 30 seconds
@@ -59,6 +61,26 @@ export function scheduleMonitor(expression: string, enabled: boolean): void {
   logger.info('Position monitor scheduled', { cron: expression })
 }
 
+export function scheduleSummary(expression: string, enabled: boolean): void {
+  summaryCronTask?.stop()
+  summaryCronTask = null
+  if (!enabled) {
+    logger.info('Portfolio summary auto-run disabled')
+    return
+  }
+  if (!cron.validate(expression)) {
+    logger.error('Invalid summary cron expression, falling back to 6-hourly', { expression })
+    expression = '0 */6 * * *'
+  }
+  summaryCronTask = cron.schedule(expression, () => {
+    const cycleId = `${Date.now().toString(36)}-summary`
+    runPortfolioSummary(cycleId).catch(err => {
+      logger.error('Scheduled summary run failed', { error: err instanceof Error ? err.message : String(err) })
+    })
+  })
+  logger.info('Portfolio summary scheduled', { cron: expression })
+}
+
 /**
  * Start every recurring loop: pipeline / discovery / monitor crons, the daily
  * LLM-retention job (also run once now), and the 30s position-check interval.
@@ -67,6 +89,7 @@ export function startSchedulers(settings: BotSettings): void {
   schedulePipeline(settings.pipeline_cron)
   scheduleDiscovery(settings.discover_cron)
   scheduleMonitor(settings.monitor_cron, settings.monitor_auto_run)
+  scheduleSummary(settings.summary_cron, settings.summary_auto_run)
 
   // Run LLM retention on startup and then daily at 03:00 UTC
   try { runLLMRetention() } catch (err) {
@@ -90,6 +113,7 @@ export function rescheduleFromSettings(updated: BotSettings): void {
   if (updated.pipeline_cron) schedulePipeline(updated.pipeline_cron)
   if (updated.discover_cron) scheduleDiscovery(updated.discover_cron)
   scheduleMonitor(updated.monitor_cron, updated.monitor_auto_run)
+  scheduleSummary(updated.summary_cron, updated.summary_auto_run)
 }
 
 /** Stop all recurring loops (graceful shutdown). */
@@ -97,5 +121,6 @@ export function stopSchedulers(): void {
   cronTask?.stop()
   discoveryCronTask?.stop()
   monitorCronTask?.stop()
+  summaryCronTask?.stop()
   if (positionCheckInterval) clearInterval(positionCheckInterval)
 }
