@@ -10,6 +10,7 @@ import TradingState from './pages/TradingState'
 import Portfolio from './pages/Portfolio'
 import Monitor from './pages/Monitor'
 import Trade from './pages/Trade'
+import EntryDesk from './pages/EntryDesk'
 import Logs from './pages/Logs'
 import Settings from './pages/Settings'
 import Charts from './pages/Charts'
@@ -25,6 +26,7 @@ const PAGE_TITLES: Record<Page, string> = {
   portfolio: 'Portfolio',
   monitor: 'Position Monitor',
   trade: 'Trade',
+  entry: 'Entry Desk',
   pipeline: 'Pipeline',
   charts: 'Signals',
   logs: 'Logs',
@@ -183,6 +185,7 @@ function AppInner() {
           {page === 'portfolio' && <Portfolio />}
           {page === 'monitor' && <Monitor />}
           {page === 'trade' && <Trade />}
+          {page === 'entry' && <EntryDesk />}
           {page === 'pipeline' && <LLM />}
           {page === 'charts' && <Charts />}
           {page === 'logs' && <Logs />}

@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { usePrices } from '../hooks/usePrices'
 import { TradeApproval } from '../components/TradeApproval'
 import { TradeHistory } from '../components/TradeHistory'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Badge, actionBadge } from '../components/ui/Badge'
-import { ApprovalRequest, Trade, ActivePosition, Decision, PortfolioResponse, AdjustmentRequest, PositionAdjustment, GainsResponse } from '../types'
+import { ApprovalRequest, Trade, ActivePosition, Decision, PortfolioResponse, AdjustmentRequest, PositionAdjustment, GainsResponse, EntryIntent } from '../types'
 import { Button } from '../components/ui/Button'
 import { fmtUSD, fmtPct, cn } from '../lib/utils'
 
@@ -35,6 +36,7 @@ const STAGE_CHIP: Record<string, { label: string; cls: string; pulse?: boolean }
   selected:    { label: 'Selected',    cls: 'text-amber-400 bg-amber-400/10'                 },
   analyzing:   { label: 'Analysing',   cls: 'text-accent bg-accent/10',         pulse: true  },
   signal:      { label: 'Signal',      cls: 'text-buy bg-buy/10'                             },
+  entry_queued:{ label: 'Entry queued',cls: 'text-accent bg-accent/10',         pulse: true  },
   traded:      { label: 'Traded',      cls: 'text-buy bg-buy/10'                             },
   skipped:     { label: 'Skipped',     cls: 'text-muted bg-muted/10'                         },
   error:       { label: 'Error',       cls: 'text-sell bg-sell/10'                           },
@@ -48,6 +50,7 @@ function mapStage(stage: string): string {
     selection_started: 'selecting', selection_completed: 'selected',
     analysis_started: 'analyzing',
     signal_generated: 'signal',
+    entry_intent_created: 'entry_queued',
     trade_executed: 'traded', trade_skipped: 'skipped',
     pipeline_error: 'error', pipeline_timeout: 'error', pipeline_failed: 'error',
     pipeline_cancelled: 'cancelled',
@@ -62,6 +65,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
   const [positions, setPositions] = useState<ActivePosition[]>([])
   const [decisions, setDecisions] = useState<Decision[]>([])
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
+  const [entryIntents, setEntryIntents] = useState<EntryIntent[]>([])
   const [adjustments, setAdjustments] = useState<AdjustmentRequest[]>([])
   const [adjHistory, setAdjHistory] = useState<PositionAdjustment[]>([])
   const [adjHistoryOpen, setAdjHistoryOpen] = useState(false)
@@ -73,6 +77,8 @@ export default function Dashboard({ onApprovalAction }: Props) {
   const [watchlistCount, setWatchlistCount] = useState(0)
   const [discoverCron, setDiscoverCron] = useState('')
   const [liveCoins, setLiveCoins] = useState<Map<string, LiveCoin>>(new Map())
+  const [now, setNow] = useState(Date.now())
+  const prices = usePrices()
   const pipelineWasRunning = useRef(false)
 
   function loadAll() {
@@ -147,7 +153,16 @@ export default function Dashboard({ onApprovalAction }: Props) {
       .catch(() => {})
   }
 
-  useEffect(() => { loadAll(); loadAdjustments(); loadAdjHistory(); loadPendingApprovals() }, [])
+  function loadEntryIntents() {
+    fetch('/api/entry-intents')
+      .then(r => r.json())
+      .then((data: EntryIntent[]) => {
+        if (Array.isArray(data)) setEntryIntents(data)
+      })
+      .catch(() => {})
+  }
+
+  useEffect(() => { loadAll(); loadAdjustments(); loadAdjHistory(); loadPendingApprovals(); loadEntryIntents() }, [])
 
   useEffect(() => {
     if (!pipelineRunning) return
@@ -188,6 +203,9 @@ export default function Dashboard({ onApprovalAction }: Props) {
       const d = data as { coin: string; price: number }
       setAlerts(prev => [{ id: Date.now(), type: 'TP' as const, coin: d.coin, price: d.price }, ...prev].slice(0, 5))
       loadAll()
+    } else if (event === 'entry_intent_update') {
+      const d = data as { intents?: EntryIntent[] }
+      if (Array.isArray(d.intents)) setEntryIntents(d.intents)
     } else if (event === 'trade_executed' || event === 'portfolio_updated') {
       loadAll()
     } else if (event === 'coin_discovered') {
@@ -222,6 +240,12 @@ export default function Dashboard({ onApprovalAction }: Props) {
       }
     }
   }, []))
+
+  useEffect(() => {
+    if (entryIntents.length === 0) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [entryIntents.length])
 
   function handleApprovalAction(tradeId: number) {
     setApprovals(prev => prev.filter(a => a.tradeId !== tradeId))
@@ -414,6 +438,21 @@ export default function Dashboard({ onApprovalAction }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {approvals.map(a => (
               <TradeApproval key={a.tradeId} request={a} onAction={() => handleApprovalAction(a.tradeId)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Pending Entry Intents — BUYs waiting for a good fill */}
+      {entryIntents.length > 0 && (
+        <div>
+          <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+            Waiting for Entry
+            <Badge variant="accent">{entryIntents.length}</Badge>
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {entryIntents.map(i => (
+              <EntryIntentCard key={i.id} intent={i} now={now} currentPrice={prices.get(i.coin)?.price} />
             ))}
           </div>
         </div>
@@ -655,6 +694,76 @@ function AdjustmentApproval({ request, onAction }: {
         <Button variant="danger" size="sm" className="flex-1" onClick={() => onAction(request.adjustmentId, 'reject')}>
           Reject
         </Button>
+      </div>
+    </Card>
+  )
+}
+
+function EntryIntentCard({ intent, now, currentPrice }: {
+  intent: EntryIntent
+  now: number
+  currentPrice?: number
+}) {
+  const coin = intent.coin.replace('/USDC', '')
+  const msLeft = Math.max(0, intent.expiresAt - now)
+  const mins = Math.floor(msLeft / 60000)
+  const secs = Math.floor((msLeft % 60000) / 1000)
+
+  // Position of the live price within the [invalidate, chaseCap] band, 0–100%.
+  const lo = intent.invalidatePrice
+  const hi = intent.chaseCapPrice
+  const pos = currentPrice != null && hi > lo
+    ? Math.min(100, Math.max(0, ((currentPrice - lo) / (hi - lo)) * 100))
+    : null
+  // Where the target sits within the same band.
+  const targetPos = hi > lo ? Math.min(100, Math.max(0, ((intent.targetPrice - lo) / (hi - lo)) * 100)) : 50
+  const atOrBelowTarget = currentPrice != null && currentPrice <= intent.targetPrice
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-foreground">{coin}</span>
+          <Badge variant="accent">Waiting to buy</Badge>
+        </div>
+        <span className="text-xs text-muted tabular-nums">
+          {mins}:{secs.toString().padStart(2, '0')} left
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="bg-surface-elevated rounded-xl p-2">
+          <p className="text-[10px] text-muted mb-0.5">Signal</p>
+          <p className="text-xs font-medium text-foreground tabular-nums">{fmtUSD(intent.signalPrice)}</p>
+        </div>
+        <div className="bg-surface-elevated rounded-xl p-2 ring-1 ring-accent/20">
+          <p className="text-[10px] text-muted mb-0.5">Buy ≤</p>
+          <p className="text-xs font-semibold text-accent tabular-nums">{fmtUSD(intent.targetPrice)}</p>
+        </div>
+        <div className="bg-surface-elevated rounded-xl p-2">
+          <p className="text-[10px] text-muted mb-0.5">Now</p>
+          <p className={cn('text-xs font-medium tabular-nums', atOrBelowTarget ? 'text-buy' : 'text-foreground')}>
+            {currentPrice != null ? fmtUSD(currentPrice) : '—'}
+          </p>
+        </div>
+      </div>
+
+      {/* Band: invalidate ── target ── chase cap, with a live marker */}
+      <div className="relative h-1.5 rounded-full bg-gradient-to-r from-sell/30 via-border to-warn/30">
+        <span
+          className="absolute top-1/2 -translate-y-1/2 h-3 w-0.5 rounded-full bg-accent"
+          style={{ left: `${targetPos}%` }}
+        />
+        {pos != null && (
+          <span
+            className="absolute top-1/2 -translate-y-1/2 h-3 w-3 -translate-x-1/2 rounded-full bg-foreground shadow ring-2 ring-surface-card transition-all duration-300"
+            style={{ left: `${pos}%` }}
+          />
+        )}
+      </div>
+      <div className="flex justify-between text-[10px] text-muted tabular-nums">
+        <span className="text-sell/80">invalidate {fmtUSD(intent.invalidatePrice)}</span>
+        <span className="text-warn/80">cap {fmtUSD(intent.chaseCapPrice)}</span>
       </div>
     </Card>
   )

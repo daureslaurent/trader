@@ -6,6 +6,7 @@ import { startAPI } from './api/index.js'
 import { startTelegramBot, sendApprovalMessage, startNotifier } from './telegram/index.js'
 import { fetchMarketData, fetchBalance, executeTrade, getTopPairs } from './trader/index.js'
 import * as priceCache from './market/index.js'
+import * as entry from './entry/index.js'
 import cron, { ScheduledTask } from 'node-cron'
 import { researchCoin } from './researcher/index.js'
 import { extractResearch, selectArticles } from './extractor/index.js'
@@ -288,6 +289,12 @@ async function tradingLoop() {
           continue
         }
 
+        if (entry.hasActiveIntent(data.symbol)) {
+          logger.debug('Skipping BUY — entry intent already pending', { coin: data.symbol })
+          logPipelineEvent('trade_skipped', data.symbol, cycleId, { reason: 'Entry intent already pending for this coin' })
+          continue
+        }
+
         const availableUsdc = getUsdtEntry()?.quantity ?? 0
         if (availableUsdc < settings.min_trade_usdc) {
           logger.warn('Skipping BUY — USDC below minimum threshold', { coin: data.symbol, availableUsdc, min: settings.min_trade_usdc })
@@ -332,15 +339,40 @@ async function tradingLoop() {
         }
 
         const buySignal: Signal = { ...signal, quantity: qty }
-        const { outcome, error: tradeErr } = await handleTradeSignal(buySignal, data.price, marketCtx.atr14, settings)
-        logPipelineEvent('trade_executed', data.symbol, cycleId, {
-          action: 'BUY', price: data.price, quantity: qty,
-          stop_loss: sl, take_profit: tp,
-          pending_approval: outcome === 'pending',
-          sl_source: signal.stop_loss_pct != null ? 'rule' : 'atr',
-          error: outcome === 'failed' ? tradeErr : undefined,
-        })
-        if (outcome !== 'failed') tradesInitiated++
+
+        if (settings.entry_timing_enabled) {
+          // Defer the fill: hand the signal to the entry engine, which waits for a
+          // good price (pullback / in-band) before firing via the 'entry_fire' bus
+          // event. The actual trade + SL/TP are computed at the real fill price.
+          //
+          // Base the entry band on the LIVE price at registration, not data.price:
+          // coins are analyzed sequentially through a slow (research + multi-LLM)
+          // pipeline, so data.price (captured at cycle start) can be minutes stale
+          // by the time this signal lands. The engine evaluates against the live WS
+          // feed, so a stale basis would falsely trip "ran away" / "pullback" the
+          // instant the intent is created. Position size + fee-edge gate stay on the
+          // analyzed price (decision-time); only the band tracks the fresh price.
+          const entryBasis = priceCache.getPrice(data.symbol)?.price ?? data.price
+          entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * data.price, atr: marketCtx.atr14, settings })
+          logPipelineEvent('entry_intent_created', data.symbol, cycleId, {
+            action: 'BUY', signal_price: entryBasis, analyzed_price: data.price, quantity: qty,
+            target_price: entryBasis * (1 - settings.entry_pullback_pct / 100),
+            invalidate_price: entryBasis * (1 - settings.entry_invalidate_pct / 100),
+            chase_cap_price: entryBasis * (1 + settings.entry_max_chase_pct / 100),
+            ttl_minutes: settings.entry_ttl_minutes,
+          })
+          tradesInitiated++
+        } else {
+          const { outcome, error: tradeErr } = await handleTradeSignal(buySignal, data.price, marketCtx.atr14, settings)
+          logPipelineEvent('trade_executed', data.symbol, cycleId, {
+            action: 'BUY', price: data.price, quantity: qty,
+            stop_loss: sl, take_profit: tp,
+            pending_approval: outcome === 'pending',
+            sl_source: signal.stop_loss_pct != null ? 'rule' : 'atr',
+            error: outcome === 'failed' ? tradeErr : undefined,
+          })
+          if (outcome !== 'failed') tradesInitiated++
+        }
       } else if (signal.action === 'SELL') {
         const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [data.symbol])
         if (existing) {
@@ -693,6 +725,43 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
     if (claimedPositionId !== undefined) exitsInFlight.delete(claimedPositionId)
   }
 }
+
+// The entry engine fired a deferred BUY at a good price. Re-check live gates
+// (state may have shifted during the wait), then run it through the normal
+// execution path so approval + OCO placement behave exactly as an immediate BUY.
+bus.on('entry_fire', async ({ signal, price, atr }) => {
+  const coin = signal.coin
+  const settings = getSettings()
+
+  if (signal.quantity <= 0) {
+    logger.warn('Entry fire aborted — non-positive quantity', { coin })
+    return
+  }
+  if (queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [coin])) {
+    logger.warn('Entry fire aborted — coin already held', { coin })
+    return
+  }
+  const openPositions = (queryAll("SELECT id FROM positions WHERE status = 'OPEN'") as unknown[]).length
+  if (openPositions >= settings.max_open_positions) {
+    logger.warn('Entry fire aborted — max open positions reached', { coin, openPositions })
+    return
+  }
+  const availableUsdc = getUsdtEntry()?.quantity ?? 0
+  if (availableUsdc < settings.min_trade_usdc || availableUsdc < price * signal.quantity) {
+    logger.warn('Entry fire aborted — insufficient USDC', { coin, availableUsdc, needed: price * signal.quantity })
+    return
+  }
+
+  const { outcome, error } = await handleTradeSignal(signal, price, atr, settings)
+  logPipelineEvent('trade_executed', coin, `${Date.now().toString(36)}-entry`, {
+    action: 'BUY', price, quantity: signal.quantity,
+    pending_approval: outcome === 'pending',
+    sl_source: signal.stop_loss_pct != null ? 'rule' : 'atr',
+    triggered_by: 'entry_timing',
+    error: outcome === 'failed' ? error : undefined,
+  })
+  if (outcome !== 'failed') bus.emit('portfolio_updated')
+})
 
 bus.on('trade_approved', async (tradeId: number) => {
   logger.info('Trade approval received, executing', { tradeId })
@@ -1144,6 +1213,8 @@ async function start() {
   ]
   if (initialCoins.length > 0) priceCache.subscribe([...new Set(initialCoins)])
 
+  entry.start(settings)
+
   schedulePipeline(settings.pipeline_cron)
   scheduleDiscovery(settings.discover_cron)
   scheduleMonitor(settings.monitor_cron, settings.monitor_auto_run)
@@ -1294,6 +1365,7 @@ async function shutdown(signal: string) {
   discoveryCronTask?.stop()
   monitorCronTask?.stop()
   if (positionCheckInterval) clearInterval(positionCheckInterval)
+  entry.stop()
   priceCache.stop()
   try { await closeBrowser() } catch {}
   saveDB()

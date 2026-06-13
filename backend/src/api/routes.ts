@@ -7,6 +7,7 @@ import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
 import { Signal, PortfolioEntry } from '../types.js'
 import * as priceCache from '../market/index.js'
+import { getActiveIntents, getRecentEvents } from '../entry/index.js'
 import { getDiscoveries, approveDiscovery, rejectDiscovery, deleteDiscovery, isRunning } from '../discoverer/index.js'
 import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning } from '../monitor/index.js'
 import { isPipelineRunning, getPendingApprovals } from '../index.js'
@@ -550,6 +551,14 @@ router.delete('/trades/failed', (_req: Request, res: Response) => {
 
 router.get('/approvals', (_req: Request, res: Response) => {
   res.json(getPendingApprovals())
+})
+
+router.get('/entry-intents', (_req: Request, res: Response) => {
+  res.json(getActiveIntents())
+})
+
+router.get('/entry-events', (_req: Request, res: Response) => {
+  res.json(getRecentEvents())
 })
 
 router.post('/trade/approve/:id', (req: Request, res: Response) => {

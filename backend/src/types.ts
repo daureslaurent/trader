@@ -102,6 +102,20 @@ export interface BotSettings {
   llm_debug_fetch_limit: number
   /** Delete llm_calls older than this many days, archiving aggregate stats first. 0 = keep forever. */
   llm_retain_days: number
+  /** When true, BUYs are deferred to the entry-timing engine (wait for a good fill) instead of firing at the cron-tick price. */
+  entry_timing_enabled: boolean
+  /** Target entry as % below the signal price — the "buy the dip" discount. */
+  entry_pullback_pct: number
+  /** Falling-knife cancel: abandon the intent if price drops this % below the signal price. */
+  entry_invalidate_pct: number
+  /** Chase cap: abandon the intent if price rises this % above the signal price (don't chase). */
+  entry_max_chase_pct: number
+  /** How long an entry intent stays live before it expires, in minutes. */
+  entry_ttl_minutes: number
+  /** On expiry: 'market' fires at the current (in-band) price; 'cancel' drops the intent. */
+  entry_on_expiry: 'market' | 'cancel'
+  /** How often the entry engine evaluates intents against the live price, in seconds. */
+  entry_poll_seconds: number
 }
 
 export interface DiscoveryResult {
@@ -150,6 +164,7 @@ export type PipelineStage =
   | 'pipeline_completed'
   | 'trade_executed'
   | 'trade_skipped'
+  | 'entry_intent_created'
   | 'discovery_started'
   | 'discovery_candidates_found'
   | 'discovery_evaluating'

@@ -39,6 +39,13 @@ interface SettingsData {
   fee_rate: number
   llm_debug_fetch_limit: number
   llm_retain_days: number
+  entry_timing_enabled: boolean
+  entry_pullback_pct: number
+  entry_invalidate_pct: number
+  entry_max_chase_pct: number
+  entry_ttl_minutes: number
+  entry_on_expiry: 'market' | 'cancel'
+  entry_poll_seconds: number
 }
 
 const CRON_PRESETS = [
@@ -70,6 +77,7 @@ function isValidCron(expr: string): boolean {
 
 const SECTIONS = [
   { id: 'trading',    label: 'Trading',          icon: 'M22 7l-8.5 8.5-5-5L2 17M16 7h6v6' },
+  { id: 'entry',      label: 'Entry Timing',     icon: 'M12 8v4l3 3M3 12a9 9 0 1018 0 9 9 0 00-18 0z' },
   { id: 'risk',       label: 'Risk Management',  icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
   { id: 'monitor',    label: 'Position Monitor', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
   { id: 'appearance', label: 'Appearance',       icon: 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z' },
@@ -355,7 +363,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -493,8 +501,45 @@ export default function Settings() {
           </Row>
         </Section>
 
+        {/* Entry Timing */}
+        <Section id="entry" title="Entry Timing" subtitle="Wait for a good price before filling a BUY, instead of buying at the cron tick" icon={SECTIONS[1].icon}>
+          <Row label="Smart entry timing" hint="When on, a BUY signal becomes a pending intent: the bot watches the live price and fills on a pullback (or in-band) instead of buying wherever price sits at the cron tick. Turn off to fill immediately (legacy behavior).">
+            <Toggle label="Smart entry timing" checked={settings.entry_timing_enabled} onChange={() => toggle('entry_timing_enabled')} />
+          </Row>
+
+          {settings.entry_timing_enabled && (
+            <>
+              <Row label="Pullback target" hint="Aim to buy this % below the signal price (the dip). Fires as soon as price reaches the target.">
+                <UnitInput type="number" step="0.1" min="0" max="10" unit="%" value={settings.entry_pullback_pct} onChange={e => set('entry_pullback_pct', parseFloat(e.target.value) || 0)} />
+              </Row>
+              <Row label="Invalidate (falling knife)" hint="Abandon the intent if price drops this % below the signal price before filling — likely a breakdown, not a dip.">
+                <UnitInput type="number" step="0.5" min="0.5" max="50" unit="%" value={settings.entry_invalidate_pct} onChange={e => set('entry_invalidate_pct', parseFloat(e.target.value) || 0)} />
+              </Row>
+              <Row label="Chase cap" hint="Abandon the intent if price runs this % above the signal price — the move got away; wait for the next cycle rather than chasing.">
+                <UnitInput type="number" step="0.5" min="0.5" max="50" unit="%" value={settings.entry_max_chase_pct} onChange={e => set('entry_max_chase_pct', parseFloat(e.target.value) || 0)} />
+              </Row>
+              <Row label="Intent lifetime" hint="How long to wait for a good entry before the intent expires.">
+                <UnitInput type="number" step="1" min="1" max="240" unit="min" value={settings.entry_ttl_minutes} onChange={e => set('entry_ttl_minutes', parseFloat(e.target.value) || 0)} />
+              </Row>
+              <Row label="On expiry" hint="When the intent expires still in-band: fill at market so you don't keep missing valid setups, or cancel and wait for a fresh signal.">
+                <select
+                  value={settings.entry_on_expiry}
+                  onChange={e => set('entry_on_expiry', e.target.value as 'market' | 'cancel')}
+                  className="w-full text-sm bg-surface-elevated border border-border rounded-xl px-2.5 py-2 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+                >
+                  <option value="market">Fill at market</option>
+                  <option value="cancel">Cancel</option>
+                </select>
+              </Row>
+              <Row label="Price check interval" hint="How often the engine re-checks the live price against pending intents.">
+                <UnitInput type="number" step="1" min="1" max="60" unit="sec" value={settings.entry_poll_seconds} onChange={e => set('entry_poll_seconds', parseFloat(e.target.value) || 0)} />
+              </Row>
+            </>
+          )}
+        </Section>
+
         {/* Risk */}
-        <Section id="risk" title="Risk Management" subtitle="Position sizing and protection levels" icon={SECTIONS[1].icon}>
+        <Section id="risk" title="Risk Management" subtitle="Position sizing and protection levels" icon={SECTIONS[2].icon}>
           <Row label="Min confidence" hint="Skip signals below this threshold (0–1)">
             <Input type="number" step="0.05" min="0" max="1" value={settings.min_confidence} onChange={e => set('min_confidence', parseFloat(e.target.value) || 0)} />
           </Row>
@@ -522,7 +567,7 @@ export default function Settings() {
         </Section>
 
         {/* Position Monitor */}
-        <Section id="monitor" title="Position Monitor" subtitle="Automatically review open positions on a schedule" icon={SECTIONS[2].icon}>
+        <Section id="monitor" title="Position Monitor" subtitle="Automatically review open positions on a schedule" icon={SECTIONS[3].icon}>
           <Row label="Auto-run" hint="Periodically run the monitor to check positions">
             <Toggle label="Auto-run monitor" checked={settings.monitor_auto_run} onChange={() => toggle('monitor_auto_run')} />
           </Row>
@@ -669,7 +714,7 @@ export default function Settings() {
         </Section>
 
         {/* Appearance */}
-        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={SECTIONS[3].icon}>
+        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={SECTIONS[4].icon}>
           <div className="py-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
             {THEMES.map(t => (
               <button
@@ -701,7 +746,7 @@ export default function Settings() {
         </Section>
 
         {/* LLM Data */}
-        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={SECTIONS[4].icon}>
+        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={SECTIONS[5].icon}>
           <Row
             label="Debug fetch limit"
             hint="Max LLM calls loaded in the LLM Stats and Debug pages. Higher values may slow the page."

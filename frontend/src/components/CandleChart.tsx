@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine,
+  ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ReferenceDot, ReferenceLine, ReferenceArea,
   ResponsiveContainer,
 } from 'recharts'
 import type { Decision, Trade, SlTpEvent, PositionReview } from '../types'
@@ -52,6 +52,38 @@ interface ChartDatum extends Candle {
   reviews?: ReviewMark[]    // monitor runs that reviewed the position during this candle
   sl?: number | null        // active stop-loss at this candle's time
   tp?: number | null        // active take-profit at this candle's time
+}
+
+// A horizontal price level drawn across the chart (e.g. entry trigger lines).
+export interface ChartLevel {
+  price: number
+  label: string
+  color: string       // CSS color, e.g. 'rgb(var(--accent-rgb))'
+  dash?: string       // strokeDasharray, omit for solid
+}
+
+// A shaded horizontal band between two prices (e.g. the entry fill window).
+export interface ChartZone {
+  y1: number
+  y2: number
+  color: string       // CSS color for the fill
+}
+
+// Left-anchored pill label for a horizontal level — keeps clear of the right-axis live tag.
+function LevelLabel(props: any) {
+  const { viewBox, text, color } = props
+  if (!viewBox) return null
+  const { x, y } = viewBox
+  const w = text.length * 5.6 + 14, h = 15
+  return (
+    <g>
+      <rect x={x + 5} y={y - h / 2} width={w} height={h} rx={3}
+        fill="var(--surface-elevated)" stroke={color} strokeWidth={1} />
+      <text x={x + 5 + w / 2} y={y + 3.5} textAnchor="middle" fontSize={9} fontWeight={600} fill={color}>
+        {text}
+      </text>
+    </g>
+  )
 }
 
 function fmtPrice(n: number): string {
@@ -279,10 +311,13 @@ function CandleTooltip({ active, payload }: { active?: boolean; payload?: { payl
   )
 }
 
-export function CandleChart({ symbol, decisions = [], trades = [] }: {
+export function CandleChart({ symbol, decisions = [], trades = [], levels = [], zones = [], hideSlTp = false }: {
   symbol: string
   decisions?: Decision[]
   trades?: Trade[]
+  levels?: ChartLevel[]
+  zones?: ChartZone[]
+  hideSlTp?: boolean
 }) {
   const [tf, setTf] = useState<Timeframe>(() => (localStorage.getItem('chart_tf') as Timeframe | null) ?? '1h')
   const [candles, setCandles] = useState<Candle[]>([])
@@ -301,6 +336,7 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
 
   // SL/TP change history + monitor review history for the coin (refetched when coin changes).
   useEffect(() => {
+    if (hideSlTp) { setSlTpEvents([]); setMonitorReviews([]); return }
     let cancelled = false
     const base = symbol.replace('/USDC', '')
     fetch(`/api/sl-tp/${base}`)
@@ -312,7 +348,7 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
       .then(d => { if (!cancelled) setMonitorReviews(Array.isArray(d) ? d : []) })
       .catch(() => { if (!cancelled) setMonitorReviews([]) })
     return () => { cancelled = true }
-  }, [symbol])
+  }, [symbol, hideSlTp])
 
   useEffect(() => {
     let cancelled = false
@@ -433,9 +469,11 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
       if (showTp && d.tp != null) { min = Math.min(min, d.tp); max = Math.max(max, d.tp) }
     }
     if (livePrice > 0) { min = Math.min(min, livePrice); max = Math.max(max, livePrice) }
+    for (const l of levels) { min = Math.min(min, l.price); max = Math.max(max, l.price) }
+    for (const z of zones) { min = Math.min(min, z.y1, z.y2); max = Math.max(max, z.y1, z.y2) }
     const pad = (max - min) * 0.08 || max * 0.01
     return [min - pad, max + pad]
-  }, [data, livePrice, showSl, showTp])
+  }, [data, livePrice, showSl, showTp, levels, zones])
 
   const currentSl = useMemo(() => {
     if (!showSl) return null
@@ -490,27 +528,31 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
           )}
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => setShowSl(v => !v)}
-            className={cn(
-              'px-2.5 py-1 text-xs font-medium rounded-lg transition-all',
-              showSl ? 'bg-sell/10 text-sell' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
-            )}
-            title="Toggle stop-loss level"
-          >
-            SL
-          </button>
-          <button
-            onClick={() => setShowTp(v => !v)}
-            className={cn(
-              'px-2.5 py-1 text-xs font-medium rounded-lg transition-all',
-              showTp ? 'bg-buy/10 text-buy' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
-            )}
-            title="Toggle take-profit level"
-          >
-            TP
-          </button>
-          <div className="w-px h-4 bg-border mx-1" />
+          {!hideSlTp && (
+            <>
+              <button
+                onClick={() => setShowSl(v => !v)}
+                className={cn(
+                  'px-2.5 py-1 text-xs font-medium rounded-lg transition-all',
+                  showSl ? 'bg-sell/10 text-sell' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
+                )}
+                title="Toggle stop-loss level"
+              >
+                SL
+              </button>
+              <button
+                onClick={() => setShowTp(v => !v)}
+                className={cn(
+                  'px-2.5 py-1 text-xs font-medium rounded-lg transition-all',
+                  showTp ? 'bg-buy/10 text-buy' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
+                )}
+                title="Toggle take-profit level"
+              >
+                TP
+              </button>
+              <div className="w-px h-4 bg-border mx-1" />
+            </>
+          )}
           {TIMEFRAMES.map(t => (
             <button
               key={t}
@@ -559,7 +601,28 @@ export function CandleChart({ symbol, decisions = [], trades = [] }: {
                   tickFormatter={fmtPrice}
                 />
                 <Tooltip content={<CandleTooltip />} cursor={{ fill: 'var(--surface-elevated)', opacity: 0.4 }} />
+
+                {/* Shaded zones (e.g. the entry fill window) — behind the candles */}
+                {zones.map((z, i) => (
+                  <ReferenceArea
+                    key={`zone-${i}`}
+                    y1={z.y1} y2={z.y2}
+                    fill={z.color} fillOpacity={0.1}
+                    stroke="none" ifOverflow="extendDomain"
+                  />
+                ))}
+
                 <Bar dataKey="range" shape={<Candlestick />} isAnimationActive={false} />
+
+                {/* Horizontal price levels (e.g. entry triggers) with left-anchored labels */}
+                {levels.map((l, i) => (
+                  <ReferenceLine
+                    key={`level-${i}`}
+                    y={l.price} stroke={l.color} strokeWidth={1.5}
+                    strokeDasharray={l.dash} ifOverflow="extendDomain"
+                    label={<LevelLabel text={`${l.label} ${fmtPrice(l.price)}`} color={l.color} />}
+                  />
+                ))}
 
                 {/* Stop-loss / take-profit levels — stepped so they follow their history */}
                 {showTp && (

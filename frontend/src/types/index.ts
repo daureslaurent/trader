@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'trade' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
 
 export interface PortfolioSnapshot {
   total_value_usd: number
@@ -115,6 +115,30 @@ export interface Settings {
   stop_loss_atr_multiplier: number
   take_profit_atr_multiplier: number
   approval_required: boolean
+}
+
+export interface EntryIntent {
+  id: string
+  coin: string
+  signalPrice: number
+  targetPrice: number
+  invalidatePrice: number
+  chaseCapPrice: number
+  notionalUsdc: number
+  createdAt: number
+  expiresAt: number
+}
+
+export interface EntryEvent {
+  id: string
+  coin: string
+  type: 'registered' | 'filled' | 'cancelled'
+  reason?: 'pullback' | 'expiry-market' | 'falling_knife' | 'ran_away' | 'expired' | 'manual'
+  signalPrice: number
+  targetPrice: number
+  price?: number
+  slippagePct?: number
+  at: number
 }
 
 export interface ApprovalRequest {

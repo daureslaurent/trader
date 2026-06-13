@@ -45,6 +45,13 @@ export function getSettings(): BotSettings {
     utc_offset_hours: parseFloat(map.utc_offset_hours || '0'),
     llm_debug_fetch_limit: parseInt(map.llm_debug_fetch_limit || '200', 10),
     llm_retain_days: parseInt(map.llm_retain_days || '0', 10),
+    entry_timing_enabled: (map.entry_timing_enabled ?? 'true') === 'true',
+    entry_pullback_pct: parseFloat(map.entry_pullback_pct || '0.5'),
+    entry_invalidate_pct: parseFloat(map.entry_invalidate_pct || '3'),
+    entry_max_chase_pct: parseFloat(map.entry_max_chase_pct || '1.5'),
+    entry_ttl_minutes: parseFloat(map.entry_ttl_minutes || '20'),
+    entry_on_expiry: (map.entry_on_expiry === 'cancel' ? 'cancel' : 'market'),
+    entry_poll_seconds: parseFloat(map.entry_poll_seconds || '3'),
   }
 }
 

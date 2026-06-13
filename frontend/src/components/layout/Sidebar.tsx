@@ -41,6 +41,11 @@ const ITEMS: Record<Page, NavItem> = {
     label: 'Trade',
     path: 'M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5',
   },
+  entry: {
+    key: 'entry',
+    label: 'Entry Desk',
+    path: 'M12 21a9 9 0 100-18 9 9 0 000 18zm0-4.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9zm0-3a1.5 1.5 0 100-3 1.5 1.5 0 000 3z',
+  },
   pipeline: {
     key: 'pipeline',
     label: 'Pipeline',
@@ -84,7 +89,7 @@ const ITEMS: Record<Page, NavItem> = {
 }
 
 const GROUPS: { label?: string; keys: Page[] }[] = [
-  { keys: ['dashboard', 'trading-state', 'portfolio', 'monitor', 'trade'] },
+  { keys: ['dashboard', 'trading-state', 'portfolio', 'monitor', 'trade', 'entry'] },
   { label: 'Engine', keys: ['pipeline', 'charts', 'discover'] },
   { label: 'Intelligence', keys: ['llm-debug', 'llm-stats', 'cache'] },
   { label: 'System', keys: ['logs', 'settings'] },
