@@ -54,12 +54,25 @@ export default {
           from: { transform: 'scale(0.97)', opacity: '0' },
           to: { transform: 'scale(1)', opacity: '1' },
         },
+        flowLine: {
+          '0%': { backgroundPosition: '200% 0' },
+          '100%': { backgroundPosition: '-200% 0' },
+        },
+        glowPulse: {
+          '0%, 100%': { opacity: '0.35', transform: 'scale(1)' },
+          '50%': { opacity: '0.9', transform: 'scale(1.12)' },
+        },
+        dashDraw: {
+          to: { strokeDashoffset: '0' },
+        },
       },
       animation: {
         'slide-down': 'slideDown 0.2s ease-out',
         'slide-up': 'slideUp 0.2s ease-out',
         'fade-in': 'fadeIn 0.15s ease-out',
         'scale-in': 'scaleIn 0.18s ease-out',
+        'flow-line': 'flowLine 1.4s linear infinite',
+        'glow-pulse': 'glowPulse 1.8s ease-in-out infinite',
       },
     },
   },

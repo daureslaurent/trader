@@ -6,11 +6,13 @@ interface StatProps {
   value: string | number
   sub?: string
   icon?: ReactNode
+  /** Optional pill rendered in the top-right, beside the icon (e.g. a status/model tag). */
+  badge?: ReactNode
   trend?: 'up' | 'down' | 'neutral'
   className?: string
 }
 
-export function Stat({ label, value, sub, icon, trend, className }: StatProps) {
+export function Stat({ label, value, sub, icon, badge, trend, className }: StatProps) {
   return (
     <div className={cn(
       'group relative overflow-hidden bg-surface-card border border-border rounded-2xl p-5 neon-border shadow-soft',
@@ -33,9 +35,14 @@ export function Stat({ label, value, sub, icon, trend, className }: StatProps) {
             </p>
           )}
         </div>
-        {icon && (
-          <div className="shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-accent/15 to-accent2/10 ring-1 ring-accent/10 text-accent flex items-center justify-center">
-            {icon}
+        {(badge || icon) && (
+          <div className="flex items-center gap-2 shrink-0">
+            {badge}
+            {icon && (
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent/15 to-accent2/10 ring-1 ring-accent/10 text-accent flex items-center justify-center">
+                {icon}
+              </div>
+            )}
           </div>
         )}
       </div>

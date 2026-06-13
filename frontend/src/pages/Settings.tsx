@@ -4,11 +4,12 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { useTheme, THEMES } from '../contexts/ThemeContext'
 import { cn } from '../lib/utils'
+import { MonitorModelsResponse, LLMDefaults, LLMModuleKey } from '../types'
 
 interface SettingsData {
   watchlist: string[]
   pipeline_cron: string
-  default_horizon: 'auto' | 'short' | 'medium' | 'long'
+  default_horizon: 'auto' | 'llm' | 'short' | 'medium' | 'long'
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
@@ -18,6 +19,7 @@ interface SettingsData {
   max_open_positions: number
   cache_ttl_hours: number
   monitor_auto_run: boolean
+  monitor_model: 'a' | 'b' | 'alternate'
   monitor_cron: string
   monitor_adjust_sltp: boolean
   monitor_auto_approve: boolean
@@ -39,6 +41,7 @@ interface SettingsData {
   fee_rate: number
   llm_debug_fetch_limit: number
   llm_retain_days: number
+  llm_allow_parallel_same_url: boolean
   entry_timing_enabled: boolean
   entry_pullback_pct: number
   entry_invalidate_pct: number
@@ -46,6 +49,24 @@ interface SettingsData {
   entry_ttl_minutes: number
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
+  llm_analyst_base_url: string
+  llm_analyst_model: string
+  llm_analyst_max_tokens: number
+  llm_extractor_base_url: string
+  llm_extractor_model: string
+  llm_extractor_max_tokens: number
+  llm_discoverer_base_url: string
+  llm_discoverer_model: string
+  llm_discoverer_max_tokens: number
+  llm_discoverer_extractor_base_url: string
+  llm_discoverer_extractor_model: string
+  llm_discoverer_extractor_max_tokens: number
+  llm_monitor_a_base_url: string
+  llm_monitor_a_model: string
+  llm_monitor_a_max_tokens: number
+  llm_monitor_b_base_url: string
+  llm_monitor_b_model: string
+  llm_monitor_b_max_tokens: number
 }
 
 const CRON_PRESETS = [
@@ -80,6 +101,7 @@ const SECTIONS = [
   { id: 'entry',      label: 'Entry Timing',     icon: 'M12 8v4l3 3M3 12a9 9 0 1018 0 9 9 0 00-18 0z' },
   { id: 'risk',       label: 'Risk Management',  icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
   { id: 'monitor',    label: 'Position Monitor', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+  { id: 'models',     label: 'LLM Models',       icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z' },
   { id: 'appearance', label: 'Appearance',       icon: 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z' },
   { id: 'llm',        label: 'LLM Data',         icon: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5' },
 ] as const
@@ -300,7 +322,8 @@ function WatchlistEditor({ value, onChange }: { value: string[]; onChange: (v: s
 }
 
 const HORIZONS = [
-  { id: 'auto',   label: 'Auto',   hint: 'LLM decides' },
+  { id: 'auto',   label: 'Auto',   hint: 'ATR-sized' },
+  { id: 'llm',    label: 'LLM',    hint: 'Decides per trade' },
   { id: 'short',  label: 'Short',  hint: 'Days–weeks' },
   { id: 'medium', label: 'Medium', hint: 'Weeks–months' },
   { id: 'long',   label: 'Long',   hint: 'Months–years' },
@@ -308,10 +331,30 @@ const HORIZONS = [
 
 const HORIZON_COLORS: Record<string, { active: string; idle: string; dot: string }> = {
   auto:   { active: 'bg-surface-hover border-foreground/30 text-foreground', idle: 'border-border text-muted hover:border-foreground/20 hover:text-foreground', dot: 'bg-foreground/50' },
+  llm:    { active: 'bg-accent/10 border-accent/40 text-accent',             idle: 'border-border text-muted hover:border-accent/30 hover:text-foreground',     dot: 'bg-accent' },
   short:  { active: 'bg-sell/10 border-sell/40 text-sell',                   idle: 'border-border text-muted hover:border-sell/30 hover:text-foreground',       dot: 'bg-sell' },
   medium: { active: 'bg-accent/10 border-accent/40 text-accent',             idle: 'border-border text-muted hover:border-accent/30 hover:text-foreground',     dot: 'bg-accent' },
   long:   { active: 'bg-buy/10 border-buy/40 text-buy',                      idle: 'border-border text-muted hover:border-buy/30 hover:text-foreground',        dot: 'bg-buy' },
 }
+
+// Modules whose LLM endpoint/model/max-tokens can be overridden from Settings.
+// Keep in sync with the backend SPECS registry in config/llm.ts. The two monitor
+// slots (A/B) are configured here; the Position Monitor section picks which slot runs.
+const LLM_MODULES: {
+  key: LLMModuleKey
+  label: string
+  hint: string
+  urlKey: keyof SettingsData
+  modelKey: keyof SettingsData
+  maxTokensKey: keyof SettingsData
+}[] = [
+  { key: 'analyst',             label: 'Analyst',              hint: 'Main BUY/SELL/HOLD decision per coin.',                   urlKey: 'llm_analyst_base_url',             modelKey: 'llm_analyst_model',             maxTokensKey: 'llm_analyst_max_tokens' },
+  { key: 'extractor',           label: 'Extractor',            hint: 'Compresses research articles into structured sentiment.', urlKey: 'llm_extractor_base_url',           modelKey: 'llm_extractor_model',           maxTokensKey: 'llm_extractor_max_tokens' },
+  { key: 'discoverer',          label: 'Discoverer',           hint: 'Scores new coin candidates during discovery.',            urlKey: 'llm_discoverer_base_url',          modelKey: 'llm_discoverer_model',          maxTokensKey: 'llm_discoverer_max_tokens' },
+  { key: 'discovererExtractor', label: 'Discoverer extractor', hint: 'Extractor used inside the discovery pipeline.',            urlKey: 'llm_discoverer_extractor_base_url', modelKey: 'llm_discoverer_extractor_model', maxTokensKey: 'llm_discoverer_extractor_max_tokens' },
+  { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     urlKey: 'llm_monitor_a_base_url',           modelKey: 'llm_monitor_a_model',           maxTokensKey: 'llm_monitor_a_max_tokens' },
+  { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — alternate model for the position monitor (used in B / Alternate mode).', urlKey: 'llm_monitor_b_base_url', modelKey: 'llm_monitor_b_model', maxTokensKey: 'llm_monitor_b_max_tokens' },
+]
 
 /* ------------------------------------- Page ------------------------------------- */
 
@@ -321,6 +364,8 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [activeSection, setActiveSection] = useState<SectionId>('trading')
+  const [monitorModels, setMonitorModels] = useState<MonitorModelsResponse | null>(null)
+  const [llmDefaults, setLlmDefaults] = useState<LLMDefaults | null>(null)
   const { theme, setTheme } = useTheme()
   const savedTimer = useRef<ReturnType<typeof setTimeout>>()
 
@@ -331,6 +376,20 @@ export default function Settings() {
         setSettings(data)
         setBaseline(data)
       })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/monitor/models')
+      .then(r => r.json())
+      .then((data: MonitorModelsResponse) => setMonitorModels(data))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/llm/defaults')
+      .then(r => r.json())
+      .then((data: LLMDefaults) => setLlmDefaults(data))
       .catch(() => {})
   }, [])
 
@@ -363,7 +422,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -445,9 +504,9 @@ export default function Settings() {
           <Row
             stacked
             label="Trading horizon"
-            hint="Controls how the analyst LLM sizes stop-loss / take-profit and how aggressively the position monitor acts."
+            hint="Trade thesis for new positions — sets stop-loss / take-profit sizing and how aggressively the monitor manages the position. Auto: sized purely off ATR. LLM: the analyst picks short/medium/long per trade. Short/Medium/Long: forced on every trade. The horizon stays editable per position afterward."
           >
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
               {HORIZONS.map(({ id, label, hint }) => {
                 const active = settings.default_horizon === id
                 const colors = HORIZON_COLORS[id]
@@ -568,6 +627,85 @@ export default function Settings() {
 
         {/* Position Monitor */}
         <Section id="monitor" title="Position Monitor" subtitle="Automatically review open positions on a schedule" icon={SECTIONS[3].icon}>
+          <Row
+            stacked
+            label="Monitor model"
+            hint="Which LLM reviews open positions. Configure the two slots (model, endpoint, max tokens) in the LLM Models section below. Alternate flips between A and B on each monitor cycle."
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(['a', 'b'] as const).map(slot => {
+                const info = monitorModels?.[slot]
+                const active = settings.monitor_model === slot
+                const alternating = settings.monitor_model === 'alternate'
+                return (
+                  <button
+                    key={slot}
+                    type="button"
+                    onClick={() => set('monitor_model', slot)}
+                    className={cn(
+                      'flex flex-col items-start gap-1.5 px-3.5 py-3 rounded-xl border text-left transition-all duration-150',
+                      active
+                        ? 'bg-accent/10 border-accent/40 ring-1 ring-accent/20'
+                        : 'border-border hover:border-foreground/20',
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2 w-full">
+                      <span className={cn(
+                        'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded',
+                        active ? 'bg-accent/20 text-accent' : 'bg-surface-elevated text-muted',
+                      )}>
+                        {slot === 'a' ? 'Slot A' : 'Slot B'}
+                      </span>
+                      {active && (
+                        <svg className="w-3.5 h-3.5 text-accent shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                      {alternating && (
+                        <span className="text-[10px] font-semibold text-accent shrink-0">in rotation</span>
+                      )}
+                    </div>
+                    <span className={cn(
+                      'text-sm font-medium font-mono truncate w-full',
+                      active ? 'text-foreground' : 'text-muted',
+                    )}>
+                      {info?.model ?? '—'}
+                    </span>
+                    {info?.baseURL && (
+                      <span className="text-[10px] text-muted truncate w-full" title={info.baseURL}>{info.baseURL}</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => set('monitor_model', 'alternate')}
+              className={cn(
+                'mt-2 flex items-center justify-between gap-2 w-full px-3.5 py-3 rounded-xl border text-left transition-all duration-150',
+                settings.monitor_model === 'alternate'
+                  ? 'bg-accent/10 border-accent/40 ring-1 ring-accent/20'
+                  : 'border-border hover:border-foreground/20',
+              )}
+            >
+              <div className="flex items-center gap-2.5">
+                <span className={cn(
+                  'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded',
+                  settings.monitor_model === 'alternate' ? 'bg-accent/20 text-accent' : 'bg-surface-elevated text-muted',
+                )}>
+                  Alternate
+                </span>
+                <span className="text-sm font-medium text-foreground">A ⇄ B each cycle</span>
+                <span className="text-[10px] text-muted hidden sm:inline">one model per run, flips on the next</span>
+              </div>
+              {settings.monitor_model === 'alternate' && (
+                <svg className="w-3.5 h-3.5 text-accent shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </button>
+          </Row>
+
           <Row label="Auto-run" hint="Periodically run the monitor to check positions">
             <Toggle label="Auto-run monitor" checked={settings.monitor_auto_run} onChange={() => toggle('monitor_auto_run')} />
           </Row>
@@ -713,8 +851,59 @@ export default function Settings() {
           )}
         </Section>
 
+        {/* LLM Models */}
+        <Section id="models" title="LLM Models" subtitle="Pick the endpoint, model & max tokens each module uses. Leave a field blank (max tokens 0) to use the env-var default." icon={SECTIONS[4].icon}>
+          <Row
+            label="Parallel calls per endpoint"
+            hint="Off (recommended): calls to the same base URL queue and run one at a time — best for a local server that handles one request at a time. On: allow concurrent calls to the same endpoint. Different endpoints always run in parallel either way."
+          >
+            <Toggle
+              label="Allow parallel same-endpoint calls"
+              checked={settings.llm_allow_parallel_same_url}
+              onChange={() => toggle('llm_allow_parallel_same_url')}
+            />
+          </Row>
+          {LLM_MODULES.map(m => {
+            const def = llmDefaults?.[m.key]
+            const maxTokens = settings[m.maxTokensKey] as number
+            return (
+              <Row key={m.key} label={m.label} hint={m.hint} stacked>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px]">
+                  <Input
+                    type="text"
+                    value={settings[m.modelKey] as string}
+                    onChange={e => set(m.modelKey, e.target.value)}
+                    placeholder={def ? `${def.model} (default)` : 'model'}
+                    className="font-mono text-xs"
+                    aria-label={`${m.label} model`}
+                  />
+                  <Input
+                    type="text"
+                    value={settings[m.urlKey] as string}
+                    onChange={e => set(m.urlKey, e.target.value)}
+                    placeholder={def ? `${def.baseURL} (default)` : 'base URL'}
+                    className="font-mono text-xs"
+                    aria-label={`${m.label} base URL`}
+                  />
+                  <UnitInput
+                    type="number"
+                    min="0"
+                    step="256"
+                    unit="tok"
+                    value={maxTokens || ''}
+                    onChange={e => set(m.maxTokensKey, parseInt(e.target.value) || 0)}
+                    placeholder={def ? `${def.maxTokens}` : 'max'}
+                    className="font-mono text-xs"
+                    aria-label={`${m.label} max tokens`}
+                  />
+                </div>
+              </Row>
+            )
+          })}
+        </Section>
+
         {/* Appearance */}
-        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={SECTIONS[4].icon}>
+        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={SECTIONS[5].icon}>
           <div className="py-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
             {THEMES.map(t => (
               <button
@@ -746,7 +935,7 @@ export default function Settings() {
         </Section>
 
         {/* LLM Data */}
-        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={SECTIONS[5].icon}>
+        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={SECTIONS[6].icon}>
           <Row
             label="Debug fetch limit"
             hint="Max LLM calls loaded in the LLM Stats and Debug pages. Higher values may slow the page."

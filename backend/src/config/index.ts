@@ -55,8 +55,13 @@ export const config = {
     maxTokens: num('DISCOVERER_EXTRACTOR_MAX_TOKENS', 8192),
   },
   monitor: {
+    // Slot A (primary) and slot B (alternate) monitor models. Each can target its
+    // own endpoint; B falls back to A's values, which fall back to the llama defaults.
+    // The active slot is chosen at runtime via the `monitor_model` setting.
     baseURL: opt('MONITOR_BASE_URL', llamaBaseURL),
     model: opt('MONITOR_MODEL', llamaModel),
+    baseURLB: opt('MONITOR_BASE_URL_B', opt('MONITOR_BASE_URL', llamaBaseURL)),
+    modelB: opt('MONITOR_MODEL_B', opt('MONITOR_MODEL', llamaModel)),
     maxTokens: num('MONITOR_MAX_TOKENS', 2048),
   },
   telegram: {

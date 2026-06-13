@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { Sidebar } from './components/layout/Sidebar'
 import { ThemeSelector } from './components/layout/ThemeSelector'
+import { LLMActivityBadge } from './components/layout/LLMActivityBadge'
 import { Page, Toast, ApprovalRequest } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
@@ -162,7 +163,7 @@ function AppInner() {
       />
 
       {/* Main content area */}
-      <div className="flex-1 flex flex-col min-w-0 ml-[220px]">
+      <div className="flex-1 flex flex-col min-w-0 ml-[230px]">
         {/* Header */}
         <header className="flex items-center justify-between px-8 h-16 border-b border-border glass shrink-0 sticky top-0 z-20">
           <h1 className="text-[15px] font-semibold text-foreground tracking-tight">{PAGE_TITLES[page]}</h1>
@@ -174,6 +175,7 @@ function AppInner() {
               <span className={cn('w-1.5 h-1.5 rounded-full bg-current', wsConnected && 'animate-pulse')} />
               {wsConnected ? 'Live' : 'Offline'}
             </span>
+            <LLMActivityBadge />
             <ThemeSelector />
           </div>
         </header>

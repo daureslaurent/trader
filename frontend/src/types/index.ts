@@ -216,6 +216,7 @@ export interface PositionReview {
   new_stop_loss?: number | null
   new_take_profit?: number | null
   market_data: string
+  model: string | null
   cycle_id: string
   created_at: string
 }
@@ -243,6 +244,7 @@ export interface PositionAdjustment {
   reasoning: string | null
   confidence: number | null
   status: 'PENDING' | 'APPLIED' | 'REJECTED' | 'EXPIRED'
+  model: string | null
   cycle_id: string | null
   created_at: string
 }
@@ -258,6 +260,36 @@ export interface MonitorResponse {
   reviews: PositionReview[]
   notes?: MonitorNote[]
 }
+
+export interface MonitorModelSlot {
+  model: string
+  baseURL: string
+}
+
+export interface MonitorModelsResponse {
+  active: 'a' | 'b'
+  a: MonitorModelSlot
+  b: MonitorModelSlot
+}
+
+/** Module keys whose LLM endpoint/model/max-tokens can be overridden from Settings. */
+export type LLMModuleKey =
+  | 'analyst'
+  | 'extractor'
+  | 'discoverer'
+  | 'discovererExtractor'
+  | 'monitorA'
+  | 'monitorB'
+
+/** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */
+export interface LLMDefault {
+  model: string
+  baseURL: string
+  maxTokens: number
+}
+
+/** Env-var fallback per overridable module, from GET /api/llm/defaults. */
+export type LLMDefaults = Record<LLMModuleKey, LLMDefault>
 
 export interface SlTpEvent {
   position_id: number

@@ -647,8 +647,15 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
       }
 
       if (signal.action === 'BUY' && atr && settings) {
-        const sl = calculateStopLoss(result.price, atr, settings)
-        const tp = calculateTakeProfit(result.price, atr, settings)
+        // Prefer the horizon-derived SL/TP percentages the analyst computed
+        // (computeRiskLevels), applied at the REAL fill price; fall back to ATR
+        // sizing only when the signal carries no percentages ('auto' horizon).
+        const sl = signal.stop_loss_pct != null
+          ? result.price * (1 - signal.stop_loss_pct / 100)
+          : calculateStopLoss(result.price, atr, settings)
+        const tp = signal.take_profit_pct != null
+          ? result.price * (1 + signal.take_profit_pct / 100)
+          : calculateTakeProfit(result.price, atr, settings)
         const existing = queryOne("SELECT id FROM positions WHERE coin = ? AND status = 'OPEN'", [signal.coin])
         if (!existing) {
           const { lastInsertRowid } = runSQL(
@@ -849,9 +856,9 @@ bus.on('position_adjustment_proposed', (p) => {
 
   const { lastInsertRowid } = runSQL(
     `INSERT INTO position_adjustments
-      (position_id, coin, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, reasoning, confidence, status, cycle_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
-    [p.positionId, p.coin, p.oldStopLoss, p.oldTakeProfit, p.newStopLoss, p.newTakeProfit, p.reasoning, p.confidence, p.cycleId]
+      (position_id, coin, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, reasoning, confidence, status, model, cycle_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
+    [p.positionId, p.coin, p.oldStopLoss, p.oldTakeProfit, p.newStopLoss, p.newTakeProfit, p.reasoning, p.confidence, p.model, p.cycleId]
   )
   const adjId = Number(lastInsertRowid)
 

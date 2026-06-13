@@ -191,9 +191,15 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     }
   })
 
+  migrate(trading, 'trading', 8, (db) => {
+    // Record which monitor LLM produced each review / adjustment.
+    try { db.run('ALTER TABLE position_reviews ADD COLUMN model TEXT') } catch { /* already exists */ }
+    try { db.run('ALTER TABLE position_adjustments ADD COLUMN model TEXT') } catch { /* already exists */ }
+  })
+
   // ── Settings seeds (idempotent — INSERT OR IGNORE) ────────────────────────
   const seeds = [
-    ['default_horizon', 'auto'],
+    ['default_horizon', 'llm'],
     ['discover_cron', '0 6 * * *'],
     ['discover_min_score', '0.65'],
     ['discover_top_n', '30'],

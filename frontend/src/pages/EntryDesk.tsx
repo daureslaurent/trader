@@ -133,8 +133,8 @@ export default function EntryDesk() {
       {/* Session stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Active intents" value={intents.length} hint={intents.length ? 'waiting for entry' : 'none pending'} accent />
-        <StatCard label="Filled" value={fills.length} hint="this session" tone="buy" />
-        <StatCard label="Cancelled" value={cancels.length} hint="this session" tone="sell" />
+        <StatCard label="Filled" value={fills.length} hint="recent" tone="buy" />
+        <StatCard label="Cancelled" value={cancels.length} hint="recent" tone="sell" />
         <StatCard
           label="Avg entry vs signal"
           value={avgSlip != null ? `${avgSlip >= 0 ? '+' : ''}${avgSlip.toFixed(2)}%` : '—'}
@@ -199,7 +199,7 @@ export default function EntryDesk() {
       {/* Activity feed */}
       <Card noPad>
         <div className="px-5 pt-5 pb-3">
-          <CardHeader title="Activity" subtitle={`${events.length} recent event${events.length !== 1 ? 's' : ''} · this session`} />
+          <CardHeader title="Activity" subtitle={`${events.length} recent event${events.length !== 1 ? 's' : ''}`} />
         </div>
         {events.length === 0 ? (
           <div className="px-5 pb-6 text-sm text-muted">No entry activity yet.</div>

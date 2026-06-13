@@ -9,7 +9,9 @@ import { Signal, PortfolioEntry } from '../types.js'
 import * as priceCache from '../market/index.js'
 import { getActiveIntents, getRecentEvents } from '../entry/index.js'
 import { getDiscoveries, approveDiscovery, rejectDiscovery, deleteDiscovery, isRunning } from '../discoverer/index.js'
-import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning } from '../monitor/index.js'
+import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning, getActiveMonitorModel } from '../monitor/index.js'
+import { config } from '../config/index.js'
+import { resolveLLM } from '../config/llm.js'
 import { isPipelineRunning, getPendingApprovals } from '../index.js'
 import { isTradeable } from '../core/tradeable.js'
 
@@ -853,6 +855,31 @@ router.get('/monitor', (_req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
+})
+
+// Exposes the two configured monitor LLM slots and which one is active, so the UI
+// can label the Settings toggle and badge the active model on the Monitor page.
+router.get('/monitor/models', (_req: Request, res: Response) => {
+  const a = resolveLLM('monitorA')
+  const b = resolveLLM('monitorB')
+  res.json({
+    active: getActiveMonitorModel().slot,
+    a: { model: a.model, baseURL: a.baseURL },
+    b: { model: b.model, baseURL: b.baseURL },
+  })
+})
+
+// Env-var fallback endpoint/model/max-tokens for each module whose LLM is overridable
+// from Settings. The UI shows these as placeholders so a blank field reads as "default".
+router.get('/llm/defaults', (_req: Request, res: Response) => {
+  res.json({
+    analyst: { baseURL: config.analyst.baseURL, model: config.analyst.model, maxTokens: config.analyst.maxTokens },
+    extractor: { baseURL: config.extractor.baseURL, model: config.extractor.model, maxTokens: config.extractor.maxTokens },
+    discoverer: { baseURL: config.discoverer.baseURL, model: config.discoverer.model, maxTokens: config.discoverer.maxTokens },
+    discovererExtractor: { baseURL: config.discovererExtractor.baseURL, model: config.discovererExtractor.model, maxTokens: config.discovererExtractor.maxTokens },
+    monitorA: { baseURL: config.monitor.baseURL, model: config.monitor.model, maxTokens: config.monitor.maxTokens },
+    monitorB: { baseURL: config.monitor.baseURLB, model: config.monitor.modelB, maxTokens: config.monitor.maxTokens },
+  })
 })
 
 router.post('/monitor/run', (_req: Request, res: Response) => {

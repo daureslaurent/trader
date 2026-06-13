@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
-import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
+import { resolveLLM } from '../config/llm.js'
 import { queryOne, runSQL } from '../db/index.js'
 import { ResearchResult, ArticleContent } from '../researcher/index.js'
 import { buildChallengePrompt, buildSingleArticlePrompt, buildSelectionPrompt } from './prompts.js'
@@ -14,11 +14,10 @@ export interface ExtractorLLMConfig {
   baseURL: string
 }
 
-const defaultExtractorConfig: ExtractorLLMConfig = {
-  client: new OpenAI({ baseURL: config.extractor.baseURL, apiKey: 'ollama' }),
-  model: config.extractor.model,
-  maxTokens: config.extractor.maxTokens,
-  baseURL: config.extractor.baseURL,
+// Resolved fresh per call so per-module Settings overrides apply without a restart.
+function getDefaultExtractorConfig(): ExtractorLLMConfig {
+  const { client, model, maxTokens, baseURL } = resolveLLM('extractor')
+  return { client, model, maxTokens, baseURL }
 }
 
 // ── Blocked-content detection ────────────────────────────────────────────────
@@ -170,7 +169,7 @@ async function challengeArticle(
 async function extractSingleArticle(
   coin: string,
   article: ArticleContent,
-  llm: ExtractorLLMConfig = defaultExtractorConfig,
+  llm: ExtractorLLMConfig,
 ): Promise<ExtractedArticle | null> {
   const cached = getCached(article.url)
   if (cached) {
@@ -250,8 +249,9 @@ export async function extractResearch(
     articleCount: result.articles.length,
   })
 
+  const cfg = llm ?? getDefaultExtractorConfig()
   const settled = await Promise.allSettled(
-    result.articles.map(a => extractSingleArticle(result.coin, a, llm))
+    result.articles.map(a => extractSingleArticle(result.coin, a, cfg))
   )
 
   const articles: ExtractedArticle[] = []
@@ -308,7 +308,7 @@ export async function selectArticles(
   if (articles.length <= 2) return articles
 
   const { system, user } = buildSelectionPrompt(coin, articles)
-  const cfg = llm ?? defaultExtractorConfig
+  const cfg = llm ?? getDefaultExtractorConfig()
 
   try {
     const resp = await llmChat(cfg.client, {

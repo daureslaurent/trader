@@ -20,11 +20,12 @@ interface BadgeProps {
   children: ReactNode
   className?: string
   dot?: boolean
+  title?: string
 }
 
-export function Badge({ variant = 'neutral', children, className, dot }: BadgeProps) {
+export function Badge({ variant = 'neutral', children, className, dot, title }: BadgeProps) {
   return (
-    <span className={cn(
+    <span title={title} className={cn(
       'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border',
       VARIANTS[variant],
       className,

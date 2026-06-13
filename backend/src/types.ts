@@ -47,8 +47,12 @@ export interface PortfolioSnapshot {
 export interface BotSettings {
   watchlist: string[]
   pipeline_cron: string
-  /** Trading horizon the bot uses for new positions. 'auto' = LLM decides SL/TP freely. */
-  default_horizon: 'auto' | 'short' | 'medium' | 'long'
+  /** Trading horizon for new positions.
+   *  - 'auto'              → no horizon thesis; SL/TP sized purely off ATR.
+   *  - 'llm'               → the analyst LLM picks short/medium/long per trade as part of its decision.
+   *  - 'short'|'medium'|'long' → force this horizon on every trade (overrides the LLM's pick).
+   *  The chosen horizon is stamped on the position and can still be edited afterward. */
+  default_horizon: 'auto' | 'llm' | 'short' | 'medium' | 'long'
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
@@ -63,6 +67,9 @@ export interface BotSettings {
   discover_auto_add: boolean
   discover_min_volume_usd: number
   monitor_auto_run: boolean
+  /** Which monitor LLM slot to use: 'a' = MONITOR_MODEL / MONITOR_BASE_URL, 'b' = MONITOR_MODEL_B / MONITOR_BASE_URL_B,
+   *  'alternate' = flip between A and B each monitor cycle. */
+  monitor_model: 'a' | 'b' | 'alternate'
   monitor_cron: string
   monitor_adjust_sltp: boolean
   monitor_auto_approve: boolean
@@ -102,6 +109,10 @@ export interface BotSettings {
   llm_debug_fetch_limit: number
   /** Delete llm_calls older than this many days, archiving aggregate stats first. 0 = keep forever. */
   llm_retain_days: number
+  /** When false (default), calls to the same base URL are serialized through a per-URL waiting list so a
+   *  single LLM endpoint only handles one request at a time. When true, same-URL calls may run in parallel.
+   *  Calls to *different* base URLs always run concurrently regardless of this setting. */
+  llm_allow_parallel_same_url: boolean
   /** When true, BUYs are deferred to the entry-timing engine (wait for a good fill) instead of firing at the cron-tick price. */
   entry_timing_enabled: boolean
   /** Target entry as % below the signal price — the "buy the dip" discount. */
@@ -116,6 +127,27 @@ export interface BotSettings {
   entry_on_expiry: 'market' | 'cancel'
   /** How often the entry engine evaluates intents against the live price, in seconds. */
   entry_poll_seconds: number
+  /** Per-module LLM endpoint/model overrides. Blank = fall back to the module's env-var config.
+   *  Max-tokens overrides are numbers where 0 = fall back to the env-var default.
+   *  The monitor exposes its two slots (A/B) here; `monitor_model` still selects which slot runs. */
+  llm_analyst_base_url: string
+  llm_analyst_model: string
+  llm_analyst_max_tokens: number
+  llm_extractor_base_url: string
+  llm_extractor_model: string
+  llm_extractor_max_tokens: number
+  llm_discoverer_base_url: string
+  llm_discoverer_model: string
+  llm_discoverer_max_tokens: number
+  llm_discoverer_extractor_base_url: string
+  llm_discoverer_extractor_model: string
+  llm_discoverer_extractor_max_tokens: number
+  llm_monitor_a_base_url: string
+  llm_monitor_a_model: string
+  llm_monitor_a_max_tokens: number
+  llm_monitor_b_base_url: string
+  llm_monitor_b_model: string
+  llm_monitor_b_max_tokens: number
 }
 
 export interface DiscoveryResult {
@@ -247,6 +279,7 @@ export interface PositionReview {
   new_stop_loss: number | null
   new_take_profit: number | null
   market_data: string
+  model: string | null
   cycle_id: string
   created_at: string
 }
@@ -262,6 +295,7 @@ export interface PositionAdjustment {
   reasoning: string | null
   confidence: number | null
   status: 'PENDING' | 'APPLIED' | 'REJECTED' | 'EXPIRED'
+  model: string | null
   cycle_id: string | null
   created_at: string
 }
@@ -276,6 +310,7 @@ export interface SlTpAdjustmentProposal {
   newTakeProfit: number | null
   reasoning: string
   confidence: number
+  model: string
   cycleId: string
 }
 

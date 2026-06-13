@@ -67,8 +67,6 @@ export default function Dashboard({ onApprovalAction }: Props) {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
   const [entryIntents, setEntryIntents] = useState<EntryIntent[]>([])
   const [adjustments, setAdjustments] = useState<AdjustmentRequest[]>([])
-  const [adjHistory, setAdjHistory] = useState<PositionAdjustment[]>([])
-  const [adjHistoryOpen, setAdjHistoryOpen] = useState(false)
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [discoveryRunning, setDiscoveryRunning] = useState(false)
@@ -135,15 +133,6 @@ export default function Dashboard({ onApprovalAction }: Props) {
       .catch(() => {})
   }
 
-  function loadAdjHistory() {
-    fetch('/api/adjustments?limit=30')
-      .then(r => r.json())
-      .then((rows: PositionAdjustment[]) => {
-        if (Array.isArray(rows)) setAdjHistory(rows)
-      })
-      .catch(() => {})
-  }
-
   function loadPendingApprovals() {
     fetch('/api/approvals')
       .then(r => r.json())
@@ -162,7 +151,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
       .catch(() => {})
   }
 
-  useEffect(() => { loadAll(); loadAdjustments(); loadAdjHistory(); loadPendingApprovals(); loadEntryIntents() }, [])
+  useEffect(() => { loadAll(); loadAdjustments(); loadPendingApprovals(); loadEntryIntents() }, [])
 
   useEffect(() => {
     if (!pipelineRunning) return
@@ -186,15 +175,12 @@ export default function Dashboard({ onApprovalAction }: Props) {
       setApprovals(prev => prev.filter(a => a.tradeId !== (data as number)))
     } else if (event === 'adjustment_requested') {
       setAdjustments(prev => [...prev, data as AdjustmentRequest])
-      loadAdjHistory()
     } else if (event === 'adjustment_resolved') {
       const d = data as { adjustmentId: number }
       setAdjustments(prev => prev.filter(a => a.adjustmentId !== d.adjustmentId))
       loadAll()
-      loadAdjHistory()
     } else if (event === 'position_adjusted') {
       loadAll()
-      loadAdjHistory()
     } else if (event === 'stop_loss_hit') {
       const d = data as { coin: string; price: number }
       setAlerts(prev => [{ id: Date.now(), type: 'SL' as const, coin: d.coin, price: d.price }, ...prev].slice(0, 5))
@@ -276,11 +262,11 @@ export default function Dashboard({ onApprovalAction }: Props) {
   const liveGainPct = liveCostBasis > 0 ? (liveGainUsd / liveCostBasis) * 100 : null
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="h-full flex flex-col gap-6 animate-fade-in">
 
       {/* Alerts */}
       {alerts.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-2 shrink-0">
           {alerts.map(a => (
             <div key={a.id} className={cn(
               'flex items-center justify-between px-4 py-3 rounded-xl border text-sm',
@@ -306,7 +292,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
       )}
 
       {/* Hero — portfolio value + P&L + key metrics */}
-      <Card className="relative overflow-hidden">
+      <Card className="relative overflow-hidden shrink-0">
         <div aria-hidden className="absolute -top-28 -right-20 w-80 h-80 rounded-full bg-accent/10 blur-3xl pointer-events-none" />
         <div aria-hidden className="absolute -bottom-32 left-1/3 w-72 h-72 rounded-full bg-accent2/[0.07] blur-3xl pointer-events-none" />
         <div className="relative flex flex-col lg:flex-row lg:items-center gap-8">
@@ -354,7 +340,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
       </Card>
 
       {/* Bot Services */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 shrink-0">
         <ServiceCard
           label="Trading Pipeline"
           icon={<BoltIcon />}
@@ -381,7 +367,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
 
       {/* Live Pipeline Activity */}
       {liveList.length > 0 && (
-        <Card>
+        <Card className="shrink-0">
           <div className="flex items-center gap-2 mb-4">
             <span className={cn('w-2 h-2 rounded-full shrink-0', pipelineRunning ? 'bg-accent animate-pulse' : 'bg-muted')} />
             <span className="text-sm font-semibold text-foreground">
@@ -430,7 +416,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
 
       {/* Pending Approvals */}
       {approvals.length > 0 && (
-        <div>
+        <div className="shrink-0">
           <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
             Pending Approvals
             <Badge variant="warning">{approvals.length}</Badge>
@@ -445,7 +431,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
 
       {/* Pending Entry Intents — BUYs waiting for a good fill */}
       {entryIntents.length > 0 && (
-        <div>
+        <div className="shrink-0">
           <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
             Waiting for Entry
             <Badge variant="accent">{entryIntents.length}</Badge>
@@ -460,7 +446,7 @@ export default function Dashboard({ onApprovalAction }: Props) {
 
       {/* Pending SL/TP Adjustments */}
       {adjustments.length > 0 && (
-        <div>
+        <div className="shrink-0">
           <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
             SL/TP Changes Awaiting Approval
             <Badge variant="warning">{adjustments.length}</Badge>
@@ -473,16 +459,17 @@ export default function Dashboard({ onApprovalAction }: Props) {
         </div>
       )}
 
-      {/* Active Positions + Recent Signals */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card noPad>
-          <div className="px-5 pt-5 pb-3">
+      {/* Active Positions + Recent Signals + Recent Trades — fills remaining viewport, each scrolls */}
+      <div className="flex-1 min-h-0 flex flex-col gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0">
+        <Card noPad className="h-full flex flex-col overflow-hidden">
+          <div className="px-5 pt-5 pb-3 shrink-0">
             <CardHeader title="Active Positions" subtitle={`${positions.length} open`} />
           </div>
           {positions.length === 0 ? (
             <EmptyState message="No active bot positions." />
           ) : (
-            <div className="divide-y divide-border">
+            <div className="divide-y divide-border overflow-y-auto flex-1 min-h-0">
               {positions.map(p => (
                 <div key={p.id} className="px-5 py-3 flex items-center gap-3 hover:bg-surface-elevated/40 transition-colors duration-100">
                   <CoinAvatar coin={p.coin} />
@@ -518,15 +505,15 @@ export default function Dashboard({ onApprovalAction }: Props) {
           )}
         </Card>
 
-        <Card noPad>
-          <div className="px-5 pt-5 pb-3">
+        <Card noPad className="h-full flex flex-col overflow-hidden">
+          <div className="px-5 pt-5 pb-3 shrink-0">
             <CardHeader title="Recent Signals" subtitle="Analyst decisions" />
           </div>
           {decisions.length === 0 ? (
             <EmptyState message="No signals yet." />
           ) : (
-            <div className="divide-y divide-border">
-              {decisions.slice(0, 7).map(d => (
+            <div className="divide-y divide-border overflow-y-auto flex-1 min-h-0">
+              {decisions.map(d => (
                 <div key={d.id} className="px-5 py-3 flex items-start gap-3 hover:bg-surface-elevated/40 transition-colors duration-100">
                   <div className="shrink-0 mt-0.5">{actionBadge(d.action)}</div>
                   <div className="min-w-0 flex-1">
@@ -543,100 +530,21 @@ export default function Dashboard({ onApprovalAction }: Props) {
             </div>
           )}
         </Card>
-      </div>
-
-      {/* Recent Trades */}
-      <Card noPad>
-        <div className="px-5 pt-5 pb-4">
-          <CardHeader title="Recent Trades" subtitle={`${trades.length} total`} />
         </div>
-        <div className="px-5 pb-5">
-          <TradeHistory trades={trades.slice(0, 15)} />
-        </div>
-      </Card>
 
-      {/* Monitor Adjustment History */}
-      <Card noPad>
-        <button
-          className="w-full px-5 py-4 flex items-center justify-between gap-2 text-left"
-          onClick={() => setAdjHistoryOpen(o => !o)}
-        >
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-foreground">Monitor Adjustments</span>
-            {adjHistory.length > 0 && (
-              <span className="text-xs text-muted tabular-nums">({adjHistory.length})</span>
-            )}
+        <Card noPad className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className="px-5 pt-5 pb-3 shrink-0">
+            <CardHeader title="Recent Trades" subtitle={`${trades.length} total`} />
           </div>
-          <svg
-            className={cn('w-4 h-4 text-muted transition-transform duration-200', adjHistoryOpen && 'rotate-180')}
-            fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-        {adjHistoryOpen && (
-          adjHistory.length === 0 ? (
-            <p className="px-5 pb-5 text-sm text-muted">No adjustments recorded yet.</p>
+          {trades.length === 0 ? (
+            <EmptyState message="No trades yet." />
           ) : (
-            <div className="divide-y divide-border border-t border-border">
-              {adjHistory.map(a => {
-                const coin = a.coin.replace('/USDC', '')
-                const slChanged = a.new_stop_loss != null && a.new_stop_loss !== a.old_stop_loss
-                const tpChanged = a.new_take_profit != null && a.new_take_profit !== a.old_take_profit
-                const fmtLevel = (n: number | null | undefined) => (n != null ? fmtUSD(n) : '—')
-                const statusCls: Record<string, string> = {
-                  APPLIED:  'text-buy bg-buy/10',
-                  REJECTED: 'text-sell bg-sell/10',
-                  PENDING:  'text-warn bg-warn/10',
-                  EXPIRED:  'text-muted bg-muted/10',
-                }
-                const cls = statusCls[a.status] ?? 'text-muted bg-muted/10'
-                return (
-                  <div key={a.id} className="px-5 py-3 flex items-start gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-semibold text-foreground">{coin}</span>
-                        <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded-md', cls)}>
-                          {a.status}
-                        </span>
-                        {a.confidence != null && (
-                          <span className="text-xs text-muted tabular-nums ml-auto shrink-0">
-                            {Math.round(a.confidence * 100)}%
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-3 text-xs tabular-nums mb-1">
-                        {slChanged && (
-                          <span>
-                            <span className="text-muted">SL </span>
-                            <span className="text-muted line-through">{fmtLevel(a.old_stop_loss)}</span>
-                            <span className="text-muted mx-1">→</span>
-                            <span className="text-sell font-medium">{fmtLevel(a.new_stop_loss)}</span>
-                          </span>
-                        )}
-                        {tpChanged && (
-                          <span>
-                            <span className="text-muted">TP </span>
-                            <span className="text-muted line-through">{fmtLevel(a.old_take_profit)}</span>
-                            <span className="text-muted mx-1">→</span>
-                            <span className="text-buy font-medium">{fmtLevel(a.new_take_profit)}</span>
-                          </span>
-                        )}
-                      </div>
-                      {a.reasoning && (
-                        <p className="text-xs text-muted truncate">{a.reasoning}</p>
-                      )}
-                    </div>
-                    <span className="text-[11px] text-muted tabular-nums shrink-0 mt-0.5">
-                      {a.created_at.slice(0, 16).replace('T', ' ')}
-                    </span>
-                  </div>
-                )
-              })}
+            <div className="px-5 pb-5 overflow-y-auto flex-1 min-h-0">
+              <TradeHistory trades={trades} />
             </div>
-          )
-        )}
-      </Card>
+          )}
+        </Card>
+      </div>
     </div>
   )
 }
