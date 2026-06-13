@@ -10,6 +10,16 @@ interface OHLCV {
   volume: number
 }
 
+// Round to N significant figures rather than a fixed number of decimals. A fixed
+// 2-decimal round collapses sub-dollar coins to garbage — e.g. DOGE at ~$0.0877
+// has an ATR of ~$0.0005, which `Math.round(x*100)/100` turns into 0, silently
+// disabling ATR-based sizing/SL and (downstream) position recording.
+function roundSig(n: number, sig = 6): number {
+  if (!Number.isFinite(n) || n === 0) return n
+  const mag = Math.pow(10, sig - Math.ceil(Math.log10(Math.abs(n))))
+  return Math.round(n * mag) / mag
+}
+
 function computeSMA(values: number[], period: number): number {
   if (values.length < period) return values[values.length - 1] || 0
   const slice = values.slice(-period)
@@ -128,10 +138,10 @@ export async function getMarketContext(symbol: string, price: number): Promise<M
         : 0,
       volume: lastCandle.volume,
       rsi14: Math.round(rsi14 * 10) / 10,
-      sma7: Math.round(sma7 * 100) / 100,
-      sma25: Math.round(sma25 * 100) / 100,
-      sma99: Math.round(sma99 * 100) / 100,
-      atr14: Math.round(atr14 * 100) / 100,
+      sma7: roundSig(sma7),
+      sma25: roundSig(sma25),
+      sma99: roundSig(sma99),
+      atr14: roundSig(atr14),
       trend,
       perf7d: Math.round(perf7d * 10) / 10,
       volatility,

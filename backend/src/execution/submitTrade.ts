@@ -58,16 +58,22 @@ export async function submitTrade(signal: Signal, estimatedPrice: number, tradeI
         )
       }
 
-      if (signal.action === 'BUY' && atr && settings) {
+      if (signal.action === 'BUY') {
+        // The exchange order already filled — the position MUST be recorded
+        // regardless of ATR (a falsy atr only changes the SL/TP *fallback*, never
+        // whether we book the position). atr was previously part of this gate,
+        // which meant a 0/undefined ATR silently dropped the position + ledger
+        // entry, leaving real coins untracked and unprotected.
+        const s = settings ?? getSettings()
         // Prefer the horizon-derived SL/TP percentages the analyst computed
         // (computeRiskLevels), applied at the REAL fill price; fall back to ATR
         // sizing only when the signal carries no percentages ('auto' horizon).
         const sl = signal.stop_loss_pct != null
           ? result.price * (1 - signal.stop_loss_pct / 100)
-          : calculateStopLoss(result.price, atr, settings)
+          : calculateStopLoss(result.price, atr ?? 0, s)
         const tp = signal.take_profit_pct != null
           ? result.price * (1 + signal.take_profit_pct / 100)
-          : calculateTakeProfit(result.price, atr, settings)
+          : calculateTakeProfit(result.price, atr ?? 0, s)
         const existing = queryOne("SELECT id FROM positions WHERE coin = ? AND status = 'OPEN'", [signal.coin])
         if (!existing) {
           const { lastInsertRowid } = runSQL(

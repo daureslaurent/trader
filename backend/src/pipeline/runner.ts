@@ -21,6 +21,68 @@ let pipelineRunning = false
 
 export function isPipelineRunning(): boolean { return pipelineRunning }
 
+/**
+ * Shared handler for a BUY that has passed analysis. Runs the BUY gauntlet, then
+ * either defers to the entry-timing engine (when `entry_timing_enabled`) or fills
+ * immediately. Both the scheduled loop and the manual single-coin run go through
+ * here so the two entry points can't drift — a past divergence let the manual
+ * path skip the Entry Desk even with entry-timing on. Returns true when a trade
+ * was initiated or deferred to an entry intent.
+ */
+async function handleBuySignal(args: {
+  data: { symbol: string; price: number }
+  marketCtx: { atr14: number }
+  signal: Signal
+  portfolioState: ReturnType<typeof getPortfolioState>
+  settings: ReturnType<typeof getSettings>
+  cycleId: string
+  checkActiveIntent: boolean
+}): Promise<boolean> {
+  const { data, marketCtx, signal, portfolioState, settings, cycleId, checkActiveIntent } = args
+  const symbol = data.symbol
+
+  const evaluation = prepareBuyOrder({
+    symbol, price: data.price, atr14: marketCtx.atr14,
+    signal, portfolioState, settings, checkActiveIntent,
+  })
+  if (!evaluation.ok) {
+    logPipelineEvent('trade_skipped', symbol, cycleId, { reason: evaluation.reason })
+    return false
+  }
+  const { qty, sl, tp } = evaluation.order
+  const buySignal: Signal = { ...signal, quantity: qty }
+
+  if (settings.entry_timing_enabled) {
+    // Defer the fill to the entry engine, which waits for a good price before
+    // firing via the 'entry_fire' bus event. Base the entry band on the LIVE
+    // price at registration, not data.price: coins are analyzed sequentially
+    // through a slow (research + multi-LLM) pipeline, so data.price (captured at
+    // cycle start) can be minutes stale by the time this signal lands, falsely
+    // tripping "ran away" / "pullback" instantly. Position size + fee-edge gate
+    // stay on the analyzed (decision-time) price; only the band tracks live.
+    const entryBasis = priceCache.getPrice(symbol)?.price ?? data.price
+    entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * data.price, atr: marketCtx.atr14, settings })
+    logPipelineEvent('entry_intent_created', symbol, cycleId, {
+      action: 'BUY', signal_price: entryBasis, analyzed_price: data.price, quantity: qty,
+      target_price: entryBasis * (1 - settings.entry_pullback_pct / 100),
+      invalidate_price: entryBasis * (1 - settings.entry_invalidate_pct / 100),
+      chase_cap_price: entryBasis * (1 + settings.entry_max_chase_pct / 100),
+      ttl_minutes: settings.entry_ttl_minutes,
+    })
+    return true
+  }
+
+  const { outcome, error: tradeErr } = await handleTradeSignal(buySignal, data.price, marketCtx.atr14, settings)
+  logPipelineEvent('trade_executed', symbol, cycleId, {
+    action: 'BUY', price: data.price, quantity: qty,
+    stop_loss: sl, take_profit: tp,
+    pending_approval: outcome === 'pending',
+    sl_source: signal.stop_loss_pct != null ? 'rule' : 'atr',
+    error: outcome === 'failed' ? tradeErr : undefined,
+  })
+  return outcome !== 'failed'
+}
+
 /** Run the full watchlist trading loop once, guarded against overlap and a 1h timeout. */
 export async function runPipeline(): Promise<void> {
   if (pipelineRunning) {
@@ -109,49 +171,8 @@ async function tradingLoop() {
       }
 
       if (signal.action === 'BUY') {
-        const evaluation = prepareBuyOrder({
-          symbol: data.symbol, price: data.price, atr14: marketCtx.atr14,
-          signal, portfolioState, settings, checkActiveIntent: true,
-        })
-        if (!evaluation.ok) {
-          logPipelineEvent('trade_skipped', data.symbol, cycleId, { reason: evaluation.reason })
-          continue
-        }
-        const { qty, sl, tp } = evaluation.order
-        const buySignal: Signal = { ...signal, quantity: qty }
-
-        if (settings.entry_timing_enabled) {
-          // Defer the fill: hand the signal to the entry engine, which waits for a
-          // good price (pullback / in-band) before firing via the 'entry_fire' bus
-          // event. The actual trade + SL/TP are computed at the real fill price.
-          //
-          // Base the entry band on the LIVE price at registration, not data.price:
-          // coins are analyzed sequentially through a slow (research + multi-LLM)
-          // pipeline, so data.price (captured at cycle start) can be minutes stale
-          // by the time this signal lands. The engine evaluates against the live WS
-          // feed, so a stale basis would falsely trip "ran away" / "pullback" the
-          // instant the intent is created. Position size + fee-edge gate stay on the
-          // analyzed price (decision-time); only the band tracks the fresh price.
-          const entryBasis = priceCache.getPrice(data.symbol)?.price ?? data.price
-          entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * data.price, atr: marketCtx.atr14, settings })
-          logPipelineEvent('entry_intent_created', data.symbol, cycleId, {
-            action: 'BUY', signal_price: entryBasis, analyzed_price: data.price, quantity: qty,
-            target_price: entryBasis * (1 - settings.entry_pullback_pct / 100),
-            invalidate_price: entryBasis * (1 - settings.entry_invalidate_pct / 100),
-            chase_cap_price: entryBasis * (1 + settings.entry_max_chase_pct / 100),
-            ttl_minutes: settings.entry_ttl_minutes,
-          })
+        if (await handleBuySignal({ data, marketCtx, signal, portfolioState, settings, cycleId, checkActiveIntent: true })) {
           tradesInitiated++
-        } else {
-          const { outcome, error: tradeErr } = await handleTradeSignal(buySignal, data.price, marketCtx.atr14, settings)
-          logPipelineEvent('trade_executed', data.symbol, cycleId, {
-            action: 'BUY', price: data.price, quantity: qty,
-            stop_loss: sl, take_profit: tp,
-            pending_approval: outcome === 'pending',
-            sl_source: signal.stop_loss_pct != null ? 'rule' : 'atr',
-            error: outcome === 'failed' ? tradeErr : undefined,
-          })
-          if (outcome !== 'failed') tradesInitiated++
         }
       } else if (signal.action === 'SELL') {
         const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [data.symbol])
@@ -249,24 +270,11 @@ export async function runSingleCoinPipeline(symbol: string, cycleId: string): Pr
     }
 
     if (signal.action === 'BUY') {
-      const evaluation = prepareBuyOrder({
-        symbol, price: data.price, atr14: marketCtx.atr14,
-        signal, portfolioState, settings, checkActiveIntent: false,
-      })
-      if (!evaluation.ok) {
-        logPipelineEvent('trade_skipped', symbol, cycleId, { reason: evaluation.reason })
-        return
+      // checkActiveIntent: false — a manual relaunch is an explicit re-run and
+      // should proceed even if an intent is already pending for this coin.
+      if (await handleBuySignal({ data, marketCtx, signal, portfolioState, settings, cycleId, checkActiveIntent: false })) {
+        bus.emit('portfolio_updated')
       }
-      const { qty, sl, tp } = evaluation.order
-      const { outcome, error: tradeErr } = await handleTradeSignal({ ...signal, quantity: qty }, data.price, marketCtx.atr14, settings)
-      logPipelineEvent('trade_executed', symbol, cycleId, {
-        action: 'BUY', price: data.price, quantity: qty,
-        stop_loss: sl, take_profit: tp,
-        pending_approval: outcome === 'pending',
-        sl_source: signal.stop_loss_pct != null ? 'llm' : 'atr',
-        error: outcome === 'failed' ? tradeErr : undefined,
-      })
-      if (outcome !== 'failed') bus.emit('portfolio_updated')
     } else if (signal.action === 'SELL') {
       const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [symbol])
       if (!existing) {
