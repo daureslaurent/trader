@@ -15,7 +15,7 @@ import { resolveLLM } from '../config/llm.js'
 import { isPipelineRunning, getPendingApprovals } from '../index.js'
 import { isTradeable } from '../core/tradeable.js'
 
-import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, closeEntry, reduceEntryQuantity, enrichPortfolioEntriesWithPrices, depositUsdt, withdrawUsdt, getUsdtEntry, updatePortfolioForTrade, getSlTpHistory, cancelProtection, getOpenPositions, closePositionFromExit } from '../portfolio/index.js'
+import { getOpenEntries, getAllEntries, getEntryById, addEntry, updateEntry, removeEntry, closeEntry, reduceEntryQuantity, enrichPortfolioEntriesWithPrices, depositUsdc, withdrawUsdc, getUsdcEntry, updatePortfolioForTrade, getSlTpHistory, cancelProtection, getOpenPositions, closePositionFromExit } from '../portfolio/index.js'
 
 function normalizeSymbol(coin: string): string {
   const upper = coin.trim().toUpperCase()
@@ -107,7 +107,7 @@ router.post('/portfolio/usdc/deposit', async (req: Request, res: Response) => {
     return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
   }
 
-  const balance = depositUsdt(amount)
+  const balance = depositUsdc(amount)
   res.json({ ok: true, balance })
 })
 
@@ -121,18 +121,18 @@ router.post('/portfolio/usdc/withdraw', async (req: Request, res: Response) => {
     const exchange = getExchange()
     logger.info('🛸 Binance fetchBalance')
     const bal = await exchange.fetchBalance()
-    const binanceUsdt = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
-    if (binanceUsdt < amount) {
+    const binanceUsdc = (bal.free as unknown as Record<string, number>)['USDC'] ?? 0
+    if (binanceUsdc < amount) {
       return res.status(400).json({
-        error: `Insufficient Binance balance: ${binanceUsdt.toFixed(2)} USDC available`,
-        binance_balance: binanceUsdt,
+        error: `Insufficient Binance balance: ${binanceUsdc.toFixed(2)} USDC available`,
+        binance_balance: binanceUsdc,
       })
     }
   } catch (err) {
     return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
   }
 
-  const result = withdrawUsdt(amount)
+  const result = withdrawUsdc(amount)
   if (!result.ok) return res.status(400).json({ error: result.error, balance: result.balance })
   res.json({ ok: true, balance: result.balance })
 })
@@ -624,7 +624,7 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
   if (fromSymbol !== 'USDC' && toSymbol !== 'USDC') return res.status(400).json({ error: 'one of from/to must be USDC' })
 
   // Pre-flight balance check (informational — updatePortfolioForTrade re-checks atomically)
-  const preCheck = fromSymbol === 'USDC' ? getUsdtEntry() : (getOpenEntries() as unknown as PortfolioEntry[]).find(e => e.coin === fromSymbol) ?? null
+  const preCheck = fromSymbol === 'USDC' ? getUsdcEntry() : (getOpenEntries() as unknown as PortfolioEntry[]).find(e => e.coin === fromSymbol) ?? null
   if (!preCheck) return res.status(400).json({ error: `No open position for ${fromSymbol}` })
   if (preCheck.quantity < amount) return res.status(400).json({ error: `Insufficient balance: have ${preCheck.quantity}, need ${amount}` })
 

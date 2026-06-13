@@ -268,10 +268,10 @@ export async function getTopPairs(limit = 20): Promise<string[]> {
   const ex = getExchange()
   logger.info('🛸 Binance fetchTickers (all)')
   const tickers = await ex.fetchTickers()
-  const usdtPairs = Object.entries(tickers)
+  const usdcPairs = Object.entries(tickers)
     .filter(([s]) => s.endsWith('/USDC'))
     .sort((a, b) => (b[1]?.quoteVolume ?? 0) - (a[1]?.quoteVolume ?? 0))
     .slice(0, limit)
     .map(([s]) => s)
-  return usdtPairs
+  return usdcPairs
 }

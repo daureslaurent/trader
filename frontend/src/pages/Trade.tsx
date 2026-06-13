@@ -30,7 +30,7 @@ export default function Trade() {
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
   const [amount, setAmount] = useState('')
   const [priceLoading, setPriceLoading] = useState(false)
-  const [usdtBalance, setUsdtBalance] = useState(0)
+  const [usdcBalance, setUsdcBalance] = useState(0)
   const [coinBalance, setCoinBalance] = useState(0)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -63,7 +63,7 @@ export default function Trade() {
       fetch('/api/settings').then(r => r.json()),
     ]).then(([portfolioData, settingsData]) => {
       const entries: PortfolioEntry[] = portfolioData.entries ?? []
-      setUsdtBalance(entries.find(e => e.coin === 'USDC')?.quantity ?? 0)
+      setUsdcBalance(entries.find(e => e.coin === 'USDC')?.quantity ?? 0)
       setCoinBalance(entries.find(e => e.coin === symbol)?.quantity ?? 0)
 
       const wlCoins: string[] = (settingsData.watchlist ?? []).map((s: string) => s.replace('/USDC', ''))
@@ -111,7 +111,7 @@ export default function Trade() {
   }
 
   function applyPct(pct: number) {
-    const max = side === 'BUY' ? usdtBalance : coinBalance
+    const max = side === 'BUY' ? usdcBalance : coinBalance
     setAmount(((max * pct) / 100).toString())
     setError(null)
     setResult(null)
@@ -308,7 +308,7 @@ export default function Trade() {
                 <span className="text-muted">Available</span>
                 <span className="font-medium tabular-nums">
                   {side === 'BUY'
-                    ? `${fmtUSD(usdtBalance)} USDC`
+                    ? `${fmtUSD(usdcBalance)} USDC`
                     : coinBalance > 0
                       ? `${fmt(coinBalance, 6)} ${base}`
                       : <span className="text-muted">No {base} held</span>

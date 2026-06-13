@@ -11,7 +11,7 @@ import cron, { ScheduledTask } from 'node-cron'
 import { researchCoin } from './researcher/index.js'
 import { extractResearch, selectArticles } from './extractor/index.js'
 import { analyzeSignal } from './analyst/index.js'
-import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdtEntry, seedUsdtIfAbsent, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit, recordPositionOpen, recordPositionClose, recordSlTpUpdate, placeProtection, cancelProtection, replaceProtection, closePositionFromExit, netRealizedPnl, hasSufficientEdge } from './portfolio/index.js'
+import { getMarketContext, checkOpenPositions, getPortfolioState, addEntry, reduceEntryQuantity, increaseEntryQuantity, getOpenEntries, getCoinEntries, getUsdcEntry, seedUsdcIfAbsent, detectExternalWithdrawal, calculatePositionSize, calculateStopLoss, calculateTakeProfit, recordPositionOpen, recordPositionClose, recordSlTpUpdate, placeProtection, cancelProtection, replaceProtection, closePositionFromExit, netRealizedPnl, hasSufficientEdge } from './portfolio/index.js'
 import { Signal, ApprovalRequest, PipelineStage } from './types.js'
 import { broadcast } from './api/ws.js'
 import { closeBrowser } from './scraper/browser.js'
@@ -240,8 +240,8 @@ async function tradingLoop() {
   })
 
   const balance = await fetchBalance()
-  const usdtBalance = balance['USDC']?.total || 0
-  detectExternalWithdrawal(usdtBalance)
+  const usdcBalance = balance['USDC']?.total || 0
+  detectExternalWithdrawal(usdcBalance)
 
   await checkOpenPositions()
 
@@ -295,7 +295,7 @@ async function tradingLoop() {
           continue
         }
 
-        const availableUsdc = getUsdtEntry()?.quantity ?? 0
+        const availableUsdc = getUsdcEntry()?.quantity ?? 0
         if (availableUsdc < settings.min_trade_usdc) {
           logger.warn('Skipping BUY — USDC below minimum threshold', { coin: data.symbol, availableUsdc, min: settings.min_trade_usdc })
           logPipelineEvent('trade_skipped', data.symbol, cycleId, {
@@ -453,7 +453,7 @@ async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<v
   }
 
   const balance = await fetchBalance()
-  const usdtBalance = balance['USDC']?.total || 0
+  const usdcBalance = balance['USDC']?.total || 0
   const portfolioState = getPortfolioState(marketData, settings)
 
   try {
@@ -482,7 +482,7 @@ async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<v
         return
       }
 
-      const availableUsdc = getUsdtEntry()?.quantity ?? 0
+      const availableUsdc = getUsdcEntry()?.quantity ?? 0
       if (availableUsdc < settings.min_trade_usdc) {
         logger.warn('Skipping BUY — USDC below minimum threshold', { coin: symbol, availableUsdc, min: settings.min_trade_usdc })
         logPipelineEvent('trade_skipped', symbol, cycleId, {
@@ -667,8 +667,8 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
         }
         const costBasis = result.quantity > 0 ? result.cost / result.quantity : result.price
         addEntry(signal.coin, result.quantity, costBasis, new Date().toISOString().split('T')[0], 'trade', tradeId)
-        const usdtEntry = getUsdtEntry()
-        if (usdtEntry) reduceEntryQuantity(usdtEntry.id, result.cost)
+        const usdcEntry = getUsdcEntry()
+        if (usdcEntry) reduceEntryQuantity(usdcEntry.id, result.cost)
 
       } else if (signal.action === 'SELL') {
         // Consolidate all SELL portfolio writes here so callers don't need to
@@ -688,8 +688,8 @@ async function submitTrade(signal: Signal, estimatedPrice: number, tradeId?: num
             [signal.coin]
           ) as { id: number; quantity: number }[]
           for (const entry of sellEntries) reduceEntryQuantity(entry.id, qty)
-          const usdtEntry = getUsdtEntry()
-          if (usdtEntry) increaseEntryQuantity(usdtEntry.id, qty * result.price)
+          const usdcEntry = getUsdcEntry()
+          if (usdcEntry) increaseEntryQuantity(usdcEntry.id, qty * result.price)
         }
       }
     })
@@ -753,7 +753,7 @@ bus.on('entry_fire', async ({ signal, price, atr }) => {
     logger.warn('Entry fire aborted — max open positions reached', { coin, openPositions })
     return
   }
-  const availableUsdc = getUsdtEntry()?.quantity ?? 0
+  const availableUsdc = getUsdcEntry()?.quantity ?? 0
   if (availableUsdc < settings.min_trade_usdc || availableUsdc < price * signal.quantity) {
     logger.warn('Entry fire aborted — insufficient USDC', { coin, availableUsdc, needed: price * signal.quantity })
     return
@@ -1054,12 +1054,12 @@ async function executeMonitorReduce(
         remaining -= take
       }
 
-      let usdtEntry = getUsdtEntry()
-      if (!usdtEntry) {
-        seedUsdtIfAbsent(0)
-        usdtEntry = getUsdtEntry()
+      let usdcEntry = getUsdcEntry()
+      if (!usdcEntry) {
+        seedUsdcIfAbsent(0)
+        usdcEntry = getUsdcEntry()
       }
-      if (usdtEntry) increaseEntryQuantity(usdtEntry.id, proceeds)
+      if (usdcEntry) increaseEntryQuantity(usdcEntry.id, proceeds)
       else logger.error('Monitor REDUCE: USDC entry missing after seed attempt — proceeds lost', { coin, proceeds })
 
       runSQL(
@@ -1294,7 +1294,7 @@ bus.on('trade_signal_simulated', async ({ symbol, action, confidence, reason, cy
         return
       }
 
-      const availableUsdc = getUsdtEntry()?.quantity ?? 0
+      const availableUsdc = getUsdcEntry()?.quantity ?? 0
       if (availableUsdc < settings.min_trade_usdc) {
         logger.warn('Skipping BUY — USDC below minimum threshold', { coin: symbol, availableUsdc, min: settings.min_trade_usdc })
         logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: `Insufficient USDC ($${availableUsdc.toFixed(2)} < minimum $${settings.min_trade_usdc})` })
