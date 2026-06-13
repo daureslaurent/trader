@@ -315,9 +315,14 @@ export interface LLMCall {
   prompt_tokens: number | null
   completion_tokens: number | null
   thinking_tokens: number | null
+  /** Pure LLM inference latency, excluding any time spent waiting in the per-URL queue. */
   duration_ms: number
+  /** Time spent waiting in the per-URL serialization queue before going in flight. */
+  queue_ms?: number | null
+  /** When the call went in flight (live calls only); null/absent while still queued. */
+  running_at?: string | null
   coin: string | null
   cycle_id: string | null
   created_at: string
-  status?: 'running' | 'done'
+  status?: 'queued' | 'running' | 'done'
 }

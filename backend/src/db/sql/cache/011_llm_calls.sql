@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   prompt_tokens     INTEGER,
   completion_tokens INTEGER,
   duration_ms       INTEGER NOT NULL DEFAULT 0,
+  queue_ms          INTEGER NOT NULL DEFAULT 0,
   coin              TEXT,
   cycle_id          TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now'))

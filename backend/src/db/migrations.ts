@@ -77,6 +77,12 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     try { db.run('ALTER TABLE llm_calls ADD COLUMN reasoning_content TEXT') } catch { /* already exists in fresh schema */ }
   })
 
+  migrate(cache, 'cache', 5, (db) => {
+    // queue_ms: time a call waited in the per-URL serialization line before going
+    // in flight. Kept separate from duration_ms (pure inference latency).
+    try { db.run('ALTER TABLE llm_calls ADD COLUMN queue_ms INTEGER NOT NULL DEFAULT 0') } catch { /* already exists in fresh schema */ }
+  })
+
   // ── Trading DB ────────────────────────────────────────────────────────────
 
   migrate(trading, 'trading', 1, (db) => {

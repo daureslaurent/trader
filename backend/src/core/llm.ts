@@ -20,6 +20,12 @@ export interface RunningLLMCall {
   created_at: string
   /** 'queued' = waiting for the per-URL slot; 'running' = request in flight. */
   status: 'queued' | 'running'
+  /**
+   * When the request actually went in flight. Equals `created_at` when the call
+   * never queued; `null` while still waiting in line. Lets the UI separate queue
+   * wait (created_at → running_at) from inference latency (running_at → done).
+   */
+  running_at: string | null
 }
 
 const _runningCalls = new Map<string, RunningLLMCall>()
@@ -93,6 +99,10 @@ export async function llmChat(
   // "running" once it reaches the front of the per-URL waiting list.
   const serialize = !getSettings().llm_allow_parallel_same_url
 
+  const toTs = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+  const enqueuedMs = Date.now()
+  const queued = serialize && isUrlBusy(baseUrl)
+
   const callStart: RunningLLMCall = {
     temp_id: tempId,
     module: meta.module,
@@ -100,20 +110,26 @@ export async function llmChat(
     base_url: baseUrl,
     coin: meta.coin ?? null,
     cycle_id: meta.cycle_id ?? null,
-    created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
-    status: serialize && isUrlBusy(baseUrl) ? 'queued' : 'running',
+    created_at: toTs(enqueuedMs),
+    status: queued ? 'queued' : 'running',
+    running_at: queued ? null : toTs(enqueuedMs),
   }
   _runningCalls.set(tempId, callStart)
   broadcast('llm_call_start', callStart)
 
-  // The actual request. Duration is measured here (not at enqueue time) so a
-  // queued call's reported latency excludes the time spent waiting in line.
+  // The actual request. Inference latency (`duration_ms`) is measured from here,
+  // not from enqueue time, so it reflects only the LLM's own latency. Time spent
+  // waiting in line is captured separately as `queue_ms` so neither is lost.
   const exec = async (): Promise<OpenAI.ChatCompletion> => {
+    const startMs = Date.now()
+    // Only calls that actually waited in line have a queue wait; a call that went
+    // straight to flight reports 0 rather than a sub-ms scheduling artifact.
+    const queueMs = callStart.status === 'queued' ? Math.max(0, startMs - enqueuedMs) : 0
     if (callStart.status === 'queued') {
       callStart.status = 'running'
-      broadcast('llm_call_status', { temp_id: tempId, status: 'running' })
+      callStart.running_at = toTs(startMs)
+      broadcast('llm_call_status', { temp_id: tempId, status: 'running', running_at: callStart.running_at })
     }
-    const startMs = Date.now()
     let resp: OpenAI.ChatCompletion | null = null
     let errMsg: string | null = null
 
@@ -154,8 +170,8 @@ export async function llmChat(
       try {
         const { lastInsertRowid } = runSQL(
           `INSERT INTO llm_calls
-            (module, model, base_url, system_prompt, user_prompt, response, reasoning_content, error, prompt_tokens, completion_tokens, thinking_tokens, duration_ms, coin, cycle_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (module, model, base_url, system_prompt, user_prompt, response, reasoning_content, error, prompt_tokens, completion_tokens, thinking_tokens, duration_ms, queue_ms, coin, cycle_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             meta.module,
             params.model,
@@ -169,6 +185,7 @@ export async function llmChat(
             resp?.usage?.completion_tokens ?? null,
             thinkingTokens,
             durationMs,
+            queueMs,
             meta.coin ?? null,
             meta.cycle_id ?? null,
           ],
@@ -187,9 +204,10 @@ export async function llmChat(
           completion_tokens: resp?.usage?.completion_tokens ?? null,
           thinking_tokens: thinkingTokens,
           duration_ms: durationMs,
+          queue_ms: queueMs,
           coin: meta.coin ?? null,
           cycle_id: meta.cycle_id ?? null,
-          created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+          created_at: callStart.created_at,
         })
       } catch (dbErr) {
         logger.warn('Failed to log LLM call', { module: meta.module, error: (dbErr as Error).message })
