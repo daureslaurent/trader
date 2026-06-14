@@ -7,6 +7,7 @@ import { runDiscovery } from '../discoverer/index.js'
 import { runMonitor } from '../monitor/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { runPipeline } from '../pipeline/index.js'
+import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
 
 let cronTask: ScheduledTask | null = null
 let discoveryCronTask: ScheduledTask | null = null
@@ -106,6 +107,10 @@ export function startSchedulers(settings: BotSettings): void {
       logger.warn('Position check failed', { error: err instanceof Error ? err.message : String(err) })
     }
   }, POSITION_CHECK_INTERVAL_MS)
+
+  // Background LLM endpoint health monitor — drives the header status badge and
+  // lets module routing divert away from a dead primary endpoint.
+  startEndpointHealthMonitor()
 }
 
 /** Reschedule the affected crons when the frontend saves new settings. */
@@ -114,6 +119,8 @@ export function rescheduleFromSettings(updated: BotSettings): void {
   if (updated.discover_cron) scheduleDiscovery(updated.discover_cron)
   scheduleMonitor(updated.monitor_cron, updated.monitor_auto_run)
   scheduleSummary(updated.summary_cron, updated.summary_auto_run)
+  // The catalog may have changed (endpoints added/removed/re-pointed) — re-probe now.
+  runEndpointHealthCheck()
 }
 
 /** Stop all recurring loops (graceful shutdown). */
@@ -123,4 +130,5 @@ export function stopSchedulers(): void {
   monitorCronTask?.stop()
   summaryCronTask?.stop()
   if (positionCheckInterval) clearInterval(positionCheckInterval)
+  stopEndpointHealthMonitor()
 }

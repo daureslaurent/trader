@@ -34,30 +34,71 @@ export function getRunningLLMCalls(): RunningLLMCall[] {
   return Array.from(_runningCalls.values())
 }
 
-// Per-base-URL serialization. Local LLM servers (Ollama / llama.cpp) typically
-// process one request at a time; firing concurrent requests at the same
-// endpoint just adds queueing latency and memory pressure on the server. When
-// `llm_allow_parallel_same_url` is off (the default) we chain calls to a given
-// base URL so they run one-at-a-time, while calls to *different* URLs still run
-// in parallel. The chain is the "waiting list": each new call awaits the tail.
-const _urlChains = new Map<string, Promise<unknown>>()
+// Per-key concurrency gating via counting semaphores. Local LLM servers
+// (Ollama / llama.cpp) typically process one request at a time; firing concurrent
+// requests at the same endpoint just adds queueing latency and memory pressure. So
+// by default a given base URL is capped at one in-flight call (a gate with limit
+// 1), while calls to *different* URLs run in parallel. A catalog endpoint flagged
+// `parallel` lifts that cap, or — when it sets a `maxParallel` limit — runs under a
+// gate keyed by endpoint (base URL + model) at that limit. `llm_allow_parallel_same_url`
+// lifts the global limit-1 default for every URL (per-endpoint limits still apply).
+interface Gate {
+  /** Permits currently held (in-flight calls). */
+  active: number
+  /** Resolvers for calls waiting for a permit, FIFO. */
+  queue: (() => void)[]
+}
+const _gates = new Map<string, Gate>()
 
-/** True when a call to this base URL is already queued or in flight. */
-function isUrlBusy(baseURL: string): boolean {
-  return _urlChains.has(baseURL)
+/** True when a gate is at capacity, so a new call would have to wait in line. */
+function gateAtCapacity(key: string, limit: number): boolean {
+  const g = _gates.get(key)
+  return !!g && g.active >= limit
 }
 
-// Run `task` after any pending call to the same base URL, returning task's own
-// result/error. A prior failure never breaks the chain for later callers, and
-// the map entry is dropped once this call is the tail so idle URLs free memory.
-function runSerialized<T>(baseURL: string, task: () => Promise<T>): Promise<T> {
-  const prev = _urlChains.get(baseURL) ?? Promise.resolve()
-  const next = prev.then(task, task)
-  _urlChains.set(baseURL, next)
-  void next.catch(() => {}).then(() => {
-    if (_urlChains.get(baseURL) === next) _urlChains.delete(baseURL)
-  })
-  return next
+// Run `task` under a counting semaphore keyed by `key` with the given `limit`. A
+// freed permit is handed directly to the next waiter (the active count is never
+// dropped mid-handoff), so capacity is respected without races. A prior failure
+// never breaks the gate for later callers; idle gates are dropped to free memory.
+async function runLimited<T>(key: string, limit: number, task: () => Promise<T>): Promise<T> {
+  let g = _gates.get(key)
+  if (!g) { g = { active: 0, queue: [] }; _gates.set(key, g) }
+  if (g.active >= limit) {
+    await new Promise<void>(resolve => g!.queue.push(resolve))
+    // Inherited a permit handed over by the releasing call; `active` already counts us.
+  } else {
+    g.active++
+  }
+  try {
+    return await task()
+  } finally {
+    const next = g.queue.shift()
+    if (next) {
+      next() // hand our permit to the next waiter; active stays the same
+    } else {
+      g.active--
+      if (g.active <= 0 && g.queue.length === 0) _gates.delete(key)
+    }
+  }
+}
+
+/** The catalog entry matching this base URL + model, if any (first match). */
+function findCatalogEndpoint(baseURL: string, model: string) {
+  return getSettings().llm_endpoints.find(e => e.baseURL.trim() === baseURL && e.model.trim() === model)
+}
+
+/**
+ * The concurrency gate for a call, or null for unlimited parallelism:
+ *   • serialized (limit 1, keyed by base URL) — default for a one-at-a-time server
+ *   • parallel + a per-endpoint max — keyed by endpoint at that limit
+ *   • parallel + no max — null (no gate)
+ */
+function resolveGate(baseURL: string, model: string): { key: string; limit: number } | null {
+  const ep = findCatalogEndpoint(baseURL, model)
+  const parallel = getSettings().llm_allow_parallel_same_url || ep?.parallel === true
+  if (!parallel) return { key: baseURL, limit: 1 }
+  const max = ep?.maxParallel ?? 0
+  return max > 0 ? { key: `${baseURL}::${model}`, limit: max } : null
 }
 
 // OpenAI clients are cheap to reuse but shouldn't be rebuilt on every call. We
@@ -72,6 +113,35 @@ export function getClient(baseURL: string): OpenAI {
     _clients.set(baseURL, client)
   }
   return client
+}
+
+/** Result of a lightweight reachability probe against an endpoint's base URL. */
+export interface EndpointPing {
+  ok: boolean
+  /** Round-trip time of the probe in ms. */
+  latencyMs: number
+  /** Model ids advertised by the server's `/models` (empty if unreachable or none). */
+  models: string[]
+  /** Failure reason when `ok` is false. */
+  error?: string
+}
+
+/**
+ * Probes an OpenAI-compatible endpoint's health by listing its models — the
+ * cheapest standard call that proves the server is reachable and responsive.
+ * Retries are disabled and a short timeout is applied so a dead endpoint resolves
+ * quickly rather than hanging the caller. Never throws: failures come back as
+ * `{ ok: false, error }`.
+ */
+export async function pingEndpoint(baseURL: string, timeoutMs = 4000): Promise<EndpointPing> {
+  const start = Date.now()
+  try {
+    const res = await getClient(baseURL).models.list({ timeout: timeoutMs, maxRetries: 0 })
+    const models = (res.data ?? []).map(m => m.id).filter(Boolean)
+    return { ok: true, latencyMs: Date.now() - start, models }
+  } catch (err) {
+    return { ok: false, latencyMs: Date.now() - start, models: [], error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 function extractText(content: unknown): string {
@@ -169,14 +239,14 @@ async function runChat(
   const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
   const baseUrl: string = target.baseURL
 
-  // Serialize per URL unless the user has opted into parallel same-URL calls. A
-  // call that arrives while its endpoint is busy starts "queued" and flips to
-  // "running" once it reaches the front of the per-URL waiting list.
-  const serialize = !getSettings().llm_allow_parallel_same_url
+  // Pick this call's concurrency gate (serialized, capped-parallel, or unlimited).
+  // A call that arrives while its gate is at capacity starts "queued" and flips to
+  // "running" once it reaches the front of the waiting list.
+  const gate = resolveGate(baseUrl, params.model)
 
   const toTs = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
   const enqueuedMs = Date.now()
-  const queued = serialize && isUrlBusy(baseUrl)
+  const queued = !!gate && gateAtCapacity(gate.key, gate.limit)
 
   const callStart: RunningLLMCall = {
     temp_id: tempId,
@@ -300,5 +370,5 @@ async function runChat(
     }
   }
 
-  return serialize ? runSerialized(baseUrl, exec) : exec()
+  return gate ? runLimited(gate.key, gate.limit, exec) : exec()
 }

@@ -1,5 +1,29 @@
 import { queryAll, runSQL } from './helpers.js'
-import { BotSettings } from '../types.js'
+import { BotSettings, LLMEndpoint } from '../types.js'
+
+// Parse the persisted endpoint catalog, defensively skipping malformed entries so
+// a corrupt row can never crash settings reads (which run on every LLM call).
+function parseEndpoints(raw: string | undefined): LLMEndpoint[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter((e): e is Record<string, unknown> => !!e && typeof e === 'object')
+      .map(e => ({
+        id: String(e.id ?? ''),
+        name: String(e.name ?? ''),
+        baseURL: String(e.baseURL ?? ''),
+        model: String(e.model ?? ''),
+        maxTokens: Number.isFinite(Number(e.maxTokens)) ? Math.max(0, Math.floor(Number(e.maxTokens))) : 0,
+        parallel: e.parallel === true,
+        maxParallel: Number.isFinite(Number(e.maxParallel)) ? Math.max(0, Math.floor(Number(e.maxParallel))) : 0,
+      }))
+      .filter(e => e.id)
+  } catch {
+    return []
+  }
+}
 
 export function getSettings(): BotSettings {
   const rows = queryAll('SELECT key, value FROM settings')
@@ -54,53 +78,38 @@ export function getSettings(): BotSettings {
     entry_ttl_minutes: parseFloat(map.entry_ttl_minutes || '20'),
     entry_on_expiry: (map.entry_on_expiry === 'cancel' ? 'cancel' : 'market'),
     entry_poll_seconds: parseFloat(map.entry_poll_seconds || '3'),
-    llm_analyst_base_url: map.llm_analyst_base_url || '',
-    llm_analyst_model: map.llm_analyst_model || '',
+    llm_endpoints: parseEndpoints(map.llm_endpoints),
+    llm_analyst_endpoint: map.llm_analyst_endpoint || '',
     llm_analyst_max_tokens: parseInt(map.llm_analyst_max_tokens || '0', 10),
-    llm_extractor_base_url: map.llm_extractor_base_url || '',
-    llm_extractor_model: map.llm_extractor_model || '',
+    llm_extractor_endpoint: map.llm_extractor_endpoint || '',
     llm_extractor_max_tokens: parseInt(map.llm_extractor_max_tokens || '0', 10),
-    llm_discoverer_base_url: map.llm_discoverer_base_url || '',
-    llm_discoverer_model: map.llm_discoverer_model || '',
+    llm_discoverer_endpoint: map.llm_discoverer_endpoint || '',
     llm_discoverer_max_tokens: parseInt(map.llm_discoverer_max_tokens || '0', 10),
-    llm_discoverer_extractor_base_url: map.llm_discoverer_extractor_base_url || '',
-    llm_discoverer_extractor_model: map.llm_discoverer_extractor_model || '',
+    llm_discoverer_extractor_endpoint: map.llm_discoverer_extractor_endpoint || '',
     llm_discoverer_extractor_max_tokens: parseInt(map.llm_discoverer_extractor_max_tokens || '0', 10),
-    llm_monitor_a_base_url: map.llm_monitor_a_base_url || '',
-    llm_monitor_a_model: map.llm_monitor_a_model || '',
+    llm_monitor_a_endpoint: map.llm_monitor_a_endpoint || '',
     llm_monitor_a_max_tokens: parseInt(map.llm_monitor_a_max_tokens || '0', 10),
-    llm_monitor_b_base_url: map.llm_monitor_b_base_url || '',
-    llm_monitor_b_model: map.llm_monitor_b_model || '',
+    llm_monitor_b_endpoint: map.llm_monitor_b_endpoint || '',
     llm_monitor_b_max_tokens: parseInt(map.llm_monitor_b_max_tokens || '0', 10),
-    llm_summary_base_url: map.llm_summary_base_url || '',
-    llm_summary_model: map.llm_summary_model || '',
+    llm_summary_endpoint: map.llm_summary_endpoint || '',
     llm_summary_max_tokens: parseInt(map.llm_summary_max_tokens || '0', 10),
-    llm_agent_base_url: map.llm_agent_base_url || '',
-    llm_agent_model: map.llm_agent_model || '',
+    llm_agent_endpoint: map.llm_agent_endpoint || '',
     llm_agent_max_tokens: parseInt(map.llm_agent_max_tokens || '0', 10),
-    llm_analyst_fb_base_url: map.llm_analyst_fb_base_url || '',
-    llm_analyst_fb_model: map.llm_analyst_fb_model || '',
+    llm_analyst_fb_endpoint: map.llm_analyst_fb_endpoint || '',
     llm_analyst_fb_max_tokens: parseInt(map.llm_analyst_fb_max_tokens || '0', 10),
-    llm_extractor_fb_base_url: map.llm_extractor_fb_base_url || '',
-    llm_extractor_fb_model: map.llm_extractor_fb_model || '',
+    llm_extractor_fb_endpoint: map.llm_extractor_fb_endpoint || '',
     llm_extractor_fb_max_tokens: parseInt(map.llm_extractor_fb_max_tokens || '0', 10),
-    llm_discoverer_fb_base_url: map.llm_discoverer_fb_base_url || '',
-    llm_discoverer_fb_model: map.llm_discoverer_fb_model || '',
+    llm_discoverer_fb_endpoint: map.llm_discoverer_fb_endpoint || '',
     llm_discoverer_fb_max_tokens: parseInt(map.llm_discoverer_fb_max_tokens || '0', 10),
-    llm_discoverer_extractor_fb_base_url: map.llm_discoverer_extractor_fb_base_url || '',
-    llm_discoverer_extractor_fb_model: map.llm_discoverer_extractor_fb_model || '',
+    llm_discoverer_extractor_fb_endpoint: map.llm_discoverer_extractor_fb_endpoint || '',
     llm_discoverer_extractor_fb_max_tokens: parseInt(map.llm_discoverer_extractor_fb_max_tokens || '0', 10),
-    llm_monitor_a_fb_base_url: map.llm_monitor_a_fb_base_url || '',
-    llm_monitor_a_fb_model: map.llm_monitor_a_fb_model || '',
+    llm_monitor_a_fb_endpoint: map.llm_monitor_a_fb_endpoint || '',
     llm_monitor_a_fb_max_tokens: parseInt(map.llm_monitor_a_fb_max_tokens || '0', 10),
-    llm_monitor_b_fb_base_url: map.llm_monitor_b_fb_base_url || '',
-    llm_monitor_b_fb_model: map.llm_monitor_b_fb_model || '',
+    llm_monitor_b_fb_endpoint: map.llm_monitor_b_fb_endpoint || '',
     llm_monitor_b_fb_max_tokens: parseInt(map.llm_monitor_b_fb_max_tokens || '0', 10),
-    llm_summary_fb_base_url: map.llm_summary_fb_base_url || '',
-    llm_summary_fb_model: map.llm_summary_fb_model || '',
+    llm_summary_fb_endpoint: map.llm_summary_fb_endpoint || '',
     llm_summary_fb_max_tokens: parseInt(map.llm_summary_fb_max_tokens || '0', 10),
-    llm_agent_fb_base_url: map.llm_agent_fb_base_url || '',
-    llm_agent_fb_model: map.llm_agent_fb_model || '',
+    llm_agent_fb_endpoint: map.llm_agent_fb_endpoint || '',
     llm_agent_fb_max_tokens: parseInt(map.llm_agent_fb_max_tokens || '0', 10),
     agent_title_context_messages: parseInt(map.agent_title_context_messages || '6', 10),
     summary_auto_run: map.summary_auto_run === 'true',

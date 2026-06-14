@@ -327,6 +327,22 @@ export interface MonitorModelsResponse {
   b: MonitorModelSlot
 }
 
+/** A named LLM endpoint in the shared catalog. Modules reference one by `id`. */
+export interface LLMEndpoint {
+  id: string
+  name: string
+  baseURL: string
+  model: string
+  /** Default max-tokens for this endpoint (0 = use the env-var default). A
+   *  per-module override takes precedence. */
+  maxTokens: number
+  /** When true, calls to this endpoint may run in parallel even while same-URL
+   *  serialization is on. */
+  parallel: boolean
+  /** Max concurrent calls when `parallel` is on (0 = unlimited). */
+  maxParallel: number
+}
+
 /** Module keys whose LLM endpoint/model/max-tokens can be overridden from Settings. */
 export type LLMModuleKey =
   | 'analyst'

@@ -3,6 +3,7 @@ import { ThemeProvider } from './contexts/ThemeContext'
 import { Sidebar } from './components/layout/Sidebar'
 import { ThemeSelector } from './components/layout/ThemeSelector'
 import { LLMActivityBadge } from './components/layout/LLMActivityBadge'
+import { EndpointStatusBadge } from './components/layout/EndpointStatusBadge'
 import { Page, Toast, ApprovalRequest } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
@@ -180,6 +181,7 @@ function AppInner() {
               {wsConnected ? 'Live' : 'Offline'}
             </span>
             <LLMActivityBadge />
+            <EndpointStatusBadge />
             <ThemeSelector />
           </div>
         </header>

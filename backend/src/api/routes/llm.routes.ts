@@ -1,9 +1,34 @@
 import { Router, Request, Response } from 'express'
 import { queryAll, queryOne, runSQL, getSettings } from '../../db/index.js'
 import { getRunningLLMCalls } from '../../core/llm.js'
+import { getEndpointHealth, runEndpointHealthCheck } from '../../core/endpointHealth.js'
 import { config } from '../../config/index.js'
 
 export const router = Router()
+
+// Cached health of every LLM catalog endpoint, maintained by the background
+// monitor (core/endpointHealth) and pushed live over the `endpoint_health` WS
+// event. The frontend badge reads this snapshot — it never drives the probing.
+// On a cold start (cache still empty) we await the first check so the response is
+// never blank.
+router.get('/llm/endpoints/health', async (_req: Request, res: Response) => {
+  try {
+    const cached = getEndpointHealth()
+    res.json(cached.length ? cached : await runEndpointHealthCheck())
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Force an immediate re-probe (the badge's manual "re-check" affordance). The
+// fresh snapshot is also broadcast to every client via `endpoint_health`.
+router.post('/llm/endpoints/health/check', async (_req: Request, res: Response) => {
+  try {
+    res.json(await runEndpointHealthCheck())
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
 
 // Env-var fallback endpoint/model/max-tokens for each module whose LLM is overridable
 // from Settings. The UI shows these as placeholders so a blank field reads as "default".

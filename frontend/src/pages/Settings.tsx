@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, FormEvent, ReactNode, KeyboardEvent } from 'react'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
-import { Input } from '../components/ui/Input'
+import { Input, Select } from '../components/ui/Input'
 import { useTheme, THEMES } from '../contexts/ThemeContext'
 import { cn } from '../lib/utils'
-import { MonitorModelsResponse, LLMDefaults, LLMModuleKey } from '../types'
+import { MonitorModelsResponse, LLMDefaults, LLMModuleKey, LLMEndpoint } from '../types'
 
 interface SettingsData {
   watchlist: string[]
@@ -49,53 +49,38 @@ interface SettingsData {
   entry_ttl_minutes: number
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
-  llm_analyst_base_url: string
-  llm_analyst_model: string
+  llm_endpoints: LLMEndpoint[]
+  llm_analyst_endpoint: string
   llm_analyst_max_tokens: number
-  llm_extractor_base_url: string
-  llm_extractor_model: string
+  llm_extractor_endpoint: string
   llm_extractor_max_tokens: number
-  llm_discoverer_base_url: string
-  llm_discoverer_model: string
+  llm_discoverer_endpoint: string
   llm_discoverer_max_tokens: number
-  llm_discoverer_extractor_base_url: string
-  llm_discoverer_extractor_model: string
+  llm_discoverer_extractor_endpoint: string
   llm_discoverer_extractor_max_tokens: number
-  llm_monitor_a_base_url: string
-  llm_monitor_a_model: string
+  llm_monitor_a_endpoint: string
   llm_monitor_a_max_tokens: number
-  llm_monitor_b_base_url: string
-  llm_monitor_b_model: string
+  llm_monitor_b_endpoint: string
   llm_monitor_b_max_tokens: number
-  llm_summary_base_url: string
-  llm_summary_model: string
+  llm_summary_endpoint: string
   llm_summary_max_tokens: number
-  llm_agent_base_url: string
-  llm_agent_model: string
+  llm_agent_endpoint: string
   llm_agent_max_tokens: number
-  llm_analyst_fb_base_url: string
-  llm_analyst_fb_model: string
+  llm_analyst_fb_endpoint: string
   llm_analyst_fb_max_tokens: number
-  llm_extractor_fb_base_url: string
-  llm_extractor_fb_model: string
+  llm_extractor_fb_endpoint: string
   llm_extractor_fb_max_tokens: number
-  llm_discoverer_fb_base_url: string
-  llm_discoverer_fb_model: string
+  llm_discoverer_fb_endpoint: string
   llm_discoverer_fb_max_tokens: number
-  llm_discoverer_extractor_fb_base_url: string
-  llm_discoverer_extractor_fb_model: string
+  llm_discoverer_extractor_fb_endpoint: string
   llm_discoverer_extractor_fb_max_tokens: number
-  llm_monitor_a_fb_base_url: string
-  llm_monitor_a_fb_model: string
+  llm_monitor_a_fb_endpoint: string
   llm_monitor_a_fb_max_tokens: number
-  llm_monitor_b_fb_base_url: string
-  llm_monitor_b_fb_model: string
+  llm_monitor_b_fb_endpoint: string
   llm_monitor_b_fb_max_tokens: number
-  llm_summary_fb_base_url: string
-  llm_summary_fb_model: string
+  llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
-  llm_agent_fb_base_url: string
-  llm_agent_fb_model: string
+  llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
   agent_title_context_messages: number
   summary_auto_run: boolean
@@ -380,73 +365,128 @@ const LLM_MODULES: {
   key: LLMModuleKey
   label: string
   hint: string
-  urlKey: keyof SettingsData
-  modelKey: keyof SettingsData
+  endpointKey: keyof SettingsData
   maxTokensKey: keyof SettingsData
-  fbUrlKey: keyof SettingsData
-  fbModelKey: keyof SettingsData
+  fbEndpointKey: keyof SettingsData
   fbMaxTokensKey: keyof SettingsData
 }[] = [
-  { key: 'analyst',             label: 'Analyst',              hint: 'Main BUY/SELL/HOLD decision per coin.',                   urlKey: 'llm_analyst_base_url',             modelKey: 'llm_analyst_model',             maxTokensKey: 'llm_analyst_max_tokens',             fbUrlKey: 'llm_analyst_fb_base_url',             fbModelKey: 'llm_analyst_fb_model',             fbMaxTokensKey: 'llm_analyst_fb_max_tokens' },
-  { key: 'extractor',           label: 'Extractor',            hint: 'Compresses research articles into structured sentiment.', urlKey: 'llm_extractor_base_url',           modelKey: 'llm_extractor_model',           maxTokensKey: 'llm_extractor_max_tokens',           fbUrlKey: 'llm_extractor_fb_base_url',           fbModelKey: 'llm_extractor_fb_model',           fbMaxTokensKey: 'llm_extractor_fb_max_tokens' },
-  { key: 'discoverer',          label: 'Discoverer',           hint: 'Scores new coin candidates during discovery.',            urlKey: 'llm_discoverer_base_url',          modelKey: 'llm_discoverer_model',          maxTokensKey: 'llm_discoverer_max_tokens',          fbUrlKey: 'llm_discoverer_fb_base_url',          fbModelKey: 'llm_discoverer_fb_model',          fbMaxTokensKey: 'llm_discoverer_fb_max_tokens' },
-  { key: 'discovererExtractor', label: 'Discoverer extractor', hint: 'Extractor used inside the discovery pipeline.',            urlKey: 'llm_discoverer_extractor_base_url', modelKey: 'llm_discoverer_extractor_model', maxTokensKey: 'llm_discoverer_extractor_max_tokens', fbUrlKey: 'llm_discoverer_extractor_fb_base_url', fbModelKey: 'llm_discoverer_extractor_fb_model', fbMaxTokensKey: 'llm_discoverer_extractor_fb_max_tokens' },
-  { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     urlKey: 'llm_monitor_a_base_url',           modelKey: 'llm_monitor_a_model',           maxTokensKey: 'llm_monitor_a_max_tokens',           fbUrlKey: 'llm_monitor_a_fb_base_url',           fbModelKey: 'llm_monitor_a_fb_model',           fbMaxTokensKey: 'llm_monitor_a_fb_max_tokens' },
-  { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — alternate model for the position monitor (used in B / Alternate mode).', urlKey: 'llm_monitor_b_base_url', modelKey: 'llm_monitor_b_model', maxTokensKey: 'llm_monitor_b_max_tokens', fbUrlKey: 'llm_monitor_b_fb_base_url', fbModelKey: 'llm_monitor_b_fb_model', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens' },
-  { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', urlKey: 'llm_summary_base_url', modelKey: 'llm_summary_model', maxTokensKey: 'llm_summary_max_tokens', fbUrlKey: 'llm_summary_fb_base_url', fbModelKey: 'llm_summary_fb_model', fbMaxTokensKey: 'llm_summary_fb_max_tokens' },
-  { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', urlKey: 'llm_agent_base_url', modelKey: 'llm_agent_model', maxTokensKey: 'llm_agent_max_tokens', fbUrlKey: 'llm_agent_fb_base_url', fbModelKey: 'llm_agent_fb_model', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
+  { key: 'analyst',             label: 'Analyst',              hint: 'Main BUY/SELL/HOLD decision per coin.',                   endpointKey: 'llm_analyst_endpoint',             maxTokensKey: 'llm_analyst_max_tokens',             fbEndpointKey: 'llm_analyst_fb_endpoint',             fbMaxTokensKey: 'llm_analyst_fb_max_tokens' },
+  { key: 'extractor',           label: 'Extractor',            hint: 'Compresses research articles into structured sentiment.', endpointKey: 'llm_extractor_endpoint',           maxTokensKey: 'llm_extractor_max_tokens',           fbEndpointKey: 'llm_extractor_fb_endpoint',           fbMaxTokensKey: 'llm_extractor_fb_max_tokens' },
+  { key: 'discoverer',          label: 'Discoverer',           hint: 'Scores new coin candidates during discovery.',            endpointKey: 'llm_discoverer_endpoint',          maxTokensKey: 'llm_discoverer_max_tokens',          fbEndpointKey: 'llm_discoverer_fb_endpoint',          fbMaxTokensKey: 'llm_discoverer_fb_max_tokens' },
+  { key: 'discovererExtractor', label: 'Discoverer extractor', hint: 'Extractor used inside the discovery pipeline.',            endpointKey: 'llm_discoverer_extractor_endpoint', maxTokensKey: 'llm_discoverer_extractor_max_tokens', fbEndpointKey: 'llm_discoverer_extractor_fb_endpoint', fbMaxTokensKey: 'llm_discoverer_extractor_fb_max_tokens' },
+  { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     endpointKey: 'llm_monitor_a_endpoint',           maxTokensKey: 'llm_monitor_a_max_tokens',           fbEndpointKey: 'llm_monitor_a_fb_endpoint',           fbMaxTokensKey: 'llm_monitor_a_fb_max_tokens' },
+  { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — alternate model for the position monitor (used in B / Alternate mode).', endpointKey: 'llm_monitor_b_endpoint', maxTokensKey: 'llm_monitor_b_max_tokens', fbEndpointKey: 'llm_monitor_b_fb_endpoint', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens' },
+  { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', endpointKey: 'llm_summary_endpoint', maxTokensKey: 'llm_summary_max_tokens', fbEndpointKey: 'llm_summary_fb_endpoint', fbMaxTokensKey: 'llm_summary_fb_max_tokens' },
+  { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
 ]
 
 type LLMModule = typeof LLM_MODULES[number]
 type SetFn = <K extends keyof SettingsData>(key: K, value: SettingsData[K]) => void
 
-// One row in the LLM Models section: the primary endpoint/model/max-tokens grid
-// plus a collapsible "failover" block. The fallback only fires when the primary
-// call throws, so it's presented as a subordinate, opt-in panel — auto-expanded
-// when already configured, with a live status dot so an active fallback reads at
-// a glance.
-function LLMModuleRow({ m, settings, set, def }: {
+// Short label for an endpoint in the dropdowns: "Name · model" (+ a ∥ marker when
+// the endpoint is flagged parallel-capable).
+function endpointLabel(e: LLMEndpoint): string {
+  let s = e.name ? `${e.name} · ${e.model}` : (e.model || e.baseURL || 'endpoint')
+  if (e.maxTokens > 0) s += ` · ${e.maxTokens} tok`
+  if (e.parallel) s += e.maxParallel > 0 ? ` ∥${e.maxParallel}` : ' ∥'
+  return s
+}
+
+// A catalog-backed endpoint picker. `value` is the selected endpoint id; an empty
+// id selects the first option (`emptyLabel`). If the stored id no longer matches a
+// catalog entry (endpoint deleted), a disabled placeholder keeps it visible so the
+// stale selection is obvious rather than silently snapping to the default.
+function EndpointSelect({ value, onChange, endpoints, emptyLabel, ariaLabel }: {
+  value: string
+  onChange: (v: string) => void
+  endpoints: LLMEndpoint[]
+  emptyLabel: string
+  ariaLabel: string
+}) {
+  const missing = !!value && !endpoints.some(e => e.id === value)
+  return (
+    <Select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      aria-label={ariaLabel}
+      className="text-xs"
+    >
+      <option value="">{emptyLabel}</option>
+      {endpoints.map(e => (
+        <option key={e.id} value={e.id}>{endpointLabel(e)}</option>
+      ))}
+      {missing && <option value={value} disabled>⚠ deleted endpoint</option>}
+    </Select>
+  )
+}
+
+// One row in the LLM Models section: a primary endpoint picker + max-tokens, plus a
+// collapsible "failover" block. The fallback only fires when the primary call
+// throws, so it's a subordinate, opt-in panel — auto-expanded when already
+// configured, with a live status dot so an active fallback reads at a glance.
+function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
   m: LLMModule
   settings: SettingsData
   set: SetFn
   def?: { model: string; baseURL: string; maxTokens: number }
+  endpoints: LLMEndpoint[]
+  onManage: () => void
 }) {
   const maxTokens = settings[m.maxTokensKey] as number
-  const fbUrl = (settings[m.fbUrlKey] as string) ?? ''
-  const fbModel = (settings[m.fbModelKey] as string) ?? ''
+  const fbEndpoint = (settings[m.fbEndpointKey] as string) ?? ''
   const fbMaxTokens = settings[m.fbMaxTokensKey] as number
-  const fbActive = !!(fbUrl.trim() || fbModel.trim())
+  const fbActive = !!fbEndpoint && endpoints.some(e => e.id === fbEndpoint)
   const [open, setOpen] = useState(fbActive)
 
-  // Placeholders for the fallback fields echo the primary's effective values, so a
-  // blank fallback field visibly reads as "inherit the primary here".
-  const primModel = (settings[m.modelKey] as string).trim() || def?.model || 'model'
-  const primUrl = (settings[m.urlKey] as string).trim() || def?.baseURL || 'base URL'
+  // The env-var default the module uses when no endpoint is picked.
+  const envLabel = def ? `Env default · ${def.model}` : 'Env default'
+
+  // What a blank max-tokens field resolves to: the selected endpoint's own default
+  // if set, else the env default. Mirrors resolveMaxTokens() on the backend so the
+  // placeholder honestly previews the effective budget.
+  const selectedEp = endpoints.find(e => e.id === (settings[m.endpointKey] as string))
+  const primaryDefaultTokens = (selectedEp?.maxTokens && selectedEp.maxTokens > 0)
+    ? selectedEp.maxTokens
+    : def?.maxTokens
+  const primaryEffectiveTokens = maxTokens > 0 ? maxTokens : primaryDefaultTokens
+  const fbEp = endpoints.find(e => e.id === fbEndpoint)
+  const fbDefaultTokens = (fbEp?.maxTokens && fbEp.maxTokens > 0)
+    ? fbEp.maxTokens
+    : primaryEffectiveTokens
 
   function clearFallback() {
-    set(m.fbUrlKey, '' as SettingsData[typeof m.fbUrlKey])
-    set(m.fbModelKey, '' as SettingsData[typeof m.fbModelKey])
+    set(m.fbEndpointKey, '' as SettingsData[typeof m.fbEndpointKey])
     set(m.fbMaxTokensKey, 0 as SettingsData[typeof m.fbMaxTokensKey])
+  }
+
+  // No endpoints defined yet — nudge the user to the catalog modal instead of
+  // showing an empty dropdown.
+  if (endpoints.length === 0) {
+    return (
+      <Row label={m.label} hint={m.hint} stacked>
+        <button
+          type="button"
+          onClick={onManage}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-2.5 text-xs text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          Add an endpoint to assign — falls back to {def ? def.model : 'the env default'} until then
+        </button>
+      </Row>
+    )
   }
 
   return (
     <Row label={m.label} hint={m.hint} stacked>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px]">
-        <Input
-          type="text"
-          value={settings[m.modelKey] as string}
-          onChange={e => set(m.modelKey, e.target.value as SettingsData[typeof m.modelKey])}
-          placeholder={def ? `${def.model} (default)` : 'model'}
-          className="font-mono text-xs"
-          aria-label={`${m.label} model`}
-        />
-        <Input
-          type="text"
-          value={settings[m.urlKey] as string}
-          onChange={e => set(m.urlKey, e.target.value as SettingsData[typeof m.urlKey])}
-          placeholder={def ? `${def.baseURL} (default)` : 'base URL'}
-          className="font-mono text-xs"
-          aria-label={`${m.label} base URL`}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px]">
+        <EndpointSelect
+          value={settings[m.endpointKey] as string}
+          onChange={v => set(m.endpointKey, v as SettingsData[typeof m.endpointKey])}
+          endpoints={endpoints}
+          emptyLabel={envLabel}
+          ariaLabel={`${m.label} endpoint`}
         />
         <UnitInput
           type="number"
@@ -455,7 +495,7 @@ function LLMModuleRow({ m, settings, set, def }: {
           unit="tok"
           value={maxTokens || ''}
           onChange={e => set(m.maxTokensKey, (parseInt(e.target.value) || 0) as SettingsData[typeof m.maxTokensKey])}
-          placeholder={def ? `${def.maxTokens}` : 'max'}
+          placeholder={primaryDefaultTokens ? `${primaryDefaultTokens}` : 'max'}
           className="font-mono text-xs"
           aria-label={`${m.label} max tokens`}
         />
@@ -492,24 +532,15 @@ function LLMModuleRow({ m, settings, set, def }: {
           <div className="mt-2 space-y-2 rounded-lg border border-border/60 border-l-2 border-l-accent/50 bg-surface-elevated/40 p-3">
             <p className="text-[11px] leading-relaxed text-muted">
               Used only if the primary call fails (endpoint down, timeout, 5xx, unknown model).
-              Leave a field blank to reuse the primary's value.
+              Pick an endpoint to enable failover.
             </p>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px]">
-              <Input
-                type="text"
-                value={fbModel}
-                onChange={e => set(m.fbModelKey, e.target.value as SettingsData[typeof m.fbModelKey])}
-                placeholder={`${primModel} (same as primary)`}
-                className="font-mono text-xs"
-                aria-label={`${m.label} fallback model`}
-              />
-              <Input
-                type="text"
-                value={fbUrl}
-                onChange={e => set(m.fbUrlKey, e.target.value as SettingsData[typeof m.fbUrlKey])}
-                placeholder={`${primUrl} (same as primary)`}
-                className="font-mono text-xs"
-                aria-label={`${m.label} fallback base URL`}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px]">
+              <EndpointSelect
+                value={fbEndpoint}
+                onChange={v => set(m.fbEndpointKey, v as SettingsData[typeof m.fbEndpointKey])}
+                endpoints={endpoints}
+                emptyLabel="No fallback"
+                ariaLabel={`${m.label} fallback endpoint`}
               />
               <UnitInput
                 type="number"
@@ -518,7 +549,7 @@ function LLMModuleRow({ m, settings, set, def }: {
                 unit="tok"
                 value={fbMaxTokens || ''}
                 onChange={e => set(m.fbMaxTokensKey, (parseInt(e.target.value) || 0) as SettingsData[typeof m.fbMaxTokensKey])}
-                placeholder={maxTokens ? `${maxTokens}` : (def ? `${def.maxTokens}` : 'max')}
+                placeholder={fbDefaultTokens ? `${fbDefaultTokens}` : 'max'}
                 className="font-mono text-xs"
                 aria-label={`${m.label} fallback max tokens`}
               />
@@ -539,6 +570,187 @@ function LLMModuleRow({ m, settings, set, def }: {
   )
 }
 
+// Modal that manages the shared endpoint catalog: add / edit / delete named
+// {URL, model, parallel} entries that the module dropdowns select from. Edits flow
+// straight to the parent's settings state via `onChange`, so they join the dirty
+// diff and persist with the main Save button (like the watchlist).
+function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
+  open: boolean
+  onClose: () => void
+  endpoints: LLMEndpoint[]
+  onChange: (next: LLMEndpoint[]) => void
+  usage: (id: string) => string[]
+}) {
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  function update(id: string, patch: Partial<LLMEndpoint>) {
+    onChange(endpoints.map(e => e.id === id ? { ...e, ...patch } : e))
+  }
+  function add() {
+    const id = (crypto.randomUUID?.() ?? `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
+    onChange([...endpoints, { id, name: '', baseURL: '', model: '', maxTokens: 0, parallel: false, maxParallel: 0 }])
+  }
+  function remove(id: string) {
+    onChange(endpoints.filter(e => e.id !== id))
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+
+      <div className="relative z-10 mx-4 flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-border bg-surface-card shadow-2xl neon-border animate-fade-in">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-6 py-5">
+          <div>
+            <h2 className="text-base font-semibold text-foreground">LLM Endpoints</h2>
+            <p className="mt-0.5 text-xs text-muted">Define each URL + model once; modules pick from these.</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted transition-colors hover:bg-surface-elevated hover:text-foreground"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 space-y-3 overflow-y-auto px-6 py-5">
+          {endpoints.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted">
+              No endpoints yet. Add one to start assigning models to modules.
+            </div>
+          )}
+
+          {endpoints.map(ep => {
+            const used = usage(ep.id)
+            const incomplete = !ep.baseURL.trim() || !ep.model.trim()
+            return (
+              <div key={ep.id} className="space-y-3 rounded-xl border border-border bg-surface-elevated/40 p-4">
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="text"
+                    value={ep.name}
+                    onChange={e => update(ep.id, { name: e.target.value })}
+                    placeholder="Name (e.g. Local Ollama)"
+                    className="flex-1 text-sm"
+                    aria-label="Endpoint name"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => remove(ep.id)}
+                    className="shrink-0 rounded-lg p-2 text-muted transition-colors hover:bg-sell/10 hover:text-sell"
+                    aria-label="Delete endpoint"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px]">
+                  <Input
+                    type="text"
+                    value={ep.baseURL}
+                    onChange={e => update(ep.id, { baseURL: e.target.value })}
+                    placeholder="Base URL (http://localhost:11434/v1)"
+                    className="font-mono text-xs"
+                    aria-label="Endpoint base URL"
+                  />
+                  <Input
+                    type="text"
+                    value={ep.model}
+                    onChange={e => update(ep.id, { model: e.target.value })}
+                    placeholder="Model (qwen2.5:14b)"
+                    className="font-mono text-xs"
+                    aria-label="Endpoint model"
+                  />
+                  <UnitInput
+                    type="number"
+                    min="0"
+                    step="256"
+                    unit="tok"
+                    value={ep.maxTokens || ''}
+                    onChange={e => update(ep.id, { maxTokens: parseInt(e.target.value) || 0 })}
+                    placeholder="default"
+                    className="font-mono text-xs"
+                    aria-label="Endpoint default max tokens"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <Toggle
+                      label="Allow parallel calls"
+                      checked={ep.parallel}
+                      onChange={() => update(ep.id, { parallel: !ep.parallel })}
+                    />
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-foreground">Run in parallel</p>
+                      <p className="text-[11px] leading-tight text-muted">Skip the per-URL queue even when serialization is on.</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {ep.parallel && (
+                      <label className="flex items-center gap-1.5 text-[11px] text-muted">
+                        Max concurrent
+                        <UnitInput
+                          type="number"
+                          min="0"
+                          step="1"
+                          unit="∥"
+                          value={ep.maxParallel || ''}
+                          onChange={e => update(ep.id, { maxParallel: parseInt(e.target.value) || 0 })}
+                          placeholder="∞"
+                          className="w-20 font-mono text-xs"
+                          aria-label="Max concurrent calls"
+                        />
+                      </label>
+                    )}
+                    {incomplete && (
+                      <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-500">Incomplete</span>
+                    )}
+                    {used.length > 0 && (
+                      <span className="rounded-md bg-accent/10 px-2 py-0.5 text-[11px] text-accent" title={used.join(', ')}>
+                        Used by {used.length} {used.length === 1 ? 'module' : 'modules'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+
+          <button
+            type="button"
+            onClick={add}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-3 text-sm text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            Add endpoint
+          </button>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-3 border-t border-border px-6 py-4">
+          <p className="text-[11px] text-muted">Changes save with the page's Save button.</p>
+          <Button variant="primary" size="md" onClick={onClose}>Done</Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ------------------------------------- Page ------------------------------------- */
 
 export default function Settings() {
@@ -549,6 +761,7 @@ export default function Settings() {
   const [activeSection, setActiveSection] = useState<SectionId>('trading')
   const [monitorModels, setMonitorModels] = useState<MonitorModelsResponse | null>(null)
   const [llmDefaults, setLlmDefaults] = useState<LLMDefaults | null>(null)
+  const [endpointModalOpen, setEndpointModalOpen] = useState(false)
   const { theme, setTheme } = useTheme()
   const savedTimer = useRef<ReturnType<typeof setTimeout>>()
 
@@ -1060,10 +1273,18 @@ export default function Settings() {
         </Section>
 
         {/* LLM Models */}
-        <Section id="models" title="LLM Models" subtitle="Pick the endpoint, model & max tokens each module uses. Leave a field blank (max tokens 0) to use the env-var default. Add a Fallback to keep a module running if its primary endpoint goes down." icon={SECTIONS[5].icon}>
+        <Section id="models" title="LLM Models" subtitle="Define your endpoints once, then assign one to each module. Leave a module on “Env default” (or max tokens 0) to use the env-var config. Add a Fallback to keep a module running if its primary endpoint goes down." icon={SECTIONS[5].icon}>
+          <Row
+            label="Endpoint catalog"
+            hint={`Your reusable URL + model entries. ${settings.llm_endpoints.length} defined.`}
+          >
+            <Button type="button" variant="secondary" size="sm" onClick={() => setEndpointModalOpen(true)}>
+              Manage endpoints
+            </Button>
+          </Row>
           <Row
             label="Parallel calls per endpoint"
-            hint="Off (recommended): calls to the same base URL queue and run one at a time — best for a local server that handles one request at a time. On: allow concurrent calls to the same endpoint. Different endpoints always run in parallel either way."
+            hint="Off (recommended): calls to the same base URL queue and run one at a time — best for a local server that handles one request at a time. On: allow concurrent calls to the same endpoint. An endpoint flagged “Run in parallel” in the catalog bypasses the queue even when this is off. Different endpoints always run in parallel either way."
           >
             <Toggle
               label="Allow parallel same-endpoint calls"
@@ -1072,7 +1293,15 @@ export default function Settings() {
             />
           </Row>
           {LLM_MODULES.map(m => (
-            <LLMModuleRow key={m.key} m={m} settings={settings} set={set} def={llmDefaults?.[m.key]} />
+            <LLMModuleRow
+              key={m.key}
+              m={m}
+              settings={settings}
+              set={set}
+              def={llmDefaults?.[m.key]}
+              endpoints={settings.llm_endpoints}
+              onManage={() => setEndpointModalOpen(true)}
+            />
           ))}
         </Section>
 
@@ -1187,6 +1416,20 @@ export default function Settings() {
           </div>
         )}
       </form>
+
+      <EndpointModal
+        open={endpointModalOpen}
+        onClose={() => setEndpointModalOpen(false)}
+        endpoints={settings.llm_endpoints}
+        onChange={next => set('llm_endpoints', next)}
+        usage={id =>
+          LLM_MODULES.flatMap(m =>
+            settings[m.endpointKey] === id ? [m.label]
+              : settings[m.fbEndpointKey] === id ? [`${m.label} (fallback)`]
+              : [],
+          )
+        }
+      />
     </div>
   )
 }

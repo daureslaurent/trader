@@ -44,6 +44,26 @@ export interface PortfolioSnapshot {
   created_at: string
 }
 
+/** A named LLM endpoint in the shared catalog. Modules reference one by `id`
+ *  (via `llm_<module>_endpoint`) instead of storing a URL/model each. */
+export interface LLMEndpoint {
+  /** Stable identifier referenced by per-module endpoint selections. */
+  id: string
+  /** Friendly label shown in the Settings dropdowns. */
+  name: string
+  baseURL: string
+  model: string
+  /** Default max-tokens for this endpoint (0 = fall back to the env-var default).
+   *  A per-module override (`llm_<module>_max_tokens` > 0) takes precedence. */
+  maxTokens: number
+  /** When true, calls to this endpoint may run in parallel even while same-URL
+   *  serialization is on — for a server that can handle concurrent requests. */
+  parallel: boolean
+  /** Max concurrent calls allowed when `parallel` is on (0 = unlimited). Calls
+   *  beyond this queue and run as in-flight ones complete. */
+  maxParallel: number
+}
+
 export interface BotSettings {
   watchlist: string[]
   pipeline_cron: string
@@ -127,61 +147,47 @@ export interface BotSettings {
   entry_on_expiry: 'market' | 'cancel'
   /** How often the entry engine evaluates intents against the live price, in seconds. */
   entry_poll_seconds: number
-  /** Per-module LLM endpoint/model overrides. Blank = fall back to the module's env-var config.
-   *  Max-tokens overrides are numbers where 0 = fall back to the env-var default.
-   *  The monitor exposes its two slots (A/B) here; `monitor_model` still selects which slot runs. */
-  llm_analyst_base_url: string
-  llm_analyst_model: string
+  /** Shared catalog of named LLM endpoints. Each module references one by id via
+   *  `llm_<module>_endpoint`; a blank id falls back to the module's env-var config. */
+  llm_endpoints: LLMEndpoint[]
+  /** Per-module endpoint selection (id into `llm_endpoints`; blank = env default)
+   *  plus a max-tokens override (0 = fall back to the env-var default). The monitor
+   *  exposes its two slots (A/B) here; `monitor_model` still selects which slot runs. */
+  llm_analyst_endpoint: string
   llm_analyst_max_tokens: number
-  llm_extractor_base_url: string
-  llm_extractor_model: string
+  llm_extractor_endpoint: string
   llm_extractor_max_tokens: number
-  llm_discoverer_base_url: string
-  llm_discoverer_model: string
+  llm_discoverer_endpoint: string
   llm_discoverer_max_tokens: number
-  llm_discoverer_extractor_base_url: string
-  llm_discoverer_extractor_model: string
+  llm_discoverer_extractor_endpoint: string
   llm_discoverer_extractor_max_tokens: number
-  llm_monitor_a_base_url: string
-  llm_monitor_a_model: string
+  llm_monitor_a_endpoint: string
   llm_monitor_a_max_tokens: number
-  llm_monitor_b_base_url: string
-  llm_monitor_b_model: string
+  llm_monitor_b_endpoint: string
   llm_monitor_b_max_tokens: number
-  llm_summary_base_url: string
-  llm_summary_model: string
+  llm_summary_endpoint: string
   llm_summary_max_tokens: number
   /** Conversational agent (Agent page). Needs a tool-calling-capable model. */
-  llm_agent_base_url: string
-  llm_agent_model: string
+  llm_agent_endpoint: string
   llm_agent_max_tokens: number
-  /** Per-module failover endpoint/model/max-tokens. Blank URL & model = no
-   *  fallback; a blank fb URL or model inherits the primary's value. Max-tokens
-   *  0 = reuse the primary's effective max-tokens. Tried only if the primary
-   *  LLM call throws (endpoint down, timeout, 5xx, unknown model). */
-  llm_analyst_fb_base_url: string
-  llm_analyst_fb_model: string
+  /** Per-module failover endpoint selection (id into `llm_endpoints`; blank = no
+   *  fallback) + max-tokens (0 = reuse the primary's effective max-tokens). Tried
+   *  only if the primary LLM call throws (endpoint down, timeout, 5xx, unknown model). */
+  llm_analyst_fb_endpoint: string
   llm_analyst_fb_max_tokens: number
-  llm_extractor_fb_base_url: string
-  llm_extractor_fb_model: string
+  llm_extractor_fb_endpoint: string
   llm_extractor_fb_max_tokens: number
-  llm_discoverer_fb_base_url: string
-  llm_discoverer_fb_model: string
+  llm_discoverer_fb_endpoint: string
   llm_discoverer_fb_max_tokens: number
-  llm_discoverer_extractor_fb_base_url: string
-  llm_discoverer_extractor_fb_model: string
+  llm_discoverer_extractor_fb_endpoint: string
   llm_discoverer_extractor_fb_max_tokens: number
-  llm_monitor_a_fb_base_url: string
-  llm_monitor_a_fb_model: string
+  llm_monitor_a_fb_endpoint: string
   llm_monitor_a_fb_max_tokens: number
-  llm_monitor_b_fb_base_url: string
-  llm_monitor_b_fb_model: string
+  llm_monitor_b_fb_endpoint: string
   llm_monitor_b_fb_max_tokens: number
-  llm_summary_fb_base_url: string
-  llm_summary_fb_model: string
+  llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
-  llm_agent_fb_base_url: string
-  llm_agent_fb_model: string
+  llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
    *  of the most recent (non-tool) messages — bounds the tokens spent per title. */

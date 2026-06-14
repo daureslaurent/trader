@@ -321,7 +321,12 @@ export async function selectArticles(
         { role: 'user', content: user },
       ],
       temperature: 0.1,
-      max_tokens: 256,
+      // Selection only needs a tiny JSON, but reasoning models spend tokens on a
+      // hidden reasoning_content trace first — a fixed 256 budget gets fully
+      // consumed by reasoning, leaving empty content (finish_reason: length). Use
+      // the module's configured budget (with a small floor) so the model has room
+      // to think *and* emit the JSON.
+      max_tokens: Math.max(cfg.maxTokens, 512),
       response_format: { type: 'json_object' },
     }, { module: 'extractor', coin, base_url: cfg.baseURL }, cfg.fallback)
 
