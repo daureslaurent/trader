@@ -6,7 +6,7 @@ export interface EndpointHealth {
   name: string
   baseURL: string
   model: string
-  status: 'up' | 'degraded' | 'down'
+  status: 'up' | 'degraded' | 'down' | 'disabled'
   /** Round-trip time of the probe in ms. */
   latencyMs: number
   /** Whether the configured model is advertised by the server. */

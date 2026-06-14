@@ -10,8 +10,8 @@ export interface EndpointHealth {
   name: string
   baseURL: string
   model: string
-  /** up = reachable & model advertised · degraded = reachable, model missing · down = unreachable. */
-  status: 'up' | 'degraded' | 'down'
+  /** up = reachable & model advertised · degraded = reachable, model missing · down = unreachable · disabled = taken out of rotation by the user (not probed). */
+  status: 'up' | 'degraded' | 'down' | 'disabled'
   /** Round-trip time of the last probe in ms. */
   latencyMs: number
   /** Whether the configured model is advertised by the server. */
@@ -72,6 +72,11 @@ async function probeAll(): Promise<EndpointHealth[]> {
   return Promise.all(
     endpoints.map(async ep => {
       const baseURL = ep.baseURL.trim()
+      // A user-disabled endpoint is intentionally out of rotation — never probe it;
+      // report it as `disabled` so the UI distinguishes it from a genuine outage.
+      if (ep.disabled) {
+        return { id: ep.id, name: ep.name, baseURL, model: ep.model, status: 'disabled' as const, latencyMs: 0, modelPresent: false, checkedAt }
+      }
       if (!baseURL || !ep.model.trim()) {
         return { id: ep.id, name: ep.name, baseURL, model: ep.model, status: 'down' as const, latencyMs: 0, modelPresent: false, error: 'Endpoint not configured', checkedAt }
       }

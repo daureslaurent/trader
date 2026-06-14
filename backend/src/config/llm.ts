@@ -114,14 +114,14 @@ export interface ResolvedLLM {
 // Looks up a catalog endpoint by id. Returns undefined for a blank id or one that
 // no longer resolves (e.g. the endpoint was deleted), so callers fall back cleanly.
 // `maxTokens` is the endpoint's own default budget (0 = none configured).
-function findEndpoint(settings: BotSettings, id: string): { baseURL: string; model: string; maxTokens: number } | undefined {
+function findEndpoint(settings: BotSettings, id: string): { baseURL: string; model: string; maxTokens: number; disabled: boolean } | undefined {
   if (!id) return undefined
   const ep = settings.llm_endpoints.find(e => e.id === id)
   if (!ep) return undefined
   const baseURL = ep.baseURL.trim()
   const model = ep.model.trim()
   if (!baseURL || !model) return undefined
-  return { baseURL, model, maxTokens: ep.maxTokens }
+  return { baseURL, model, maxTokens: ep.maxTokens, disabled: ep.disabled === true }
 }
 
 // Resolves a module's effective LLM endpoint/model/max-tokens. A selected catalog
@@ -137,6 +137,25 @@ export function resolveLLM(module: LLMModule): ResolvedLLM {
   const maxTokens = resolveMaxTokens(settings[spec.maxTokensKey] as number, ep?.maxTokens, spec.fallback.maxTokens)
 
   const fallback = resolveFallback(spec, settings, { baseURL, model, maxTokens })
+
+  // A primary explicitly disabled in the catalog is treated as permanently
+  // offline: route to the configured failover and *never* keep the disabled
+  // endpoint as a retry target (we must not send it traffic, even on a fallback
+  // miss). With no usable failover we drop to the env default rather than the
+  // disabled endpoint, mirroring an unselected slot.
+  if (ep?.disabled) {
+    if (fallback && !isEndpointDown(fallback.baseURL, fallback.model)) {
+      return {
+        client: fallback.client,
+        baseURL: fallback.baseURL,
+        model: fallback.model,
+        maxTokens: fallback.maxTokens ?? maxTokens,
+      }
+    }
+    const fb = spec.fallback
+    const fbMaxTokens = resolveMaxTokens(settings[spec.maxTokensKey] as number, 0, fb.maxTokens)
+    return { client: getClient(fb.baseURL), baseURL: fb.baseURL, model: fb.model, maxTokens: fbMaxTokens }
+  }
 
   // If the background health monitor reports the primary endpoint as down and a
   // healthy fallback is configured, route to the fallback *first* — skip burning a
@@ -165,9 +184,10 @@ function resolveMaxTokens(override: number, endpointDefault: number | undefined,
 }
 
 // Builds the failover target from the selected fallback endpoint. Returns
-// undefined when no fallback endpoint is selected (or it no longer resolves), or
-// when it's identical to the primary (failing over to the same target is a no-op
-// that would only double the latency on an outage). Fallback max-tokens follows
+// undefined when no fallback endpoint is selected (or it no longer resolves), when
+// it is itself disabled, or when it's identical to the primary (failing over to
+// the same target is a no-op that would only double the latency on an outage).
+// Fallback max-tokens follows
 // the same precedence, ultimately reusing the primary's effective budget.
 function resolveFallback(
   spec: ModuleSpec,
@@ -175,7 +195,7 @@ function resolveFallback(
   primary: { baseURL: string; model: string; maxTokens: number },
 ): LLMTarget | undefined {
   const ep = findEndpoint(settings, settings[spec.fbEndpointKey] as string)
-  if (!ep) return undefined
+  if (!ep || ep.disabled) return undefined
   if (ep.baseURL === primary.baseURL && ep.model === primary.model) return undefined
 
   const maxTokens = resolveMaxTokens(settings[spec.fbMaxTokensKey] as number, ep.maxTokens, primary.maxTokens)

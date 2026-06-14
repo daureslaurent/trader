@@ -345,6 +345,9 @@ export interface LLMEndpoint {
   parallel: boolean
   /** Max concurrent calls when `parallel` is on (0 = unlimited). */
   maxParallel: number
+  /** When true, the endpoint is taken out of rotation: the router treats it as
+   *  permanently offline and modules selecting it route to their failover. */
+  disabled: boolean
 }
 
 /** Module keys whose LLM endpoint/model/max-tokens can be overridden from Settings. */

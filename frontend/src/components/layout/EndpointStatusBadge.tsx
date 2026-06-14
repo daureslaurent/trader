@@ -14,6 +14,7 @@ const DOT: Record<EndpointHealth['status'], string> = {
   up:       'bg-buy',
   degraded: 'bg-warn',
   down:     'bg-sell',
+  disabled: 'bg-muted',
 }
 
 function relativeTime(d: Date | null): string {
@@ -25,8 +26,9 @@ function relativeTime(d: Date | null): string {
 }
 
 function EndpointRow({ ep }: { ep: EndpointHealth }) {
+  const disabled = ep.status === 'disabled'
   return (
-    <li className="flex items-start gap-2.5 px-3 py-2">
+    <li className={cn('flex items-start gap-2.5 px-3 py-2', disabled && 'opacity-60')}>
       <span className={cn('mt-1.5 h-2 w-2 shrink-0 rounded-full', DOT[ep.status])} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
@@ -34,15 +36,18 @@ function EndpointRow({ ep }: { ep: EndpointHealth }) {
           <span
             className={cn(
               'shrink-0 text-[10px] font-semibold tabular-nums',
-              ep.status === 'up' ? 'text-muted' : ep.status === 'degraded' ? 'text-warn' : 'text-sell',
+              ep.status === 'up' ? 'text-muted' : ep.status === 'degraded' ? 'text-warn' : ep.status === 'disabled' ? 'text-muted' : 'text-sell',
             )}
           >
-            {ep.status === 'down' ? 'Offline' : `${ep.latencyMs}ms`}
+            {ep.status === 'down' ? 'Offline' : ep.status === 'disabled' ? 'Disabled' : `${ep.latencyMs}ms`}
           </span>
         </div>
         <p className="truncate text-[10px] text-muted">{ep.model || '—'}</p>
         {ep.status === 'degraded' && (
           <p className="mt-0.5 text-[10px] text-warn">Reachable, but model not advertised</p>
+        )}
+        {ep.status === 'disabled' && (
+          <p className="mt-0.5 text-[10px] text-muted">Out of rotation — modules route to their failover</p>
         )}
         {ep.status === 'down' && ep.error && (
           <p className="mt-0.5 truncate text-[10px] text-sell/80" title={ep.error}>{ep.error}</p>
@@ -65,9 +70,13 @@ export function EndpointStatusBadge() {
   const up = endpoints.filter(e => e.status === 'up').length
   const degraded = endpoints.filter(e => e.status === 'degraded').length
   const down = endpoints.filter(e => e.status === 'down').length
+  const disabled = endpoints.filter(e => e.status === 'disabled').length
+  // Disabled endpoints are intentionally out of rotation — exclude them from the
+  // "up / active" count and from the tone so they never read as a problem.
+  const active = total - disabled
 
   const tone: Tone =
-    unreachable || total === 0 ? 'idle' : down > 0 ? 'down' : degraded > 0 ? 'degraded' : 'up'
+    unreachable || active === 0 ? 'idle' : down > 0 ? 'down' : degraded > 0 ? 'degraded' : 'up'
 
   const animate = tone !== 'idle'
 
@@ -88,14 +97,14 @@ export function EndpointStatusBadge() {
           <span className={cn('relative inline-flex h-1.5 w-1.5 rounded-full bg-current', !animate && 'opacity-50')} />
         </span>
         Endpoints
-        {!unreachable && total > 0 && (
+        {!unreachable && active > 0 && (
           <span
             className={cn(
               'ml-0.5 inline-flex items-center justify-center min-w-[15px] h-[15px] px-1 rounded-full text-[10px] leading-none tabular-nums',
               tone === 'up' ? 'bg-buy/20 text-buy' : tone === 'degraded' ? 'bg-warn/20 text-warn' : 'bg-sell/20 text-sell',
             )}
           >
-            {up}/{total}
+            {up}/{active}
           </span>
         )}
       </button>
@@ -115,7 +124,7 @@ export function EndpointStatusBadge() {
               <span className="text-xs font-semibold text-foreground">LLM Endpoints</span>
               {!unreachable && total > 0 && (
                 <span className="text-[10px] text-muted">
-                  {up} up{degraded > 0 ? ` · ${degraded} degraded` : ''}{down > 0 ? ` · ${down} down` : ''}
+                  {up} up{degraded > 0 ? ` · ${degraded} degraded` : ''}{down > 0 ? ` · ${down} down` : ''}{disabled > 0 ? ` · ${disabled} disabled` : ''}
                 </span>
               )}
             </div>

@@ -390,11 +390,12 @@ type LLMModule = typeof LLM_MODULES[number]
 type SetFn = <K extends keyof SettingsData>(key: K, value: SettingsData[K]) => void
 
 // Short label for an endpoint in the dropdowns: "Name · model" (+ a ∥ marker when
-// the endpoint is flagged parallel-capable).
+// the endpoint is flagged parallel-capable, + a disabled marker when out of rotation).
 function endpointLabel(e: LLMEndpoint): string {
   let s = e.name ? `${e.name} · ${e.model}` : (e.model || e.baseURL || 'endpoint')
   if (e.maxTokens > 0) s += ` · ${e.maxTokens} tok`
   if (e.parallel) s += e.maxParallel > 0 ? ` ∥${e.maxParallel}` : ' ∥'
+  if (e.disabled) s += ' · disabled'
   return s
 }
 
@@ -451,6 +452,9 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
   // if set, else the env default. Mirrors resolveMaxTokens() on the backend so the
   // placeholder honestly previews the effective budget.
   const selectedEp = endpoints.find(e => e.id === (settings[m.endpointKey] as string))
+  // Selected primary is disabled in the catalog → the backend treats it as offline
+  // and routes to the fallback (or the env default when none is configured).
+  const primaryDisabled = !!selectedEp?.disabled
   const primaryDefaultTokens = (selectedEp?.maxTokens && selectedEp.maxTokens > 0)
     ? selectedEp.maxTokens
     : def?.maxTokens
@@ -506,6 +510,17 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
           aria-label={`${m.label} max tokens`}
         />
       </div>
+
+      {primaryDisabled && (
+        <div className="mt-1.5 flex items-start gap-1.5 rounded-lg bg-warn/10 px-2.5 py-1.5 text-[11px] text-warn">
+          <svg className="mt-px h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <span>
+            This endpoint is disabled — calls route to {fbActive ? 'the fallback below' : 'the env default'}.
+          </span>
+        </div>
+      )}
 
       {/* Failover disclosure */}
       <div className="mt-1.5">
@@ -601,7 +616,7 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
   }
   function add() {
     const id = (crypto.randomUUID?.() ?? `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
-    onChange([...endpoints, { id, name: '', baseURL: '', model: '', maxTokens: 0, parallel: false, maxParallel: 0 }])
+    onChange([...endpoints, { id, name: '', baseURL: '', model: '', maxTokens: 0, parallel: false, maxParallel: 0, disabled: false }])
   }
   function remove(id: string) {
     onChange(endpoints.filter(e => e.id !== id))
@@ -639,8 +654,15 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
           {endpoints.map(ep => {
             const used = usage(ep.id)
             const incomplete = !ep.baseURL.trim() || !ep.model.trim()
+            const isDisabled = ep.disabled
             return (
-              <div key={ep.id} className="space-y-3 rounded-xl border border-border bg-surface-elevated/40 p-4">
+              <div
+                key={ep.id}
+                className={cn(
+                  'space-y-3 rounded-xl border p-4',
+                  isDisabled ? 'border-dashed border-border bg-surface-elevated/20' : 'border-border bg-surface-elevated/40',
+                )}
+              >
                 <div className="flex items-center gap-2">
                   <Input
                     type="text"
@@ -650,6 +672,11 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                     className="flex-1 text-sm"
                     aria-label="Endpoint name"
                   />
+                  {isDisabled && (
+                    <span className="shrink-0 rounded-md bg-surface-elevated px-2 py-0.5 text-[11px] font-medium text-muted">
+                      Disabled
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => remove(ep.id)}
@@ -662,7 +689,7 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px]">
+                <div className={cn('grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px]', isDisabled && 'opacity-50')}>
                   <Input
                     type="text"
                     value={ep.baseURL}
@@ -692,7 +719,7 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                   />
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className={cn('flex flex-wrap items-center justify-between gap-3', isDisabled && 'opacity-50')}>
                   <div className="flex items-center gap-2.5">
                     <Toggle
                       label="Allow parallel calls"
@@ -729,6 +756,25 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                         Used by {used.length} {used.length === 1 ? 'module' : 'modules'}
                       </span>
                     )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 border-t border-border pt-3">
+                  <Toggle
+                    label="Disable endpoint"
+                    danger
+                    checked={isDisabled}
+                    onChange={() => update(ep.id, { disabled: !isDisabled })}
+                  />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-foreground">Disable (take out of rotation)</p>
+                    <p className="text-[11px] leading-tight text-muted">
+                      {isDisabled
+                        ? used.length > 0
+                          ? `Treated as offline — ${used.length === 1 ? 'the module' : 'modules'} using it route to their failover.`
+                          : 'Treated as offline. Modules selecting it route to their failover.'
+                        : 'Stop sending it traffic without deleting it or re-pointing modules.'}
+                    </p>
                   </div>
                 </div>
               </div>

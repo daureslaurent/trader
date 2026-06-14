@@ -31,6 +31,7 @@ function parseEndpoints(raw: string | undefined): LLMEndpoint[] {
         maxTokens: Number.isFinite(Number(e.maxTokens)) ? Math.max(0, Math.floor(Number(e.maxTokens))) : 0,
         parallel: e.parallel === true,
         maxParallel: Number.isFinite(Number(e.maxParallel)) ? Math.max(0, Math.floor(Number(e.maxParallel))) : 0,
+        disabled: e.disabled === true,
       }))
       .filter(e => e.id)
   } catch {

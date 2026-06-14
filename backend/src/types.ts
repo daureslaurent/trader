@@ -62,6 +62,11 @@ export interface LLMEndpoint {
   /** Max concurrent calls allowed when `parallel` is on (0 = unlimited). Calls
    *  beyond this queue and run as in-flight ones complete. */
   maxParallel: number
+  /** When true, the endpoint is treated as permanently offline: the router never
+   *  sends it traffic and any module selecting it routes to its configured
+   *  failover (or the env default). Lets you take a model out of rotation without
+   *  deleting it or re-pointing every module. */
+  disabled: boolean
 }
 
 export interface BotSettings {
