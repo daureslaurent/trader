@@ -119,6 +119,10 @@ export interface ActivePosition {
   take_profit: number | null
   distance_to_sl_pct: number | null
   distance_to_tp_pct: number | null
+  /** Fee-adjusted break-even price: entry × (1 + 2·fee_rate). */
+  break_even_price?: number
+  /** True once the live price clears break-even — closing now nets a gain after fees. */
+  past_break_even?: boolean
   status: 'OPEN' | 'CLOSED' | 'SL_HIT' | 'TP_HIT'
   horizon: 'short' | 'medium' | 'long' | 'disabled' | 'llm'
   /** Exchange-side OCO protection state: ACTIVE = enforced on Binance, FAILED = software fallback. */

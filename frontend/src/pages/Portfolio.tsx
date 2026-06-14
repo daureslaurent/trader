@@ -76,6 +76,31 @@ function ActionBadge({ action }: { action: string }) {
   )
 }
 
+// ── Break-even badge ───────────────────────────────────────────────────────
+// Shown once a position's live price clears the fee-adjusted break-even, i.e.
+// closing now would lock in a net gain after round-trip fees.
+
+function BreakEvenBadge({ price, className }: { price?: number; className?: string }) {
+  return (
+    <span
+      title={price != null
+        ? `Past break-even — closing now is net-profitable after fees (B/E ${fmtUSD(price)})`
+        : 'Past break-even — closing now is net-profitable after fees'}
+      className={cn(
+        'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold',
+        'bg-buy/10 text-buy border border-buy/30',
+        'shadow-[0_0_0_1px_var(--tw-shadow-color)] shadow-buy/10 animate-fade-in',
+        className,
+      )}
+    >
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      Break-even
+    </span>
+  )
+}
+
 // ── Confidence bar ─────────────────────────────────────────────────────────
 
 function ConfidenceBar({ value }: { value: number }) {
@@ -333,6 +358,9 @@ function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClos
             {pos.status === 'OPEN' && pos.oco_status === 'FAILED' && (
               <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-sell/10 text-sell" title="OCO failed — software fallback">⚠ Fallback</span>
             )}
+            {pos.status === 'OPEN' && pos.past_break_even && (
+              <BreakEvenBadge price={pos.break_even_price} />
+            )}
           </div>
           <button onClick={onClose} className="text-muted hover:text-foreground transition-colors p-1.5 rounded-lg hover:bg-surface-elevated shrink-0">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -350,6 +378,11 @@ function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClos
                 {pos.current_price != null ? fmtUSD(pos.current_price) : '—'}
               </p>
               <p className="text-xs text-muted mt-0.5">Entry: {fmtUSD(pos.entry_price)}</p>
+              {pos.break_even_price != null && (
+                <p className={cn('text-xs mt-0.5', pos.past_break_even ? 'text-buy' : 'text-muted')}>
+                  B/E: {fmtUSD(pos.break_even_price)}{pos.past_break_even && ' ✓'}
+                </p>
+              )}
             </div>
             <div className={cn('px-4 py-3 rounded-xl border', pnlPos ? 'bg-buy/5 border-buy/20' : 'bg-sell/5 border-sell/20')}>
               <p className="text-xs text-muted mb-1">Unrealised P&L</p>
@@ -640,7 +673,8 @@ export default function Portfolio() {
     const pnlPct = Math.round(((currentPrice - entryPrice) / entryPrice) * 10000) / 100
     const distanceToSlPct = pos.stop_loss ? Math.round(((currentPrice - (pos.stop_loss as number)) / currentPrice) * 10000) / 100 : null
     const distanceToTpPct = pos.take_profit ? Math.round((((pos.take_profit as number) - currentPrice) / currentPrice) * 10000) / 100 : null
-    return { ...pos, current_price: currentPrice, pnl, pnl_pct: pnlPct, distance_to_sl_pct: distanceToSlPct, distance_to_tp_pct: distanceToTpPct }
+    const pastBreakEven = pos.break_even_price != null ? currentPrice >= pos.break_even_price : undefined
+    return { ...pos, current_price: currentPrice, pnl, pnl_pct: pnlPct, distance_to_sl_pct: distanceToSlPct, distance_to_tp_pct: distanceToTpPct, past_break_even: pastBreakEven }
   })
 
   const totalValue = usdcBalance + holdings.reduce((sum, h) => sum + (h.current_price != null ? h.current_price * h.quantity : 0), 0)
@@ -871,6 +905,9 @@ export default function Portfolio() {
                               <span className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-sell/10 text-sell" title="OCO failed — software fallback">
                                 ⚠
                               </span>
+                            )}
+                            {pos.status === 'OPEN' && pos.past_break_even && (
+                              <BreakEvenBadge price={pos.break_even_price} />
                             )}
                           </div>
                           <div className="flex items-center gap-1 mt-1">

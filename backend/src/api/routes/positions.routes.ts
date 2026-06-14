@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { positions as positionsRepo } from '../../db/index.js'
+import { positions as positionsRepo, getSettings } from '../../db/index.js'
 import * as priceCache from '../../market/index.js'
 import { cancelProtection, closePositionFromExit } from '../../portfolio/index.js'
 
@@ -12,13 +12,18 @@ router.get('/positions', async (_req: Request, res: Response) => {
     const coins = [...new Set(positions.map(p => p.coin as string))]
     priceCache.subscribe(coins)
     const allPrices = priceCache.getAll()
+    // Round-trip fee as a fraction of notional: charged on both the entry and exit
+    // leg. The price at which a close nets exactly zero P&L is entry × (1 + 2·feeRate).
+    const roundTripFee = getSettings().fee_rate * 2
     const enriched = positions.map((pos) => {
       const snap = allPrices.get(pos.coin as string)
       const currentPrice = snap?.price || (pos.entry_price as number)
-      const pnl = (pos.quantity as number) * (currentPrice - (pos.entry_price as number))
-      const pnlPct = ((currentPrice - (pos.entry_price as number)) / (pos.entry_price as number)) * 100
+      const entryPrice = pos.entry_price as number
+      const pnl = (pos.quantity as number) * (currentPrice - entryPrice)
+      const pnlPct = ((currentPrice - entryPrice) / entryPrice) * 100
       const distanceToSlPct = pos.stop_loss ? ((currentPrice - (pos.stop_loss as number)) / currentPrice) * 100 : null
       const distanceToTpPct = pos.take_profit ? (((pos.take_profit as number) - currentPrice) / currentPrice) * 100 : null
+      const breakEvenPrice = entryPrice * (1 + roundTripFee)
       return {
         id: pos.id,
         coin: pos.coin,
@@ -31,6 +36,10 @@ router.get('/positions', async (_req: Request, res: Response) => {
         take_profit: pos.take_profit,
         distance_to_sl_pct: (snap && distanceToSlPct !== null) ? Math.round(distanceToSlPct * 100) / 100 : null,
         distance_to_tp_pct: (snap && distanceToTpPct !== null) ? Math.round(distanceToTpPct * 100) / 100 : null,
+        break_even_price: breakEvenPrice,
+        // True once the live price clears the fee-adjusted break-even — i.e. closing now
+        // would lock in a net gain after round-trip fees.
+        past_break_even: snap ? snap.price >= breakEvenPrice : false,
         status: pos.status,
         horizon: pos.horizon ?? 'medium',
         oco_status: pos.oco_status ?? 'NONE',
