@@ -4,7 +4,7 @@ import { cn } from '../lib/utils'
 import { AgentConversation, AgentMessage, AgentToolInfo } from '../types'
 
 /* ----------------------------- tiny markdown ----------------------------- */
-// Lightweight inline + block renderer (bold, `code`, bullet lists, headers, tables, paragraphs).
+// Lightweight inline + block renderer (bold, `code`, bullet lists, headers, paragraphs).
 // Deliberately minimal — no external dep — since the agent emits short markdown.
 
 function inline(text: string): ReactNode[] {
@@ -32,16 +32,11 @@ function RichText({ text }: { text: string }) {
       bullets = []
     }
   }
-  
-  // Split text into lines and process them
-  const lines = text.split('\n')
-  let i = 0
-  
-  while (i < lines.length) {
-    const line = lines[i].trim()
+  text.split('\n').forEach((line, i) => {
+    const t = line.trim()
     
     // Check for headers (# Header, ## Header, etc.)
-    const headerMatch = line.match(/^(\#{1,6})\s+(.*)/)
+    const headerMatch = t.match(/^(\#{1,6})\s+(.*)/)
     if (headerMatch) {
       const level = headerMatch[1].length
       const content = headerMatch[2]
@@ -68,74 +63,15 @@ function RichText({ text }: { text: string }) {
       flush()
       // Dynamically create the appropriate heading element
       const HeadingTag = `h${level}` as keyof JSX.IntrinsicElements
-      out.push(<HeadingTag key={`header-${i}`} className={headingClass}>{inline(content)}</HeadingTag>)
-      i++
-      continue
+      out.push(<HeadingTag key={i} className={headingClass}>{inline(content)}</HeadingTag>)
+      return
     }
     
-    // Check for table (pipe syntax)
-    if (line.startsWith('|') && line.includes('|')) {
-      const tableLines: string[] = []
-      let j = i
-      // Collect all table lines
-      while (j < lines.length && (lines[j].startsWith('|') || lines[j].trim() === '')) {
-        tableLines.push(lines[j])
-        j++
-      }
-      
-      // Process table if we have at least 2 lines (header + separator)
-      if (tableLines.length >= 2) {
-        flush()
-        
-        // Parse the table
-        const rows = tableLines.filter(l => l.trim() !== '').map(l => l.split('|').slice(1, -1).map(cell => cell.trim()))
-        if (rows.length >= 2) {
-          const headers = rows[0]
-          const separator = rows[1]
-          
-          // Create table with proper styling
-          const tableRows = rows.slice(2).map((row, rowIndex) => (
-            <tr key={`table-row-${rowIndex}`} className={rowIndex % 2 === 0 ? 'bg-surface-card' : ''}>
-              {row.map((cell, cellIndex) => (
-                <td key={`table-cell-${rowIndex}-${cellIndex}`} className="px-3 py-2 border border-border text-sm">
-                  {inline(cell)}
-                </td>
-              ))}
-            </tr>
-          ))
-          
-          out.push(
-            <div key={`table-${i}`} className="overflow-x-auto my-3">
-              <table className="min-w-full border-collapse border border-border">
-                <thead>
-                  <tr>
-                    {headers.map((header, index) => (
-                      <th key={`th-${index}`} className="px-3 py-2 border border-border font-bold bg-surface-elevated text-sm">
-                        {inline(header)}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {tableRows}
-                </tbody>
-              </table>
-            </div>
-          )
-        }
-        
-        i = j // Skip processed table lines
-        continue
-      }
-    }
-    
-    const b = line.match(/^[-*•]\s+(.*)/)
-    if (b) { bullets.push(<li key={`li-${i}`}>{inline(b[1])}</li>); i++; continue }
+    const b = t.match(/^[-*•]\s+(.*)/)
+    if (b) { bullets.push(<li key={i}>{inline(b[1])}</li>); return }
     flush()
-    if (line) out.push(<p key={`p-${i}`} className="my-2 leading-relaxed first:mt-0 last:mb-0">{inline(line)}</p>)
-    i++
-  }
-  
+    if (t) out.push(<p key={i} className="my-2 leading-relaxed first:mt-0 last:mb-0">{inline(t)}</p>)
+  })
   flush()
   return <>{out}</>
 }
