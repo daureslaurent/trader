@@ -5,7 +5,7 @@
 // it can mutate is the watchlist and kicking off the engines that already run on crons.
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
-import { getSettings, updateSetting, trades, decisions } from '../db/index.js'
+import { getSettings, updateSetting, trades, decisions, llmCalls, entryEvents } from '../db/index.js'
 import { isTradeable } from '../core/tradeable.js'
 import * as priceCache from '../market/index.js'
 import { fetchMarketData } from '../trader/index.js'
@@ -16,6 +16,7 @@ import {
 import { getDiscoveries } from '../discoverer/index.js'
 import { getReviews } from '../monitor/index.js'
 import { getLatestSummary } from '../summary/index.js'
+import { getActiveIntents } from '../entry/index.js'
 
 export interface AgentTool {
   name: string
@@ -53,6 +54,19 @@ function priceFor(coin: string): number | null {
 
 function newCycleId(tag: string): string {
   return `${Date.now().toString(36)}-${tag}`
+}
+
+// Trim long text to a readable preview for list views (full text via a detail tool).
+function snippet(raw: unknown, max = 280): string | null {
+  if (raw == null) return null
+  const s = String(raw).replace(/\s+/g, ' ').trim()
+  if (!s) return null
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
+
+function pctDiff(from: number, to: number): number | null {
+  if (!Number.isFinite(from) || from === 0) return null
+  return Number((((to - from) / from) * 100).toFixed(2))
 }
 
 // ── read tools ─────────────────────────────────────────────────────────────
@@ -242,6 +256,137 @@ function safeJson(raw: string): unknown {
   try { return JSON.parse(raw) } catch { return raw }
 }
 
+// ── LLM debug tools ──────────────────────────────────────────────────────────
+
+async function listLlmCalls(args: Record<string, unknown>): Promise<unknown> {
+  const limit = clampLimit(args.limit, 15, 50)
+  const filter: Record<string, unknown> = {}
+  if (args.module) filter.module = String(args.module).trim().toLowerCase()
+  if (args.coin) filter.coin = normalizeCoin(args.coin)
+  if (args.errors_only === true) filter.error = { $ne: null }
+
+  const rows = await llmCalls.find(filter, {
+    sort: { created_at: -1 }, limit,
+    projection: {
+      _id: 0, id: 1, module: 1, model: 1, base_url: 1, coin: 1, cycle_id: 1,
+      response: 1, error: 1, tool_calls: 1, prompt_tokens: 1, completion_tokens: 1,
+      thinking_tokens: 1, duration_ms: 1, queue_ms: 1, created_at: 1,
+    },
+  })
+  return {
+    count: rows.length,
+    note: 'Prompts/responses are truncated here. Use get_llm_call with an id for the full prompt, response and reasoning.',
+    calls: rows.map(r => ({
+      id: r.id,
+      module: r.module,
+      model: r.model,
+      base_url: r.base_url,
+      coin: r.coin ?? null,
+      cycle_id: r.cycle_id ?? null,
+      ok: !r.error,
+      error: snippet(r.error, 200),
+      responsePreview: snippet(r.response),
+      hasToolCalls: !!r.tool_calls,
+      promptTokens: r.prompt_tokens ?? null,
+      completionTokens: r.completion_tokens ?? null,
+      thinkingTokens: r.thinking_tokens ?? null,
+      durationMs: r.duration_ms ?? null,
+      queueMs: r.queue_ms ?? null,
+      created_at: r.created_at,
+    })),
+  }
+}
+
+async function getLlmCall(args: Record<string, unknown>): Promise<unknown> {
+  const id = typeof args.id === 'number' ? args.id : parseInt(String(args.id ?? ''), 10)
+  if (!Number.isFinite(id)) return { error: 'Provide a numeric LLM call id (from list_llm_calls).' }
+  const r = await llmCalls.findById(id)
+  if (!r) return { error: `No LLM call found with id ${id}.` }
+  return {
+    id: r.id,
+    module: r.module,
+    model: r.model,
+    base_url: r.base_url,
+    coin: r.coin ?? null,
+    cycle_id: r.cycle_id ?? null,
+    ok: !r.error,
+    error: r.error ?? null,
+    system_prompt: r.system_prompt ?? null,
+    user_prompt: r.user_prompt ?? null,
+    response: r.response ?? null,
+    reasoning_content: r.reasoning_content ?? null,
+    tool_calls: r.tool_calls ? safeJson(r.tool_calls as string) : null,
+    promptTokens: r.prompt_tokens ?? null,
+    completionTokens: r.completion_tokens ?? null,
+    thinkingTokens: r.thinking_tokens ?? null,
+    durationMs: r.duration_ms ?? null,
+    queueMs: r.queue_ms ?? null,
+    created_at: r.created_at,
+  }
+}
+
+// ── entry-desk tools ─────────────────────────────────────────────────────────
+
+function getEntryIntents(): unknown {
+  const intents = getActiveIntents()
+  if (!intents.length) {
+    return {
+      count: 0,
+      entry_timing_enabled: getSettings().entry_timing_enabled,
+      note: 'No active entry intents. Deferred BUYs appear here while the engine waits for a good fill (only when entry timing is enabled).',
+    }
+  }
+  const coins = intents.map(i => i.coin)
+  priceCache.subscribe(coins)
+  const now = Date.now()
+  return {
+    count: intents.length,
+    intents: intents.map(i => {
+      const current = priceFor(i.coin)
+      return {
+        coin: i.coin,
+        notionalUsdc: i.notionalUsdc,
+        signalPrice: i.signalPrice,
+        currentPrice: current,
+        targetPrice: i.targetPrice,
+        invalidatePrice: i.invalidatePrice,
+        chaseCapPrice: i.chaseCapPrice,
+        // % the live price must still move to hit each level (negative = below current).
+        toTargetPct: current != null ? pctDiff(current, i.targetPrice) : null,
+        toInvalidatePct: current != null ? pctDiff(current, i.invalidatePrice) : null,
+        toChaseCapPct: current != null ? pctDiff(current, i.chaseCapPrice) : null,
+        confidence: i.signal?.confidence ?? null,
+        ageMinutes: Number(((now - i.createdAt) / 60000).toFixed(1)),
+        ttlMinutesLeft: Number(Math.max(0, (i.expiresAt - now) / 60000).toFixed(1)),
+      }
+    }),
+  }
+}
+
+async function listEntryEvents(args: Record<string, unknown>): Promise<unknown> {
+  const limit = clampLimit(args.limit, 20, 100)
+  const filter: Record<string, unknown> = {}
+  if (args.coin) filter.coin = normalizeCoin(args.coin)
+  const type = args.type ? String(args.type).trim().toLowerCase() : null
+  if (type && ['registered', 'filled', 'cancelled'].includes(type)) filter.type = type
+
+  const rows = await entryEvents.find(filter, { sort: { created_at: -1 }, limit })
+  return {
+    count: rows.length,
+    events: rows.map(r => ({
+      coin: r.coin,
+      type: r.type,
+      reason: r.reason ?? null,
+      signalPrice: r.signal_price,
+      targetPrice: r.target_price,
+      price: r.price ?? null,
+      // positive = filled below the signal price (favorable slippage).
+      slippagePct: r.slippage_pct ?? null,
+      at: new Date(r.created_at as number).toISOString(),
+    })),
+  }
+}
+
 // ── safe-action tools ────────────────────────────────────────────────────────
 
 async function addToWatchlist(args: Record<string, unknown>): Promise<unknown> {
@@ -398,6 +543,55 @@ export const TOOLS: AgentTool[] = [
     parameters: NO_ARGS,
     readOnly: true,
     handler: getTradingSettings,
+  },
+  {
+    name: 'list_llm_calls',
+    description: 'Inspect recent LLM calls for debugging (newest first): which module/model/endpoint ran, token counts, duration, queue wait, whether it errored or made tool calls, and a truncated response. Filter by module (e.g. "analyst", "extractor", "monitor", "discoverer", "summary", "agent"), coin, or errors only. Use get_llm_call for the full prompt/response.',
+    parameters: {
+      type: 'object',
+      properties: {
+        module: { type: 'string', description: 'Optional module filter, e.g. "analyst" or "monitor".' },
+        coin: { type: 'string', description: 'Optional coin filter, e.g. "BTC".' },
+        errors_only: { type: 'boolean', description: 'If true, only return calls that errored.' },
+        limit: { type: 'number', description: 'How many (default 15, max 50).' },
+      },
+      required: [],
+    },
+    readOnly: true,
+    handler: listLlmCalls,
+  },
+  {
+    name: 'get_llm_call',
+    description: 'Get the full detail of a single LLM call by its id (from list_llm_calls): system prompt, user prompt, full response, reasoning/thinking content, tool calls, error and token/timing metrics. Use this to debug exactly what an engine asked the model and what it answered.',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'number', description: 'The LLM call id from list_llm_calls.' } },
+      required: ['id'],
+    },
+    readOnly: true,
+    handler: getLlmCall,
+  },
+  {
+    name: 'get_entry_intents',
+    description: 'List the Entry Desk\'s currently active entry intents: deferred BUYs the entry-timing engine is watching, with the notional, signal/current/target/invalidate/chase-cap prices, how far price must move to each level, confidence, age and TTL remaining.',
+    parameters: NO_ARGS,
+    readOnly: true,
+    handler: getEntryIntents,
+  },
+  {
+    name: 'list_entry_events',
+    description: 'List Entry Desk history (newest first): registered / filled / cancelled entry-intent events with the reason (pullback, expiry-market, falling_knife, ran_away, expired, manual), signal/target/fill prices and slippage %. Optionally filter by coin or event type.',
+    parameters: {
+      type: 'object',
+      properties: {
+        coin: { type: 'string', description: 'Optional coin filter, e.g. "SOL".' },
+        type: { type: 'string', description: 'Optional event type: "registered", "filled" or "cancelled".' },
+        limit: { type: 'number', description: 'How many (default 20, max 100).' },
+      },
+      required: [],
+    },
+    readOnly: true,
+    handler: listEntryEvents,
   },
   {
     name: 'add_to_watchlist',
