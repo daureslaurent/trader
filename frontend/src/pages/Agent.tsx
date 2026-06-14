@@ -23,6 +23,25 @@ function inline(text: string): ReactNode[] {
   return nodes
 }
 
+// Split a markdown table row into trimmed cells, tolerating optional leading/trailing pipes.
+function tableCells(line: string): string[] {
+  let s = line.trim()
+  if (s.startsWith('|')) s = s.slice(1)
+  if (s.endsWith('|')) s = s.slice(0, -1)
+  return s.split('|').map(c => c.trim())
+}
+
+// A separator row looks like |---|:--:|---| (cells made only of dashes, colons, spaces).
+function isTableSeparator(line: string): boolean {
+  const t = line.trim()
+  if (!t.includes('-') || !t.includes('|')) return false
+  return tableCells(t).every(c => /^:?-+:?$/.test(c))
+}
+
+function isTableRow(line: string): boolean {
+  return line.includes('|')
+}
+
 function RichText({ text }: { text: string }) {
   const out: ReactNode[] = []
   let bullets: ReactNode[] = []
@@ -32,15 +51,58 @@ function RichText({ text }: { text: string }) {
       bullets = []
     }
   }
-  text.split('\n').forEach((line, i) => {
+
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
     const t = line.trim()
-    
+
+    // Tables: a header row followed by a separator row, then data rows.
+    if (isTableRow(t) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      flush()
+      const header = tableCells(t)
+      const rows: string[][] = []
+      let j = i + 2
+      while (j < lines.length && isTableRow(lines[j]) && !isTableSeparator(lines[j]) && lines[j].trim()) {
+        rows.push(tableCells(lines[j]))
+        j++
+      }
+      out.push(
+        <div key={`tbl-${i}`} className="my-3 overflow-x-auto rounded border border-border">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="bg-surface-elevated">
+                {header.map((cell, c) => (
+                  <th key={c} className="px-3 py-2 text-left font-semibold text-foreground border-b border-border whitespace-nowrap">
+                    {inline(cell)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, r) => (
+                <tr key={r} className="even:bg-surface-elevated/40">
+                  {header.map((_, c) => (
+                    <td key={c} className="px-3 py-2 align-top border-b border-border last:border-b-0">
+                      {inline(row[c] ?? '')}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+      i = j - 1
+      continue
+    }
+
     // Check for headers (# Header, ## Header, etc.)
     const headerMatch = t.match(/^(\#{1,6})\s+(.*)/)
     if (headerMatch) {
       const level = headerMatch[1].length
       const content = headerMatch[2]
-      
+
       // Determine appropriate styling for each header level
       let headingClass = "font-bold text-foreground"
       switch (level) {
@@ -59,19 +121,19 @@ function RichText({ text }: { text: string }) {
           headingClass += " text-base mt-3 mb-2"
           break
       }
-      
+
       flush()
       // Dynamically create the appropriate heading element
       const HeadingTag = `h${level}` as keyof JSX.IntrinsicElements
       out.push(<HeadingTag key={i} className={headingClass}>{inline(content)}</HeadingTag>)
-      return
+      continue
     }
-    
+
     const b = t.match(/^[-*•]\s+(.*)/)
-    if (b) { bullets.push(<li key={i}>{inline(b[1])}</li>); return }
+    if (b) { bullets.push(<li key={i}>{inline(b[1])}</li>); continue }
     flush()
     if (t) out.push(<p key={i} className="my-2 leading-relaxed first:mt-0 last:mb-0">{inline(t)}</p>)
-  })
+  }
   flush()
   return <>{out}</>
 }

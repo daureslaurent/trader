@@ -21,7 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO = path.resolve(__dirname, '..')
 const BACKEND_DIR = path.join(REPO, 'backend')
 
-const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/?directConnection=true'
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://192.168.1.23:27017/?directConnection=true'
 const MONGO_DB = process.env.MONGO_DB || 'cryptobot'
 
 const require = createRequire(path.join(BACKEND_DIR, 'package.json'))
