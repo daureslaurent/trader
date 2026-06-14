@@ -1,37 +1,31 @@
 #!/usr/bin/env node
-// Agent DB tool — inspect and (carefully) mutate the bot's SQLite databases.
+// Agent DB tool — inspect and (carefully) mutate the bot's MongoDB data.
 //
-// The app keeps four sql.js databases (settings/trading/pipeline/cache) loaded
-// IN MEMORY and persists them to data/*.db. Two consequences drive this tool:
-//   1. Reads are safe any time — we open the on-disk file read-only.
-//   2. Writes are NOT: a running bot would overwrite the file from its in-memory
-//      copy. So writes stop the backend, back up the file, mutate it inside the
-//      backend container (the files are root-owned), then restart the backend.
+// The app now stores everything in a single MongoDB database (one collection per
+// former table). Unlike the old sql.js setup, Mongo is a real shared datastore:
+//   1. Reads are safe any time — the server handles concurrency.
+//   2. Writes are safe live too — no need to stop the bot or back up a file; the
+//      backend reads from the same server, not an in-memory file copy. A write is
+//      still destructive, so `update`/`delete` require --yes.
 //
-// Dual-mode: run locally (orchestrates docker) for everything; the `_exec-raw`
-// subcommand is the in-container half of a write and is not meant to be called
-// by hand. See tools/README.md and AGENTS.md.
+// Connects with MONGO_URL (default mongodb://localhost:27017/?directConnection=true)
+// and MONGO_DB (default cryptobot). Borrows the `mongodb` driver from
+// backend/node_modules — run after `npm install` in backend/.
+// See tools/README.md and AGENTS.md.
 
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { execFileSync } from 'node:child_process'
-import fs from 'node:fs'
 import path from 'node:path'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO = path.resolve(__dirname, '..')
-const TOOLS_DIR = __dirname
+const BACKEND_DIR = path.join(REPO, 'backend')
 
-const IN_CONTAINER = !!process.env.CRYPTOBOT_IN_CONTAINER
-const BACKEND_DIR = IN_CONTAINER ? '/app' : path.join(REPO, 'backend')
-const DATA_DIR = process.env.CRYPTOBOT_DATA_DIR || (IN_CONTAINER ? '/app/data' : path.join(REPO, 'data'))
-const DB_NAMES = ['settings', 'trading', 'pipeline', 'cache']
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017/?directConnection=true'
+const MONGO_DB = process.env.MONGO_DB || 'cryptobot'
 
 const require = createRequire(path.join(BACKEND_DIR, 'package.json'))
-let _SQL
-async function sqljs() { return _SQL ??= await (require('sql.js'))() }
-
-const dbFile = (name) => path.join(DATA_DIR, `${name}.db`)
+const { MongoClient } = require('mongodb')
 
 /* --------------------------------- helpers --------------------------------- */
 
@@ -50,201 +44,148 @@ function parseArgs(argv) {
   return { flags, positional }
 }
 
-async function openRead(name) {
-  const SQL = await sqljs()
-  if (!fs.existsSync(dbFile(name))) throw new Error(`db file not found: ${dbFile(name)}`)
-  return new SQL.Database(fs.readFileSync(dbFile(name)))
+// Parse a --filter/--sort/--set/--projection JSON flag; '' / true → empty object.
+function json(flag, fallback = {}) {
+  if (flag === undefined || flag === true) return fallback
+  try { return JSON.parse(flag) }
+  catch (e) { throw new Error(`invalid JSON: ${flag}\n  ${e.message}`) }
 }
 
-async function listTables(name) {
-  const db = await openRead(name)
-  try {
-    const r = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-    return r.length ? r[0].values.flat() : []
-  } finally { db.close() }
+// Mongo _id may be an integer (most collections) or a natural string key
+// (settings/monitor_notes/entry_*/extraction_cache/ohlcv_cache). Coerce a CLI id.
+function coerceId(raw) {
+  if (raw === undefined) throw new Error('id required')
+  return /^-?\d+$/.test(raw) ? Number(raw) : raw
 }
 
-// Which db file owns a given table (the schema namespaces them, one table per db).
-async function whichDb(table) {
-  for (const name of DB_NAMES) {
-    if ((await listTables(name)).map(t => t.toLowerCase()).includes(table.toLowerCase())) return name
-  }
-  return null
+let _client
+async function db() {
+  if (!_client) { _client = new MongoClient(MONGO_URL); await _client.connect() }
+  return _client.db(MONGO_DB)
 }
+async function close() { if (_client) await _client.close() }
 
-// Cap cell width in table output so a wide JSON/TEXT column (e.g.
-// pipeline_events.data) can't flood the terminal. Use --json for full values.
 const MAX_CELL = 200
-const cell = v => {
-  const s = fmt(v)
-  return s.length > MAX_CELL ? `${s.slice(0, MAX_CELL - 1)}…` : s
-}
+const fmt = v => v === null || v === undefined ? 'NULL'
+  : typeof v === 'object' ? JSON.stringify(v) : String(v)
+const cell = v => { const s = fmt(v); return s.length > MAX_CELL ? `${s.slice(0, MAX_CELL - 1)}…` : s }
 
-function printResult(result, json) {
-  if (json) { console.log(JSON.stringify(toObjects(result), null, 2)); return }
-  if (!result.length) { console.log('(no rows)'); return }
-  const { columns, values } = result[0]
-  const widths = columns.map((c, i) =>
-    Math.max(c.length, ...values.map(r => cell(r[i]).length)))
+// Print an array of docs as a table (columns inferred or supplied) or as JSON.
+function printDocs(docs, { json: asJson, columns } = {}) {
+  if (asJson) { console.log(JSON.stringify(docs, null, 2)); return }
+  if (!docs.length) { console.log('(no documents)'); return }
+  const cols = columns ?? [...docs.reduce((s, d) => { Object.keys(d).forEach(k => s.add(k)); return s }, new Set())]
+  const widths = cols.map(c => Math.max(c.length, ...docs.map(d => cell(d[c]).length)))
   const line = cells => cells.map((c, i) => cell(c).padEnd(widths[i])).join('  ')
-  console.log(line(columns))
+  console.log(line(cols))
   console.log(widths.map(w => '-'.repeat(w)).join('  '))
-  for (const row of values) console.log(line(row))
-  console.log(`\n(${values.length} row${values.length === 1 ? '' : 's'})`)
-}
-
-function toObjects(result) {
-  if (!result.length) return []
-  const { columns, values } = result[0]
-  return values.map(row => Object.fromEntries(columns.map((c, i) => [c, row[i]])))
-}
-
-const fmt = v => v === null || v === undefined ? 'NULL' : String(v)
-
-const isReadOnly = sql =>
-  /^\s*\(*\s*(select|with|pragma|explain)\b/i.test(sql)
-
-function docker(args, { stream = false } = {}) {
-  return execFileSync('docker', ['compose', ...args], {
-    cwd: REPO,
-    encoding: 'utf8',
-    stdio: stream ? 'inherit' : ['ignore', 'pipe', 'inherit'],
-  })
-}
-
-function backendRunning() {
-  const id = docker(['ps', '-q', 'backend']).trim()
-  if (!id) return false
-  return execFileSync('docker', ['inspect', '-f', '{{.State.Running}}', id], { encoding: 'utf8' }).trim() === 'true'
+  for (const d of docs) console.log(line(cols.map(c => d[c])))
+  console.log(`\n(${docs.length} document${docs.length === 1 ? '' : 's'})`)
 }
 
 /* -------------------------------- commands --------------------------------- */
 
-async function cmdTables() {
-  for (const name of DB_NAMES) {
-    const tables = await listTables(name)
-    console.log(`${name}: ${tables.length ? tables.join(', ') : '(none)'}`)
+async function cmdCollections() {
+  const d = await db()
+  const cols = (await d.listCollections().toArray()).map(c => c.name).sort()
+  for (const name of cols) {
+    const count = await d.collection(name).estimatedDocumentCount()
+    console.log(`${name.padEnd(24)} ${count}`)
   }
 }
 
-async function cmdSchema(table, flags) {
-  const name = flags.db || await whichDb(table)
-  if (!name) throw new Error(`table not found in any db: ${table}`)
-  const db = await openRead(name)
-  try {
-    const r = db.exec("SELECT sql FROM sqlite_master WHERE name = ?", [table])
-    if (!r.length) throw new Error(`no such table: ${table}`)
-    console.log(`-- db: ${name}\n${r[0].values[0][0]};`)
-  } finally { db.close() }
+async function cmdSchema(name) {
+  if (!name) throw new Error('usage: schema <collection>')
+  const d = await db()
+  const idx = await d.collection(name).indexes()
+  console.log(`-- indexes on ${name}`)
+  for (const i of idx) console.log(`  ${i.name}: ${JSON.stringify(i.key)}${i.unique ? ' UNIQUE' : ''}`)
+  const sample = await d.collection(name).findOne({}, { sort: { _id: -1 } })
+  console.log(`-- sample document\n${JSON.stringify(sample, null, 2)}`)
 }
 
-async function cmdFind(table) {
-  const name = await whichDb(table)
-  console.log(name ? `${table} -> ${name}.db` : `not found: ${table}`)
+async function cmdQuery(name, flags) {
+  if (!name) throw new Error('usage: query <collection> [--filter J] [--sort J] [--projection J] [--limit N] [--json]')
+  const d = await db()
+  const limit = flags.limit ? Number(flags.limit) : 20
+  const docs = await d.collection(name)
+    .find(json(flags.filter), { projection: flags.projection ? json(flags.projection) : undefined })
+    .sort(json(flags.sort, { _id: -1 }))
+    .limit(limit)
+    .toArray()
+  printDocs(docs, { json: !!flags.json })
 }
 
-async function cmdQuery(sql, flags) {
-  if (!sql) throw new Error('usage: query "<SELECT ...>" [--db <name>] [--json]')
-  if (!isReadOnly(sql)) throw new Error('`query` allows only SELECT/WITH/PRAGMA/EXPLAIN — use `exec` for writes')
-  const candidates = flags.db ? [flags.db] : DB_NAMES
-  const notFound = []
-  for (const name of candidates) {
-    const db = await openRead(name)
-    try {
-      const r = db.exec(sql)
-      printResult(r, !!flags.json)
-      return
-    } catch (e) {
-      // "no such table" just means this db isn't the right one — keep routing.
-      // Any OTHER error (bad column, syntax) means this db recognised the query's
-      // table, so it's the real error — surface it now instead of masking it
-      // behind a later db's "no such table".
-      if (/no such table/i.test(e.message)) { notFound.push(name); continue }
-      throw new Error(`query error in ${name}.db: ${e.message}`)
-    } finally { db.close() }
-  }
-  throw new Error(
-    `no matching table in ${notFound.join('/')} — verify the name with ` +
-    '`tables` / `find <table>`' + (flags.db ? '' : ', or pass --db <name>'))
+async function cmdGet(name, id, flags) {
+  if (!name || id === undefined) throw new Error('usage: get <collection> <id> [--json]')
+  const d = await db()
+  const doc = await d.collection(name).findOne({ _id: coerceId(id) })
+  if (!doc) { console.log('(not found)'); return }
+  console.log(JSON.stringify(doc, null, 2))
 }
 
-// Local orchestration of a write: stop bot -> backup -> mutate in container -> restart.
-async function cmdExec(sql, flags) {
-  if (IN_CONTAINER) throw new Error('refusing to orchestrate inside container; use _exec-raw')
-  if (!sql) throw new Error('usage: exec "<SQL>" --db <name> --yes')
-  if (isReadOnly(sql)) throw new Error('that looks like a read — use `query` instead')
-  const name = flags.db
-  if (!name || !DB_NAMES.includes(name)) throw new Error(`--db <${DB_NAMES.join('|')}> is required for exec`)
+async function cmdCount(name, flags) {
+  if (!name) throw new Error('usage: count <collection> [--filter J]')
+  const d = await db()
+  console.log(await d.collection(name).countDocuments(json(flags.filter)))
+}
+
+async function cmdUpdate(name, flags) {
+  if (!name) throw new Error('usage: update <collection> --filter J --set J [--yes]')
+  if (flags.filter === undefined) throw new Error('--filter <json> is required (use {} to match all — deliberately)')
+  if (flags.set === undefined) throw new Error('--set <json> is required')
   if (!flags.yes) throw new Error('writes are destructive — re-run with --yes to confirm')
-
-  const wasRunning = backendRunning()
-  const ts = new Date().toISOString().replace(/[:.]/g, '-')
-  console.error(`[exec] target=${name}.db  backendRunning=${wasRunning}`)
-
-  if (wasRunning) { console.error('[exec] stopping backend...'); docker(['stop', 'backend'], { stream: true }) }
-  try {
-    console.error(`[exec] backing up ${name}.db -> ${name}.db.bak-${ts}`)
-    docker(['run', '--rm', '--no-deps', 'backend',
-      'cp', `/app/data/${name}.db`, `/app/data/${name}.db.bak-${ts}`])
-
-    console.error('[exec] applying write in container...')
-    docker(['run', '--rm', '--no-deps',
-      '-e', 'CRYPTOBOT_IN_CONTAINER=1',
-      '-v', `${TOOLS_DIR}:/app/tools`,
-      'backend', 'node', '/app/tools/db.mjs', '_exec-raw', '--db', name, '--sql', sql], { stream: true })
-  } finally {
-    if (wasRunning) { console.error('[exec] restarting backend...'); docker(['start', 'backend'], { stream: true }) }
-  }
-  console.error(`[exec] done. backup: data/${name}.db.bak-${ts}`)
+  const d = await db()
+  const res = await d.collection(name).updateMany(json(flags.filter), { $set: json(flags.set) })
+  console.log(`matched ${res.matchedCount}, modified ${res.modifiedCount}`)
 }
 
-// In-container half of a write — mutates the on-disk file directly. Internal.
-async function cmdExecRaw(flags) {
-  if (!IN_CONTAINER) throw new Error('_exec-raw must run inside the container (CRYPTOBOT_IN_CONTAINER=1)')
-  const name = flags.db
-  const sql = flags.sql
-  if (!DB_NAMES.includes(name) || !sql) throw new Error('_exec-raw needs --db and --sql')
-  const SQL = await sqljs()
-  const db = new SQL.Database(fs.readFileSync(dbFile(name)))
-  try {
-    db.run(sql)
-    const changes = db.getRowsModified()
-    fs.writeFileSync(dbFile(name), Buffer.from(db.export()))
-    console.log(`rows modified: ${changes}`)
-  } finally { db.close() }
+async function cmdDelete(name, flags) {
+  if (!name) throw new Error('usage: delete <collection> --filter J [--yes]')
+  if (flags.filter === undefined) throw new Error('--filter <json> is required (use {} to match all — deliberately)')
+  if (!flags.yes) throw new Error('writes are destructive — re-run with --yes to confirm')
+  const d = await db()
+  const res = await d.collection(name).deleteMany(json(flags.filter))
+  console.log(`deleted ${res.deletedCount}`)
 }
 
-// Canned read views over commonly-needed tables.
+// Canned read views over commonly-needed collections.
 const VIEWS = {
-  trades:    n => `SELECT id,coin,side,quantity,price,total,status,created_at FROM trades ORDER BY id DESC LIMIT ${n ?? 20}`,
-  positions: () => `SELECT id,coin,side,quantity,entry_price,current_sl,take_profit,oco_status,status,pnl FROM positions WHERE status='OPEN' ORDER BY id DESC`,
-  portfolio: () => `SELECT id,coin,quantity,buy_price,status,source FROM portfolio_entries WHERE status='OPEN' ORDER BY coin`,
-  settings:  () => `SELECT key,value FROM settings ORDER BY key`,
-  intents:   () => `SELECT coin,signal_price,target_price,notional_usdc,atr,expires_at FROM entry_intents ORDER BY coin`,
-  llm:       n => `SELECT id,module,model,status,duration_ms,created_at FROM llm_calls ORDER BY id DESC LIMIT ${n ?? 20}`,
+  trades:    { name: 'trades',            filter: {},                       sort: { id: -1 }, limitDefault: 20,
+               columns: ['id', 'coin', 'side', 'quantity', 'price', 'total', 'status', 'created_at'] },
+  positions: { name: 'positions',         filter: { status: 'OPEN' },       sort: { id: -1 },
+               columns: ['id', 'coin', 'side', 'quantity', 'entry_price', 'current_sl', 'take_profit', 'oco_status', 'status', 'pnl'] },
+  portfolio: { name: 'portfolio_entries', filter: { status: 'OPEN' },       sort: { coin: 1 },
+               columns: ['id', 'coin', 'quantity', 'buy_price', 'status', 'source'] },
+  settings:  { name: 'settings',          filter: {},                       sort: { _id: 1 },
+               columns: ['_id', 'value'] },
+  intents:   { name: 'entry_intents',     filter: {},                       sort: { coin: 1 },
+               columns: ['coin', 'signal_price', 'target_price', 'notional_usdc', 'atr', 'expires_at'] },
+  llm:       { name: 'llm_calls',          filter: {},                       sort: { id: -1 }, limitDefault: 20,
+               columns: ['id', 'module', 'model', 'error', 'duration_ms', 'created_at'] },
 }
 
 async function cmdView(view, arg, flags) {
-  const table = { trades: 'trades', positions: 'positions', portfolio: 'portfolio_entries',
-    settings: 'settings', intents: 'entry_intents', llm: 'llm_calls' }[view]
-  const name = await whichDb(table)
-  if (!name) throw new Error(`table for view '${view}' not found`)
-  const n = arg && /^\d+$/.test(arg) ? Number(arg) : undefined
-  const db = await openRead(name)
-  try { printResult(db.exec(VIEWS[view](n)), !!flags.json) }
-  finally { db.close() }
+  const v = VIEWS[view]
+  const d = await db()
+  const limit = arg && /^\d+$/.test(arg) ? Number(arg) : (v.limitDefault ?? 0)
+  let cursor = d.collection(v.name).find(v.filter, { projection: Object.fromEntries(v.columns.map(c => [c, 1])) }).sort(v.sort)
+  if (limit) cursor = cursor.limit(limit)
+  printDocs(await cursor.toArray(), { json: !!flags.json, columns: v.columns })
 }
 
-const HELP = `Agent DB tool — inspect & manage the bot's SQLite databases.
+const HELP = `Agent DB tool — inspect & manage the bot's MongoDB data.
 
 Usage: node tools/db.mjs <command> [args] [--flags]
 
-Read (run any time, local & read-only):
-  tables                       List tables across all four db files
-  find <table>                 Report which db file holds a table
-  schema <table> [--db N]      Print CREATE statement for a table
-  query "<SELECT ...>" [--db N] [--json]
-                               Run a read-only query (auto-routes across dbs)
+Read (safe any time):
+  collections                  List collections with document counts
+  schema <collection>          Indexes + a sample document
+  query <collection> [--filter J] [--sort J] [--projection J] [--limit N] [--json]
+                               Find documents (J = JSON, e.g. '{"status":"OPEN"}')
+  get <collection> <id> [--json]
+                               Fetch one document by _id (int or string key)
+  count <collection> [--filter J]
   trades [N] [--json]          Recent trades (default 20)
   positions [--json]           Open positions
   portfolio [--json]           Open portfolio (ledger) entries
@@ -252,11 +193,12 @@ Read (run any time, local & read-only):
   intents [--json]             Active entry-timing intents
   llm [N] [--json]             Recent LLM calls
 
-Write (stops backend, backs up the db, mutates in-container, restarts):
-  exec "<SQL>" --db <name> --yes
-                               INSERT/UPDATE/DELETE/DDL on one db. --db & --yes required.
+Write (live — Mongo is shared, no backend stop needed; --yes required):
+  update <collection> --filter J --set J --yes     updateMany($set)
+  delete <collection> --filter J --yes             deleteMany
 
-Databases: ${DB_NAMES.join(', ')}   (data dir: ${DATA_DIR})
+Connection: ${MONGO_URL}  db=${MONGO_DB}
+  (override with MONGO_URL / MONGO_DB env vars)
 `
 
 async function main() {
@@ -265,18 +207,21 @@ async function main() {
   switch (cmd) {
     case undefined:
     case 'help': case '--help': case '-h': console.log(HELP); break
-    case 'tables': await cmdTables(); break
-    case 'find': await cmdFind(positional[0]); break
-    case 'schema': await cmdSchema(positional[0], flags); break
-    case 'query': await cmdQuery(positional[0], flags); break
-    case 'exec': await cmdExec(positional[0], flags); break
-    case '_exec-raw': await cmdExecRaw(flags); break
+    case 'collections': case 'tables': await cmdCollections(); break
+    case 'schema': await cmdSchema(positional[0]); break
+    case 'query': case 'find': await cmdQuery(positional[0], flags); break
+    case 'get': await cmdGet(positional[0], positional[1], flags); break
+    case 'count': await cmdCount(positional[0], flags); break
+    case 'update': await cmdUpdate(positional[0], flags); break
+    case 'delete': await cmdDelete(positional[0], flags); break
     case 'trades': case 'positions': case 'portfolio':
     case 'settings': case 'intents': case 'llm':
       await cmdView(cmd, positional[0], flags); break
     default:
-      console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exit(2)
+      console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exitCode = 2
   }
 }
 
-main().catch(err => { console.error(`error: ${err.message}`); process.exit(1) })
+main()
+  .catch(err => { console.error(`error: ${err.message}`); process.exitCode = 1 })
+  .finally(close)
