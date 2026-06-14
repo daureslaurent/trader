@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { queryAll, queryOne, runSQL } from '../../db/index.js'
+import { trades as tradesRepo, nowSql } from '../../db/index.js'
 import { bus } from '../../core/events.js'
 import { logger } from '../../core/logger.js'
 import { Signal, PortfolioEntry } from '../../types.js'
@@ -14,14 +14,23 @@ import { normalizeSymbol } from './helpers.js'
 
 export const router = Router()
 
-router.get('/trades', (_req: Request, res: Response) => {
-  const trades = queryAll('SELECT * FROM trades ORDER BY created_at DESC LIMIT 50')
+// Record an already-filled trade (manual / coin-swap paths). Fees on these go to
+// BNB and aren't itemized here. Returns the new trade id.
+async function recordExecuted(coin: string, side: 'BUY' | 'SELL', quantity: number, price: number, total: number): Promise<number> {
+  return Number(await tradesRepo.insert({
+    coin, side, quantity, price, total, fee_cost: 0, fee_currency: 'BNB',
+    signal_id: null, status: 'EXECUTED', approved: 1, error: null, created_at: nowSql(),
+  }))
+}
+
+router.get('/trades', async (_req: Request, res: Response) => {
+  const trades = await tradesRepo.find({}, { sort: { created_at: -1 }, limit: 50 })
   res.json(trades)
 })
 
-router.delete('/trades/failed', (_req: Request, res: Response) => {
-  const info = runSQL("DELETE FROM trades WHERE status = 'FAILED'")
-  res.json({ ok: true, deleted: info.changes })
+router.delete('/trades/failed', async (_req: Request, res: Response) => {
+  const deleted = await tradesRepo.deleteMany({ status: 'FAILED' })
+  res.json({ ok: true, deleted })
 })
 
 router.get('/approvals', (_req: Request, res: Response) => {
@@ -36,10 +45,10 @@ router.get('/entry-events', (_req: Request, res: Response) => {
   res.json(getRecentEvents())
 })
 
-router.post('/trade/approve/:id', (req: Request, res: Response) => {
+router.post('/trade/approve/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid trade ID' })
-  const trade = queryOne("SELECT id FROM trades WHERE id = ? AND status = 'PENDING'", [id])
+  const trade = await tradesRepo.findOne({ _id: id, status: 'PENDING' }, { projection: { id: 1 } })
   if (!trade) return res.status(404).json({ error: 'Trade not found or not pending' })
   const hasPending = getPendingApprovals().some(a => a.tradeId === id)
   if (!hasPending) {
@@ -51,10 +60,10 @@ router.post('/trade/approve/:id', (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
-router.post('/trade/reject/:id', (req: Request, res: Response) => {
+router.post('/trade/reject/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid trade ID' })
-  const trade = queryOne("SELECT id FROM trades WHERE id = ? AND status = 'PENDING'", [id])
+  const trade = await tradesRepo.findOne({ _id: id, status: 'PENDING' }, { projection: { id: 1 } })
   if (!trade) return res.status(404).json({ error: 'Trade not found or not pending' })
   logger.info('Trade rejected by user', { tradeId: id })
   bus.emit('trade_rejected', id)
@@ -75,11 +84,8 @@ router.post('/trade/manual', async (req: Request, res: Response) => {
   try {
     const signal: Signal = { coin, action: side, quantity, reason: 'Manual', confidence: 1 }
     const result = await executeTrade(signal)
-    const info = runSQL(
-      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-      [coin, side, quantity, result.price, result.cost]
-    )
-    res.json({ ok: true, id: info.lastInsertRowid })
+    const id = await recordExecuted(coin, side, quantity, result.price, result.cost)
+    res.json({ ok: true, id })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
@@ -97,7 +103,7 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
   if (fromSymbol !== 'USDC' && toSymbol !== 'USDC') return res.status(400).json({ error: 'one of from/to must be USDC' })
 
   // Pre-flight balance check (informational — updatePortfolioForTrade re-checks atomically)
-  const preCheck = fromSymbol === 'USDC' ? getUsdcEntry() : (getOpenEntries() as unknown as PortfolioEntry[]).find(e => e.coin === fromSymbol) ?? null
+  const preCheck = fromSymbol === 'USDC' ? await getUsdcEntry() : ((await getOpenEntries()) as unknown as PortfolioEntry[]).find(e => e.coin === fromSymbol) ?? null
   if (!preCheck) return res.status(400).json({ error: `No open position for ${fromSymbol}` })
   if (preCheck.quantity < amount) return res.status(400).json({ error: `Insufficient balance: have ${preCheck.quantity}, need ${amount}` })
 
@@ -106,7 +112,7 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
     // were taken in the base currency (actual < recorded by ~0.1 %).
     let sellQty = amount
     if (toSymbol === 'USDC') {
-      const openPos = getOpenPositions().find(p => p.coin === fromSymbol)
+      const openPos = (await getOpenPositions()).find(p => p.coin === fromSymbol)
       if (openPos) await cancelProtection(openPos.id)
 
       const base = fromSymbol.split('/')[0]
@@ -122,27 +128,18 @@ router.post('/trade/execute', async (req: Request, res: Response) => {
 
     const result = await executeCoinTrade(fromSymbol, toSymbol, sellQty)
 
-    let tradeInfo: ReturnType<typeof runSQL>
-    if (toSymbol === 'USDC') {
-      tradeInfo = runSQL(
-        "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-        [fromSymbol, 'SELL', sellQty, result.fromPrice, sellQty * result.fromPrice]
-      )
-    } else {
-      tradeInfo = runSQL(
-        "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, ?, ?, ?, ?, 0, 'BNB', 'EXECUTED', 1)",
-        [toSymbol, 'BUY', result.toAmount, result.toPrice, result.toAmount * result.toPrice]
-      )
-    }
+    const tradeId = toSymbol === 'USDC'
+      ? await recordExecuted(fromSymbol, 'SELL', sellQty, result.fromPrice, sellQty * result.fromPrice)
+      : await recordExecuted(toSymbol, 'BUY', result.toAmount, result.toPrice, result.toAmount * result.toPrice)
 
     // Use the original `amount` (the full recorded entry quantity) for the local
     // ledger so fee-adjusted sells don't leave dust in portfolio_entries.
     // The USDC credit still uses result.toAmount (actual fill).
-    updatePortfolioForTrade(fromSymbol, amount, toSymbol, result.toAmount, result.toPrice, tradeInfo.lastInsertRowid)
+    await updatePortfolioForTrade(fromSymbol, amount, toSymbol, result.toAmount, result.toPrice, tradeId)
 
     res.json({
       ok: true,
-      tradeId: tradeInfo.lastInsertRowid,
+      tradeId,
       fromSymbol,
       toSymbol,
       fromAmount: sellQty,

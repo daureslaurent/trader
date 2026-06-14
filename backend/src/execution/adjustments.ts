@@ -1,4 +1,4 @@
-import { queryOne, runSQL, getSettings } from '../db/index.js'
+import { positionAdjustments, positions as positionsRepo, nowSql, getSettings } from '../db/index.js'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
@@ -12,16 +12,17 @@ const adjustmentTimers: Map<number, ReturnType<typeof setTimeout>> = new Map()
 
 /** Apply a pending SL/TP adjustment to the position and push it to the OCO. */
 export async function applyAdjustment(adjId: number): Promise<void> {
-  const adj = queryOne("SELECT * FROM position_adjustments WHERE id = ? AND status = 'PENDING'", [adjId]) as
+  const adj = (await positionAdjustments.findOne({ _id: adjId, status: 'PENDING' })) as
     | { id: number; position_id: number; coin: string; new_stop_loss: number | null; new_take_profit: number | null }
     | null
   if (!adj) return
 
-  const pos = queryOne("SELECT id, stop_loss, take_profit FROM positions WHERE id = ? AND status = 'OPEN'", [adj.position_id]) as
-    | { id: number; stop_loss: number; take_profit: number | null }
-    | null
+  const pos = (await positionsRepo.findOne(
+    { _id: adj.position_id, status: 'OPEN' },
+    { projection: { id: 1, stop_loss: 1, take_profit: 1 } },
+  )) as { id: number; stop_loss: number; take_profit: number | null } | null
   if (!pos) {
-    runSQL("UPDATE position_adjustments SET status = 'REJECTED' WHERE id = ?", [adjId])
+    await positionAdjustments.update({ _id: adjId }, { status: 'REJECTED' })
     broadcast('adjustment_resolved', { adjustmentId: adjId, status: 'REJECTED', reason: 'Position no longer open' })
     return
   }
@@ -31,9 +32,9 @@ export async function applyAdjustment(adjId: number): Promise<void> {
   const price = priceCache.getPrice(adj.coin)?.price ?? null
 
   // stop_loss drives the SL-hit check; keep current_sl in sync.
-  runSQL("UPDATE positions SET stop_loss = ?, current_sl = ?, take_profit = ? WHERE id = ?", [newSl, newSl, newTp, adj.position_id])
-  recordSlTpUpdate(adj.position_id, adj.coin, newSl, newTp, price)
-  runSQL("UPDATE position_adjustments SET status = 'APPLIED' WHERE id = ?", [adjId])
+  await positionsRepo.update({ _id: adj.position_id }, { stop_loss: newSl, current_sl: newSl, take_profit: newTp })
+  await recordSlTpUpdate(adj.position_id, adj.coin, newSl, newTp, price)
+  await positionAdjustments.update({ _id: adjId }, { status: 'APPLIED' })
 
   // Push the new levels to the exchange-side OCO (cancel + replace).
   await replaceProtection(adj.position_id)
@@ -42,7 +43,7 @@ export async function applyAdjustment(adjId: number): Promise<void> {
   broadcast('position_adjusted', { coin: adj.coin, positionId: adj.position_id, old_stop_loss: pos.stop_loss, old_take_profit: pos.take_profit, stop_loss: newSl, take_profit: newTp })
   broadcast('adjustment_resolved', { adjustmentId: adjId, status: 'APPLIED' })
   bus.emit('portfolio_updated')
-  const adjPos = queryOne("SELECT entry_price FROM positions WHERE id = ?", [adj.position_id]) as { entry_price: number } | null
+  const adjPos = (await positionsRepo.findOne({ _id: adj.position_id }, { projection: { entry_price: 1 } })) as { entry_price: number } | null
   bus.emit('sl_tp_adjusted', {
     coin: adj.coin,
     positionId: adj.position_id,
@@ -60,18 +61,16 @@ export async function applyAdjustment(adjId: number): Promise<void> {
  * auto-approve is on (or approvals are off), otherwise queues it for human
  * approval with an expiry timer.
  */
-export function proposeAdjustment(p: SlTpAdjustmentProposal): void {
+export async function proposeAdjustment(p: SlTpAdjustmentProposal): Promise<void> {
   // Position must still be open.
-  const open = queryOne("SELECT id FROM positions WHERE id = ? AND status = 'OPEN'", [p.positionId])
+  const open = await positionsRepo.findOne({ _id: p.positionId, status: 'OPEN' }, { projection: { id: 1 } })
   if (!open) return
 
-  const { lastInsertRowid } = runSQL(
-    `INSERT INTO position_adjustments
-      (position_id, coin, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, reasoning, confidence, status, model, cycle_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
-    [p.positionId, p.coin, p.oldStopLoss, p.oldTakeProfit, p.newStopLoss, p.newTakeProfit, p.reasoning, p.confidence, p.model, p.cycleId]
-  )
-  const adjId = Number(lastInsertRowid)
+  const adjId = Number(await positionAdjustments.insert({
+    position_id: p.positionId, coin: p.coin, old_stop_loss: p.oldStopLoss, old_take_profit: p.oldTakeProfit,
+    new_stop_loss: p.newStopLoss, new_take_profit: p.newTakeProfit, reasoning: p.reasoning, confidence: p.confidence,
+    status: 'PENDING', model: p.model, cycle_id: p.cycleId, created_at: nowSql(),
+  }))
 
   const s = getSettings()
   if (!s.monitor_auto_approve && (s.approval_required || config.approvalsEnabled)) {
@@ -90,9 +89,10 @@ export function proposeAdjustment(p: SlTpAdjustmentProposal): void {
     logger.info('SL/TP adjustment awaiting approval', { adjId, coin: p.coin })
 
     const timer = setTimeout(() => {
-      runSQL("UPDATE position_adjustments SET status = 'EXPIRED' WHERE id = ? AND status = 'PENDING'", [adjId])
+      void positionAdjustments.update({ _id: adjId, status: 'PENDING' }, { status: 'EXPIRED' })
+        .then(() => broadcast('adjustment_resolved', { adjustmentId: adjId, status: 'EXPIRED' }))
+        .catch(err => logger.error('Failed to expire SL/TP adjustment', { adjId, error: err instanceof Error ? err.message : String(err) }))
       adjustmentTimers.delete(adjId)
-      broadcast('adjustment_resolved', { adjustmentId: adjId, status: 'EXPIRED' })
     }, config.approvalTimeoutMs)
     adjustmentTimers.set(adjId, timer)
   } else {
@@ -109,11 +109,11 @@ export function approveAdjustment(adjId: number): void {
 }
 
 /** Reject a queued SL/TP adjustment. */
-export function rejectAdjustment(adjId: number): void {
+export async function rejectAdjustment(adjId: number): Promise<void> {
   const timer = adjustmentTimers.get(adjId)
   if (timer) clearTimeout(timer)
   adjustmentTimers.delete(adjId)
-  runSQL("UPDATE position_adjustments SET status = 'REJECTED' WHERE id = ? AND status = 'PENDING'", [adjId])
+  await positionAdjustments.update({ _id: adjId, status: 'PENDING' }, { status: 'REJECTED' })
   broadcast('adjustment_resolved', { adjustmentId: adjId, status: 'REJECTED' })
   logger.info('SL/TP adjustment rejected by user', { adjId })
 }

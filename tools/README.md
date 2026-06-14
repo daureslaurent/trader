@@ -1,42 +1,36 @@
 # tools/ — agent operations toolkit
 
 Small, scriptable CLIs for an AI agent (or a human) to inspect the bot's data and
-manage its lifecycle without hand-writing one-off SQL scripts each time. Two
-tools, no dependencies beyond what `backend/` and Docker already provide.
+manage its lifecycle. Two tools, no dependencies beyond what `backend/` and Docker
+already provide.
 
 ```
-node tools/db.mjs  <command> [args] [--flags]   # inspect / mutate the databases
+node tools/db.mjs  <command> [args] [--flags]   # inspect / mutate MongoDB
 node tools/app.mjs <command> [args]             # start / stop / logs / lint
 ```
 
-## Why this exists (the data model that makes naïve edits dangerous)
-
-The backend uses **sql.js**: each of the four databases is loaded fully into
-memory and written back to `data/*.db` on a debounced save and on shutdown.
-
-- The schema is **namespaced across four files** — `settings.db`, `trading.db`,
-  `pipeline.db`, `cache.db`. One table lives in exactly one file. Use
-  `db.mjs find <table>` if unsure.
-- The `data/*.db` files are **owned by root** (the container runs as root and
-  bind-mounts `./data`). A local non-root process can *read* them but not write.
-- A **running backend will clobber any direct file edit** the next time it saves,
-  because its in-memory copy is authoritative.
-
-So: **reads are done locally and read-only**; **writes stop the backend, back up
-the file, mutate it inside the backend container, then restart the backend.**
-`db.mjs exec` does all of that for you — never edit `data/*.db` by hand while the
-bot is up.
-
 ## db.mjs
+
+The backend stores everything in a single **MongoDB** database (`cryptobot` by
+default), one collection per former table. Mongo is a real shared datastore, so —
+unlike the old sql.js files — **both reads and writes are safe while the bot is
+running**; there's no in-memory file copy to clobber and nothing to stop/back up.
+
+Connection comes from `MONGO_URL` (default
+`mongodb://localhost:27017/?directConnection=true`) and `MONGO_DB` (default
+`cryptobot`). The tool borrows the `mongodb` driver from `backend/node_modules`,
+so run it after `npm install` in `backend/`. Filters/sorts/updates are passed as
+JSON strings.
 
 ### Read (safe any time)
 
 ```bash
-node tools/db.mjs tables                 # tables grouped by db file
-node tools/db.mjs find trades            # -> trading.db
-node tools/db.mjs schema positions       # CREATE TABLE statement
-node tools/db.mjs query "SELECT coin, SUM(total) FROM trades GROUP BY coin"
-node tools/db.mjs query "SELECT * FROM settings WHERE key LIKE 'entry_%'" --json
+node tools/db.mjs collections            # collections with document counts
+node tools/db.mjs schema positions       # indexes + a sample document
+node tools/db.mjs query trades --filter '{"status":"EXECUTED"}' --sort '{"id":-1}' --limit 10
+node tools/db.mjs query settings --filter '{"_id":{"$regex":"^entry_"}}' --json
+node tools/db.mjs get trades 54          # one document by _id (int or string key)
+node tools/db.mjs count positions --filter '{"status":"OPEN"}'
 
 # canned views
 node tools/db.mjs trades 10              # last 10 trades
@@ -47,27 +41,26 @@ node tools/db.mjs intents               # active entry-timing intents
 node tools/db.mjs llm 20                 # recent LLM calls
 ```
 
-`query` is restricted to `SELECT`/`WITH`/`PRAGMA`/`EXPLAIN` and auto-routes across
-all four dbs (override with `--db <name>`). Add `--json` for machine-readable output.
+`query` takes a Mongo filter as JSON. Add `--json` for machine-readable output;
+table output truncates wide cells to 200 chars (use `--json` for full values).
 
-Two safeguards: auto-routing surfaces the *real* error from whichever db owns the
-table (a bad column won't be hidden behind another db's `no such table`); and wide
-JSON/TEXT cells are truncated to 200 chars in table output — use `--json` to get a
-full value.
+Document ids: most collections keep an integer `_id` (mirrored as `id`); a few use
+a natural string key (`settings`→key, `monitor_notes`→coin, `entry_intents`/
+`entry_events`→id, `extraction_cache`→url, `ohlcv_cache`→cache_key). `get` coerces
+a numeric argument to an int `_id`, otherwise treats it as a string key.
 
-### Write (stops the bot, backs up, mutates, restarts)
+### Write (live; `--yes` required)
 
 ```bash
-node tools/db.mjs exec "DELETE FROM trades WHERE id = 54" --db trading --yes
-node tools/db.mjs exec "UPDATE positions SET status='CLOSED' WHERE id=16" --db trading --yes
+node tools/db.mjs update positions --filter '{"id":16}' --set '{"status":"CLOSED"}' --yes
+node tools/db.mjs delete trades --filter '{"id":54}' --yes
 ```
 
-- `--db <settings|trading|pipeline|cache>` is **required** (no auto-routing for writes).
+- `update` runs `updateMany` with `$set`; `delete` runs `deleteMany`.
+- `--filter` is **required** (pass `{}` deliberately to match every document).
 - `--yes` is **required** to confirm the destructive operation.
-- A timestamped backup `data/<db>.db.bak-<iso>` is created first. To roll back:
-  stop the backend, restore the `.bak-*` file over `data/<db>.db`, start the backend.
-- If the backend was running it is stopped for the edit and restarted afterward;
-  if it was already stopped it stays stopped.
+- No stop/backup/restart dance — the write goes straight to the shared server
+  while the bot keeps running. For a real backup, use `mongodump`.
 
 ## app.mjs
 
@@ -80,12 +73,13 @@ node tools/app.mjs stop  | start | down | up
 node tools/app.mjs lint                 # backend type-check (the only test gate)
 ```
 
+`docker compose up` now also starts the `mongo` service (single-node replica set
+`rs0`); its data lives in the `mongo-data` volume.
+
 ## Notes
 
-- Both tools resolve the repo and `data/` relative to their own location, so they
-  work from any cwd.
-- `db.mjs` borrows `sql.js` from `backend/node_modules` — run after `npm install`
+- Both tools resolve the repo relative to their own location, so they work from
+  any cwd.
+- `db.mjs` borrows `mongodb` from `backend/node_modules` — run after `npm install`
   in `backend/`. No separate install needed.
-- The `_exec-raw` subcommand of `db.mjs` is the in-container half of a write and
-  is not meant to be called directly.
-- Backups (`*.db.bak-*`) accumulate in `data/`; prune old ones when convenient.
+- One-off import of legacy sql.js data: `cd backend && npm run migrate:mongo`.

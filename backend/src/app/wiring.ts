@@ -32,12 +32,12 @@ export function registerEventHandlers(): void {
   })
 
   bus.on('trade_rejected', (tradeId) => {
-    rejectTrade(tradeId)
+    rejectTrade(tradeId).catch(err => logger.error('Trade reject handler error', { tradeId, error: errMsg(err) }))
   })
 
   // ── Position SL/TP adjustments (from the Position Monitor) ──────────────────
   bus.on('position_adjustment_proposed', (p) => {
-    proposeAdjustment(p)
+    proposeAdjustment(p).catch(err => logger.error('Adjustment propose handler error', { error: errMsg(err) }))
   })
 
   bus.on('adjustment_approved', (adjId) => {
@@ -45,7 +45,7 @@ export function registerEventHandlers(): void {
   })
 
   bus.on('adjustment_rejected', (adjId) => {
-    rejectAdjustment(adjId)
+    rejectAdjustment(adjId).catch(err => logger.error('Adjustment reject handler error', { adjId, error: errMsg(err) }))
   })
 
   // ── Monitor-initiated exits ────────────────────────────────────────────────
@@ -66,12 +66,14 @@ export function registerEventHandlers(): void {
   // ── Software-fallback exits (reconciler, no live OCO) ──────────────────────
   bus.on('stop_loss_hit', ({ positionId, coin, price }) => {
     logger.warn('Stop loss triggered (software fallback)', { coin, positionId, price })
-    executeFallbackExit(positionId, coin, price, 'SL_HIT', 'Stop loss')
+    executeFallbackExit(positionId, coin, price, 'SL_HIT', 'Stop loss').catch(err =>
+      logger.error('Fallback SL exit handler error', { coin, error: errMsg(err) }))
   })
 
   bus.on('take_profit_hit', ({ positionId, coin, price }) => {
     logger.info('Take profit triggered (software fallback)', { coin, positionId, price })
-    executeFallbackExit(positionId, coin, price, 'TP_HIT', 'Take profit')
+    executeFallbackExit(positionId, coin, price, 'TP_HIT', 'Take profit').catch(err =>
+      logger.error('Fallback TP exit handler error', { coin, error: errMsg(err) }))
   })
 
   // ── Scheduling & manual pipeline triggers ──────────────────────────────────

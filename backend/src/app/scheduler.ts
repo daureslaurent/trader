@@ -93,13 +93,11 @@ export function startSchedulers(settings: BotSettings): void {
   scheduleSummary(settings.summary_cron, settings.summary_auto_run)
 
   // Run LLM retention on startup and then daily at 03:00 UTC
-  try { runLLMRetention() } catch (err) {
-    logger.warn('LLM retention on startup failed', { error: err instanceof Error ? err.message : String(err) })
-  }
+  runLLMRetention().catch(err =>
+    logger.warn('LLM retention on startup failed', { error: err instanceof Error ? err.message : String(err) }))
   cron.schedule('0 3 * * *', () => {
-    try { runLLMRetention() } catch (err) {
-      logger.warn('LLM retention failed', { error: err instanceof Error ? err.message : String(err) })
-    }
+    runLLMRetention().catch(err =>
+      logger.warn('LLM retention failed', { error: err instanceof Error ? err.message : String(err) }))
   })
 
   positionCheckInterval = setInterval(async () => {

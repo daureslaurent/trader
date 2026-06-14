@@ -1,4 +1,5 @@
-import { queryAll, queryOne, runSQL, withTransaction, getSettings } from '../db/index.js'
+import { ClientSession } from 'mongodb'
+import { portfolioEntries, positions as positionsRepo, trades, withTransaction, nowSql, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
 import { broadcast } from '../api/ws.js'
@@ -10,22 +11,25 @@ import { MarketData, PortfolioEntry, PortfolioState, BotSettings, PositionRecord
 
 const USDC_COIN = 'USDC'
 
-export function getOpenEntries(): PortfolioEntry[] {
-  return queryAll("SELECT * FROM portfolio_entries WHERE status = 'OPEN' ORDER BY created_at ASC") as unknown as PortfolioEntry[]
+// Session-threading helper: writes inside a transaction must enroll in its session.
+type Opts = { session?: ClientSession }
+
+export async function getOpenEntries(): Promise<PortfolioEntry[]> {
+  return portfolioEntries.find({ status: 'OPEN' }, { sort: { created_at: 1 } }) as unknown as Promise<PortfolioEntry[]>
 }
 
-export function getCoinEntries(): PortfolioEntry[] {
-  return queryAll("SELECT * FROM portfolio_entries WHERE status = 'OPEN' AND coin != ? ORDER BY created_at ASC", [USDC_COIN]) as unknown as PortfolioEntry[]
+export async function getCoinEntries(): Promise<PortfolioEntry[]> {
+  return portfolioEntries.find({ status: 'OPEN', coin: { $ne: USDC_COIN } }, { sort: { created_at: 1 } }) as unknown as Promise<PortfolioEntry[]>
 }
 
-export function getUsdcEntry(): PortfolioEntry | null {
-  return queryOne("SELECT * FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [USDC_COIN]) as PortfolioEntry | null
+export async function getUsdcEntry(opts: Opts = {}): Promise<PortfolioEntry | null> {
+  return portfolioEntries.findOne({ coin: USDC_COIN, status: 'OPEN' }, opts) as unknown as Promise<PortfolioEntry | null>
 }
 
-export function seedUsdcIfAbsent(amount: number): void {
-  if (getUsdcEntry()) return
+export async function seedUsdcIfAbsent(amount: number, opts: Opts = {}): Promise<void> {
+  if (await getUsdcEntry(opts)) return
   const today = new Date().toISOString().split('T')[0]
-  addEntry(USDC_COIN, amount, 1.0, today, 'manual')
+  await addEntry(USDC_COIN, amount, 1.0, today, 'manual', undefined, opts)
   logger.info('USDC entry seeded', { amount })
 }
 
@@ -33,145 +37,135 @@ export function seedUsdcIfAbsent(amount: number): void {
 // Only acts when a local entry already exists — never auto-seeds.
 // If Binance < local, an external withdrawal happened — reduce local accordingly.
 // Deposits must be done explicitly via the deposit endpoint.
-export function detectExternalWithdrawal(binanceUsdc: number): void {
-  const existing = getUsdcEntry()
+export async function detectExternalWithdrawal(binanceUsdc: number): Promise<void> {
+  const existing = await getUsdcEntry()
   if (!existing) return
   if (binanceUsdc < existing.quantity) {
     const withdrawn = existing.quantity - binanceUsdc
     logger.info('External USDC withdrawal detected', { withdrawn, localBefore: existing.quantity, binanceNow: binanceUsdc })
-    reduceEntryQuantity(existing.id, withdrawn)
+    await reduceEntryQuantity(existing.id, withdrawn)
   }
 }
 
-export function depositUsdc(amount: number): number {
-  const entry = getUsdcEntry()
+export async function depositUsdc(amount: number): Promise<number> {
+  const entry = await getUsdcEntry()
   if (entry) {
-    increaseEntryQuantity(entry.id, amount)
+    await increaseEntryQuantity(entry.id, amount)
     return entry.quantity + amount
   } else {
     const today = new Date().toISOString().split('T')[0]
-    addEntry(USDC_COIN, amount, 1.0, today, 'manual')
+    await addEntry(USDC_COIN, amount, 1.0, today, 'manual')
     return amount
   }
 }
 
-export function withdrawUsdc(amount: number): { ok: boolean; balance: number; error?: string } {
-  const entry = getUsdcEntry()
+export async function withdrawUsdc(amount: number): Promise<{ ok: boolean; balance: number; error?: string }> {
+  const entry = await getUsdcEntry()
   if (!entry) return { ok: false, balance: 0, error: 'No USDC balance' }
   if (entry.quantity < amount) return { ok: false, balance: entry.quantity, error: 'Insufficient balance' }
-  reduceEntryQuantity(entry.id, amount)
+  await reduceEntryQuantity(entry.id, amount)
   return { ok: true, balance: entry.quantity - amount }
 }
 
-export function getEntryByCoin(coin: string): PortfolioEntry | null {
-  return queryOne("SELECT * FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC LIMIT 1", [coin]) as PortfolioEntry | null
+export async function getEntryByCoin(coin: string, opts: Opts = {}): Promise<PortfolioEntry | null> {
+  return portfolioEntries.findOne({ coin, status: 'OPEN' }, { sort: { created_at: 1 }, ...opts }) as unknown as Promise<PortfolioEntry | null>
 }
 
-export function updatePortfolioForTrade(
+export async function updatePortfolioForTrade(
   fromCoin: string,
   fromAmount: number,
   toCoin: string,
   toAmount: number,
   toPrice: number,
   buyTradeId: number,
-): void {
-  const fromEntry = fromCoin === USDC_COIN ? getUsdcEntry() : getEntryByCoin(fromCoin)
+  opts: Opts = {},
+): Promise<void> {
+  const fromEntry = fromCoin === USDC_COIN ? await getUsdcEntry(opts) : await getEntryByCoin(fromCoin, opts)
   if (!fromEntry) throw new Error(`updatePortfolioForTrade: no open entry for ${fromCoin}`)
   if (fromEntry.quantity < fromAmount) throw new Error(`updatePortfolioForTrade: insufficient balance for ${fromCoin}`)
 
-  reduceEntryQuantity(fromEntry.id, fromAmount)
+  await reduceEntryQuantity(fromEntry.id, fromAmount, opts)
 
-  const toEntry = toCoin === USDC_COIN ? getUsdcEntry() : getEntryByCoin(toCoin)
+  const toEntry = toCoin === USDC_COIN ? await getUsdcEntry(opts) : await getEntryByCoin(toCoin, opts)
   if (toEntry) {
-    increaseEntryQuantity(toEntry.id, toAmount)
+    await increaseEntryQuantity(toEntry.id, toAmount, opts)
   } else {
     const today = new Date().toISOString().split('T')[0]
-    addEntry(toCoin, toAmount, toPrice, today, 'trade', buyTradeId)
+    await addEntry(toCoin, toAmount, toPrice, today, 'trade', buyTradeId, opts)
   }
 }
 
-export function getAllEntries(): PortfolioEntry[] {
-  return queryAll("SELECT * FROM portfolio_entries ORDER BY created_at DESC") as unknown as PortfolioEntry[]
+export async function getAllEntries(): Promise<PortfolioEntry[]> {
+  return portfolioEntries.find({}, { sort: { created_at: -1 } }) as unknown as Promise<PortfolioEntry[]>
 }
 
-export function getEntryById(id: number): PortfolioEntry | null {
-  return queryOne("SELECT * FROM portfolio_entries WHERE id = ?", [id]) as PortfolioEntry | null
+export async function getEntryById(id: number, opts: Opts = {}): Promise<PortfolioEntry | null> {
+  return portfolioEntries.findById(id, opts) as unknown as Promise<PortfolioEntry | null>
 }
 
-export function addEntry(
+export async function addEntry(
   coin: string,
   quantity: number,
   buyPrice: number,
   buyDate: string,
   source: 'trade' | 'manual' | 'transfer' = 'trade',
   tradeId?: number,
-): number {
-  const { lastInsertRowid } = runSQL(
-    `INSERT INTO portfolio_entries (coin, quantity, buy_price, buy_date, source, trade_id)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [coin, quantity, buyPrice, buyDate, source, tradeId ?? null]
-  )
-  logger.info('Portfolio entry added', { coin, quantity, buyPrice, id: lastInsertRowid })
-  return lastInsertRowid
+  opts: Opts = {},
+): Promise<number> {
+  const id = await portfolioEntries.insert({
+    coin, quantity, buy_price: buyPrice, buy_date: buyDate,
+    status: 'OPEN', source, trade_id: tradeId ?? null, created_at: nowSql(),
+  }, opts)
+  logger.info('Portfolio entry added', { coin, quantity, buyPrice, id })
+  return id as number
 }
 
-export function closeEntry(id: number): void {
-  runSQL("UPDATE portfolio_entries SET status = 'CLOSED' WHERE id = ? AND status = 'OPEN'", [id])
-  const entry = getEntryById(id)
+export async function closeEntry(id: number, opts: Opts = {}): Promise<void> {
+  await portfolioEntries.update({ _id: id, status: 'OPEN' }, { status: 'CLOSED' }, opts)
+  const entry = await getEntryById(id, opts)
   if (entry) {
     logger.info('Portfolio entry closed', { coin: entry.coin, id })
   }
 }
 
-export function reduceEntryQuantity(id: number, sellQty: number): void {
-  const entry = getEntryById(id)
+export async function reduceEntryQuantity(id: number, sellQty: number, opts: Opts = {}): Promise<void> {
+  const entry = await getEntryById(id, opts)
   if (!entry) return
   const newQty = entry.quantity - sellQty
   if (newQty <= 0) {
-    closeEntry(id)
+    await closeEntry(id, opts)
   } else {
-    runSQL("UPDATE portfolio_entries SET quantity = ? WHERE id = ?", [newQty, id])
+    await portfolioEntries.update({ _id: id }, { quantity: newQty }, opts)
   }
 }
 
-export function removeEntry(id: number): void {
-  runSQL("DELETE FROM portfolio_entries WHERE id = ?", [id])
+export async function removeEntry(id: number): Promise<void> {
+  await portfolioEntries.deleteOne({ _id: id })
 }
 
-export function updateEntryQuantity(id: number, quantity: number): void {
-  runSQL("UPDATE portfolio_entries SET quantity = ? WHERE id = ?", [quantity, id])
+export async function updateEntryQuantity(id: number, quantity: number): Promise<void> {
+  await portfolioEntries.update({ _id: id }, { quantity })
 }
 
-export function increaseEntryQuantity(id: number, additionalQty: number): void {
-  runSQL("UPDATE portfolio_entries SET quantity = quantity + ? WHERE id = ?", [additionalQty, id])
+export async function increaseEntryQuantity(id: number, additionalQty: number, opts: Opts = {}): Promise<void> {
+  await portfolioEntries.update({ _id: id }, { $inc: { quantity: additionalQty } }, opts)
 }
 
-export function updateEntry(id: number, updates: Partial<Pick<PortfolioEntry, 'quantity' | 'buy_price' | 'buy_date'>>): void {
-  const setClauses: string[] = []
-  const params: (string | number)[] = []
-  if (updates.quantity !== undefined) {
-    setClauses.push('quantity = ?')
-    params.push(updates.quantity)
-  }
-  if (updates.buy_price !== undefined) {
-    setClauses.push('buy_price = ?')
-    params.push(updates.buy_price)
-  }
-  if (updates.buy_date !== undefined) {
-    setClauses.push('buy_date = ?')
-    params.push(updates.buy_date)
-  }
-  if (setClauses.length === 0) return
-  params.push(id)
-  runSQL(`UPDATE portfolio_entries SET ${setClauses.join(', ')} WHERE id = ?`, params)
+export async function updateEntry(id: number, updates: Partial<Pick<PortfolioEntry, 'quantity' | 'buy_price' | 'buy_date'>>): Promise<void> {
+  const set: Record<string, unknown> = {}
+  if (updates.quantity !== undefined) set.quantity = updates.quantity
+  if (updates.buy_price !== undefined) set.buy_price = updates.buy_price
+  if (updates.buy_date !== undefined) set.buy_date = updates.buy_date
+  if (Object.keys(set).length === 0) return
+  await portfolioEntries.update({ _id: id }, set)
 }
 
-export function getPortfolioState(
+export async function getPortfolioState(
   marketData: MarketData[],
   settings: BotSettings,
-): PortfolioState {
-  const usdcEntry = getUsdcEntry()
-  const coinEntries = getCoinEntries()
+): Promise<PortfolioState> {
+  const usdcEntry = await getUsdcEntry()
+  const coinEntries = await getCoinEntries()
   const usdcTotal = usdcEntry ? usdcEntry.quantity : 0
   let totalValue = usdcTotal
 
@@ -209,7 +203,7 @@ export function getPortfolioState(
 
   // openPositionCount tracks only bot-managed positions (positions table, status=OPEN).
   // portfolio_entries includes manual/transfer holdings which don't consume a bot slot.
-  const botPositionCount = (queryAll("SELECT COUNT(*) AS cnt FROM positions WHERE status = 'OPEN'")[0]?.cnt as number) ?? 0
+  const botPositionCount = await positionsRepo.count({ status: 'OPEN' })
 
   return {
     totalValueUsd: totalValue,
@@ -227,26 +221,26 @@ export interface CoinPortfolioContext {
   recentTrades: { side: 'BUY' | 'SELL'; quantity: number; price: number; date: string }[]
 }
 
-export function getCoinPortfolioContext(coin: string): CoinPortfolioContext {
-  const entries = queryAll(
-    "SELECT quantity, buy_price FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'",
-    [coin]
-  ) as { quantity: number; buy_price: number }[]
+export async function getCoinPortfolioContext(coin: string): Promise<CoinPortfolioContext> {
+  const entries = (await portfolioEntries.find(
+    { coin, status: 'OPEN' },
+    { projection: { quantity: 1, buy_price: 1 } },
+  )) as unknown as { quantity: number; buy_price: number }[]
 
   const currentQuantity = entries.reduce((sum, e) => sum + e.quantity, 0)
   const avgBuyPrice = currentQuantity > 0
     ? entries.reduce((sum, e) => sum + e.buy_price * e.quantity, 0) / currentQuantity
     : null
 
-  const trades = queryAll(
-    "SELECT side, quantity, price, created_at FROM trades WHERE coin = ? AND status = 'EXECUTED' ORDER BY created_at DESC LIMIT 5",
-    [coin]
-  ) as { side: string; quantity: number; price: number; created_at: string }[]
+  const trades_ = (await trades.find(
+    { coin, status: 'EXECUTED' },
+    { sort: { created_at: -1 }, limit: 5, projection: { side: 1, quantity: 1, price: 1, created_at: 1 } },
+  )) as unknown as { side: string; quantity: number; price: number; created_at: string }[]
 
   return {
     currentQuantity,
     avgBuyPrice,
-    recentTrades: trades.map(t => ({
+    recentTrades: trades_.map(t => ({
       side: t.side as 'BUY' | 'SELL',
       quantity: t.quantity,
       price: t.price,
@@ -261,23 +255,26 @@ export function getCoinPortfolioContext(coin: string): CoinPortfolioContext {
 // reconcile, and (when the exchange can't protect a position) fall back to a
 // software stop. See trader/oco.ts for the exchange API.
 
-function getBotPositionById(id: number): PositionRecord | null {
-  return queryOne("SELECT * FROM positions WHERE id = ?", [id]) as unknown as PositionRecord | null
+async function getBotPositionById(id: number, opts: Opts = {}): Promise<PositionRecord | null> {
+  return positionsRepo.findById(id, opts) as unknown as Promise<PositionRecord | null>
 }
 
-function getOpenBotPositions(): PositionRecord[] {
-  return queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as unknown as PositionRecord[]
+async function getOpenBotPositions(): Promise<PositionRecord[]> {
+  return positionsRepo.find({ status: 'OPEN' }, { sort: { created_at: 1 } }) as unknown as Promise<PositionRecord[]>
 }
 
-function persistOco(positionId: number, oco: { orderListId: string; slOrderId: string | null; tpOrderId: string | null; status: 'NONE' | 'ACTIVE' | 'FAILED' }): void {
-  runSQL(
-    "UPDATE positions SET oco_order_list_id = ?, oco_sl_order_id = ?, oco_tp_order_id = ?, oco_status = ?, oco_synced_at = datetime('now') WHERE id = ?",
-    [oco.orderListId || null, oco.slOrderId, oco.tpOrderId, oco.status, positionId]
-  )
+async function persistOco(positionId: number, oco: { orderListId: string; slOrderId: string | null; tpOrderId: string | null; status: 'NONE' | 'ACTIVE' | 'FAILED' }): Promise<void> {
+  await positionsRepo.update({ _id: positionId }, {
+    oco_order_list_id: oco.orderListId || null,
+    oco_sl_order_id: oco.slOrderId,
+    oco_tp_order_id: oco.tpOrderId,
+    oco_status: oco.status,
+    oco_synced_at: nowSql(),
+  })
 }
 
-function setOcoStatus(positionId: number, status: 'NONE' | 'ACTIVE' | 'FAILED'): void {
-  runSQL("UPDATE positions SET oco_status = ?, oco_synced_at = datetime('now') WHERE id = ?", [status, positionId])
+async function setOcoStatus(positionId: number, status: 'NONE' | 'ACTIVE' | 'FAILED'): Promise<void> {
+  await positionsRepo.update({ _id: positionId }, { oco_status: status, oco_synced_at: nowSql() })
 }
 
 export interface PositionExit {
@@ -301,51 +298,53 @@ export interface PositionExit {
  * The actual exchange sell must already have happened (OCO fill on the exchange,
  * or a market sell issued by the caller). This function never trades.
  */
-export function closePositionFromExit(exit: PositionExit): boolean {
-  let positionClosed = false
+export async function closePositionFromExit(exit: PositionExit): Promise<boolean> {
   let pnl: number | null = null
 
-  const preClose = queryOne("SELECT entry_price, quantity, created_at FROM positions WHERE id = ? AND status = 'OPEN'", [exit.positionId]) as
-    | { entry_price: number; quantity: number; created_at: string }
-    | null
+  const preClose = (await positionsRepo.findOne(
+    { _id: exit.positionId, status: 'OPEN' },
+    { projection: { entry_price: 1, quantity: 1, created_at: 1 } },
+  )) as { entry_price: number; quantity: number; created_at: string } | null
+
+  // Not open (already closed by a concurrent pass) — nothing to do.
+  if (!preClose) return false
 
   // Exchange fees are not reported for OCO fills, so estimate from the configured
   // rate: one side on the entry notional, one on the exit notional. Without this
   // every scratch exit shows pnl = 0 when it actually lost the round-trip cost.
   const feeRate = getSettings().fee_rate
-  const feeEst = preClose != null
-    ? feeRate * exit.fillQty * (preClose.entry_price + exit.fillPrice)
-    : 0
+  const feeEst = feeRate * exit.fillQty * (preClose.entry_price + exit.fillPrice)
+  const computedPnl = preClose.quantity * (exit.fillPrice - preClose.entry_price) - feeEst
 
   // Atomic: position close + ledger update + USDC credit
-  const committed = withTransaction(() => {
-    const r = runSQL(
-      "UPDATE positions SET status = ?, pnl = (quantity * (? - entry_price)) - ? WHERE id = ? AND status = 'OPEN'",
-      [exit.status, exit.fillPrice, feeEst, exit.positionId]
+  const committed = await withTransaction(async (session) => {
+    const matched = await positionsRepo.update(
+      { _id: exit.positionId, status: 'OPEN' },
+      { status: exit.status, pnl: computedPnl },
+      { session },
     )
-    if (r.changes === 0) return false  // already closed by a concurrent pass
+    if (matched === 0) return false  // already closed by a concurrent pass
 
-    positionClosed = true
-    pnl = (getBotPositionById(exit.positionId)?.pnl) ?? null
+    pnl = computedPnl
 
-    recordPositionClose(exit.positionId, exit.fillPrice)
+    await recordPositionClose(exit.positionId, exit.fillPrice, { session })
 
     // Close the local ledger entries for the coin (full exit).
-    const entries = queryAll(
-      "SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
-      [exit.coin]
-    ) as { id: number }[]
-    for (const e of entries) closeEntry(e.id)
+    const entries = (await portfolioEntries.find(
+      { coin: exit.coin, status: 'OPEN' },
+      { sort: { created_at: 1 }, projection: { _id: 1 }, session },
+    )) as unknown as { _id: number }[]
+    for (const e of entries) await closeEntry(e._id, { session })
 
     const proceeds = exit.fillPrice * exit.fillQty
-    let usdcEntry = getUsdcEntry()
+    let usdcEntry = await getUsdcEntry({ session })
     if (!usdcEntry) {
       // #6a: USDC entry was deleted or never seeded — auto-seed at zero so the credit lands safely
-      seedUsdcIfAbsent(0)
-      usdcEntry = getUsdcEntry()
+      await seedUsdcIfAbsent(0, { session })
+      usdcEntry = await getUsdcEntry({ session })
     }
     if (usdcEntry) {
-      increaseEntryQuantity(usdcEntry.id, proceeds)
+      await increaseEntryQuantity(usdcEntry.id, proceeds, { session })
     } else {
       logger.error('closePositionFromExit: USDC entry missing after seed attempt — proceeds lost', {
         coin: exit.coin, proceeds,
@@ -355,21 +354,23 @@ export function closePositionFromExit(exit: PositionExit): boolean {
     // Estimated sell-side fee; the USDC credit above stays gross because the
     // periodic Binance balance sync only ever corrects downward — under-crediting
     // would register as a phantom external withdrawal.
-    runSQL(
-      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, ?, 'USDC', 'EXECUTED', 1)",
-      [exit.coin, exit.fillQty, exit.fillPrice, exit.fillPrice * exit.fillQty, feeRate * exit.fillPrice * exit.fillQty]
-    )
+    await trades.insert({
+      coin: exit.coin, side: 'SELL', quantity: exit.fillQty, price: exit.fillPrice,
+      total: exit.fillPrice * exit.fillQty, fee_cost: feeRate * exit.fillPrice * exit.fillQty,
+      fee_currency: 'USDC', signal_id: null, status: 'EXECUTED', approved: 1,
+      error: null, created_at: nowSql(),
+    }, { session })
     return true
   })
 
-  if (!committed || !positionClosed) return false
+  if (!committed) return false
 
   // Post-commit: non-critical cleanup + broadcasts
-  clearReviewsForCoin(exit.coin)
+  void clearReviewsForCoin(exit.coin).catch(() => { /* best-effort cleanup */ })
 
   if (exit.status === 'SL_HIT') broadcast('stop_loss_hit', { coin: exit.coin, price: exit.fillPrice, pnl })
   else if (exit.status === 'TP_HIT') broadcast('take_profit_hit', { coin: exit.coin, price: exit.fillPrice, pnl })
-  const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
+  const trade = await trades.findOne({}, { sort: { id: -1 } })
   if (trade) broadcast('trade_executed', trade)
 
   bus.emit('portfolio_updated')
@@ -394,11 +395,11 @@ export function closePositionFromExit(exit: PositionExit): boolean {
  * reconcileOpenPositions() keeps it protected. Safe to call repeatedly.
  */
 export async function placeProtection(positionId: number): Promise<void> {
-  const pos = getBotPositionById(positionId)
+  const pos = await getBotPositionById(positionId)
   if (!pos || pos.status !== 'OPEN') return
   if (pos.take_profit == null) {
     // OCO needs both legs; without a TP we rely on the software stop.
-    setOcoStatus(positionId, 'FAILED')
+    await setOcoStatus(positionId, 'FAILED')
     logger.warn('No take-profit set — OCO skipped, software stop active', { coin: pos.coin, positionId })
     return
   }
@@ -411,7 +412,7 @@ export async function placeProtection(positionId: number): Promise<void> {
       takeProfit: pos.take_profit,
       bufferPct,
     })
-    persistOco(positionId, res)
+    await persistOco(positionId, res)
     logger.info('OCO protection placed', { coin: pos.coin, positionId, orderListId: res.orderListId, stopLoss: pos.current_sl, takeProfit: pos.take_profit })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -424,7 +425,7 @@ export async function placeProtection(positionId: number): Promise<void> {
       try {
         const existing = await trader.findExistingOco(pos.coin)
         if (existing) {
-          persistOco(positionId, existing)
+          await persistOco(positionId, existing)
           logger.info('OCO protection reattached after restart (recovered lost OCO state)', {
             coin: pos.coin, positionId, orderListId: existing.orderListId,
           })
@@ -449,10 +450,10 @@ export async function placeProtection(positionId: number): Promise<void> {
             takeProfit: pos.take_profit!,
             bufferPct,
           })
-          persistOco(positionId, res)
+          await persistOco(positionId, res)
           // Align the recorded quantity with what Binance actually holds so
           // future OCO replacements and close calculations use the correct value.
-          runSQL('UPDATE positions SET quantity = ? WHERE id = ?', [actualQty, positionId])
+          await positionsRepo.update({ _id: positionId }, { quantity: actualQty })
           logger.info('OCO protection placed with fee-adjusted quantity', {
             coin: pos.coin, positionId, orderListId: res.orderListId, qty: actualQty,
           })
@@ -465,7 +466,7 @@ export async function placeProtection(positionId: number): Promise<void> {
       }
     }
 
-    setOcoStatus(positionId, 'FAILED')
+    await setOcoStatus(positionId, 'FAILED')
     logger.error('OCO placement failed — software fallback active', { coin: pos.coin, positionId, error: msg })
   }
 }
@@ -476,7 +477,7 @@ export async function placeProtection(positionId: number): Promise<void> {
  * Reads the current levels from the DB, so callers should persist new levels first.
  */
 export async function replaceProtection(positionId: number): Promise<void> {
-  const pos = getBotPositionById(positionId)
+  const pos = await getBotPositionById(positionId)
   if (!pos || pos.status !== 'OPEN') return
   if (pos.oco_status !== 'ACTIVE' || !pos.oco_order_list_id) {
     await placeProtection(positionId)
@@ -484,7 +485,7 @@ export async function replaceProtection(positionId: number): Promise<void> {
   }
   if (pos.take_profit == null) {
     await cancelProtection(positionId)
-    setOcoStatus(positionId, 'FAILED')
+    await setOcoStatus(positionId, 'FAILED')
     return
   }
   const trader = await import('../trader/index.js')
@@ -495,11 +496,11 @@ export async function replaceProtection(positionId: number): Promise<void> {
       takeProfit: pos.take_profit,
       bufferPct,
     })
-    persistOco(positionId, res)
+    await persistOco(positionId, res)
     if (res.status === 'FAILED') logger.error('OCO replace failed — software fallback active', { coin: pos.coin, positionId })
     else logger.info('OCO protection replaced', { coin: pos.coin, positionId, orderListId: res.orderListId, stopLoss: pos.current_sl, takeProfit: pos.take_profit })
   } catch (err) {
-    setOcoStatus(positionId, 'FAILED')
+    await setOcoStatus(positionId, 'FAILED')
     logger.error('OCO replace failed — software fallback active', { coin: pos.coin, positionId, error: err instanceof Error ? err.message : String(err) })
   }
 }
@@ -510,7 +511,7 @@ export async function replaceProtection(positionId: number): Promise<void> {
  * in the open OCO. Idempotent and best-effort.
  */
 export async function cancelProtection(positionId: number): Promise<void> {
-  const pos = getBotPositionById(positionId)
+  const pos = await getBotPositionById(positionId)
   if (!pos || pos.oco_status !== 'ACTIVE' || !pos.oco_order_list_id) return
   const trader = await import('../trader/index.js')
   try {
@@ -518,7 +519,7 @@ export async function cancelProtection(positionId: number): Promise<void> {
   } catch (err) {
     logger.warn('Failed to cancel OCO before sell', { coin: pos.coin, positionId, error: err instanceof Error ? err.message : String(err) })
   }
-  setOcoStatus(positionId, 'NONE')
+  await setOcoStatus(positionId, 'NONE')
 }
 
 let reconciling = false
@@ -535,7 +536,7 @@ export async function reconcileOpenPositions(): Promise<void> {
   if (reconciling) return
   reconciling = true
   try {
-    const positions = getOpenBotPositions()
+    const positions = await getOpenBotPositions()
     if (positions.length === 0) return
     const trader = await import('../trader/index.js')
 
@@ -558,7 +559,7 @@ export async function reconcileOpenPositions(): Promise<void> {
               })
               continue
             }
-            closePositionFromExit({
+            await closePositionFromExit({
               positionId: pos.id,
               coin: pos.coin,
               status: oco.filledLeg === 'SL' ? 'SL_HIT' : 'TP_HIT',
@@ -570,7 +571,7 @@ export async function reconcileOpenPositions(): Promise<void> {
           }
           // CANCELED on the exchange while still open (manual cancel) → re-protect.
           logger.warn('OCO cancelled on exchange, re-placing protection', { coin: pos.coin, positionId: pos.id })
-          setOcoStatus(pos.id, 'NONE')
+          await setOcoStatus(pos.id, 'NONE')
           pos.oco_status = 'NONE'
         }
 
@@ -580,7 +581,7 @@ export async function reconcileOpenPositions(): Promise<void> {
         // If protection still couldn't be placed, check whether the coin was
         // sold on Binance externally (manually or via a fill the bot didn't see).
         // If the balance is effectively zero the position is gone — close it.
-        const refreshed = getBotPositionById(pos.id)
+        const refreshed = await getBotPositionById(pos.id)
         if (refreshed && refreshed.status === 'OPEN' && refreshed.oco_status !== 'ACTIVE') {
           try {
             const base = pos.coin.split('/')[0]
@@ -591,7 +592,7 @@ export async function reconcileOpenPositions(): Promise<void> {
               logger.warn('External position close detected — coin no longer held on Binance', {
                 coin: pos.coin, positionId: pos.id, held, expected: pos.quantity,
               })
-              closePositionFromExit({
+              await closePositionFromExit({
                 positionId: pos.id,
                 coin: pos.coin,
                 status: 'CLOSED',

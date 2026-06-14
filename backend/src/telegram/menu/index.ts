@@ -107,7 +107,7 @@ export class MenuController {
       const key = parts[1]
       const value = parts.slice(2).join(' ')
       try {
-        updateSetting(key, value)
+        await updateSetting(key, value)
         ctx.reply(`✅ <code>${key}</code> updated to <code>${value}</code>`, { parse_mode: 'HTML' })
       } catch (err) {
         ctx.reply(`❌ Failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -117,7 +117,7 @@ export class MenuController {
     this.bot.action('setting:toggle:approval_required', async (ctx) => {
       const s = getSettings()
       const next = !s.approval_required
-      updateSetting('approval_required', String(next))
+      await updateSetting('approval_required', String(next))
       await ctx.answerCbQuery(`Approval ${next ? 'enabled' : 'disabled'}`)
       await this.renderView(ctx, 'settings')
     })

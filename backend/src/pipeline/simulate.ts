@@ -1,4 +1,4 @@
-import { queryOne, getSettings } from '../db/index.js'
+import { portfolioEntries, positions as positionsRepo, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { fetchMarketData } from '../trader/index.js'
 import {
@@ -40,20 +40,20 @@ export async function runSimulatedSignal({ symbol, action, confidence, reason, c
     const signal: Signal = { coin: symbol, action, confidence, reason, quantity: 0 }
 
     if (action === 'BUY') {
-      const portfolioState = getPortfolioState(marketData, settings)
+      const portfolioState = await getPortfolioState(marketData, settings)
       if (portfolioState.openPositionCount >= portfolioState.maxOpenPositions) {
         logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: 'Max open positions reached' })
         return
       }
 
-      const existingHolding = queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [symbol])
+      const existingHolding = await portfolioEntries.findOne({ coin: symbol, status: 'OPEN' }, { projection: { id: 1 } })
       if (existingHolding) {
         logger.warn('Skipping BUY — coin already held in portfolio', { coin: symbol })
         logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: 'Coin already held in portfolio' })
         return
       }
 
-      const availableUsdc = getUsdcEntry()?.quantity ?? 0
+      const availableUsdc = (await getUsdcEntry())?.quantity ?? 0
       if (availableUsdc < settings.min_trade_usdc) {
         logger.warn('Skipping BUY — USDC below minimum threshold', { coin: symbol, availableUsdc, min: settings.min_trade_usdc })
         logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: `Insufficient USDC ($${availableUsdc.toFixed(2)} < minimum $${settings.min_trade_usdc})` })
@@ -75,7 +75,7 @@ export async function runSimulatedSignal({ symbol, action, confidence, reason, c
         error: outcome === 'failed' ? tradeErr : undefined,
       })
     } else {
-      const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [symbol])
+      const existing = await positionsRepo.findOne({ coin: symbol, status: 'OPEN' })
       if (!existing) {
         logPipelineEvent('trade_skipped', symbol, cycle_id, { reason: 'No open position to sell' })
         return

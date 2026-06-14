@@ -1,4 +1,4 @@
-import { initDB, queryAll, runSQL, saveDB, getSettings, updateSetting } from '../db/index.js'
+import { initDB, shutdownDB, loadSettings, trades, pipelineEvents, getSettings, updateSetting } from '../db/index.js'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { startAPI } from '../api/index.js'
@@ -17,37 +17,33 @@ let server: ReturnType<typeof startAPI> | undefined
 export async function start(): Promise<void> {
   logger.info('Starting CryptoBot...')
   await initDB()
+  await loadSettings()
 
   // Orphaned PENDING trades can't be executed after a restart (signal state is lost)
-  const orphaned = runSQL("UPDATE trades SET status = 'FAILED' WHERE status = 'PENDING'")
-  if (orphaned.changes > 0) {
-    logger.warn('Marked orphaned PENDING trades as FAILED on startup', { count: orphaned.changes })
+  const orphaned = await trades.updateMany({ status: 'PENDING' }, { status: 'FAILED' })
+  if (orphaned > 0) {
+    logger.warn('Marked orphaned PENDING trades as FAILED on startup', { count: orphaned })
   }
 
   // Cancel any pipeline cycles that never reached a terminal stage (process was killed mid-run)
   const TERMINAL_STAGES = ['signal_generated', 'trade_executed', 'trade_skipped', 'pipeline_error', 'pipeline_timeout', 'pipeline_failed', 'pipeline_cancelled']
-  const terminalPlaceholders = TERMINAL_STAGES.map(() => '?').join(', ')
-  const openCycles = queryAll(
-    `SELECT DISTINCT cycle_id, coin FROM pipeline_events
-     WHERE cycle_id NOT IN (
-       SELECT DISTINCT cycle_id FROM pipeline_events WHERE stage IN (${terminalPlaceholders})
-     )`,
-    TERMINAL_STAGES
-  ) as { cycle_id: string; coin: string }[]
+  const terminalCycleIds = await pipelineEvents.col().distinct('cycle_id', { stage: { $in: TERMINAL_STAGES } })
+  const openCycles = await pipelineEvents.aggregate<{ cycle_id: string; coin: string }>([
+    { $match: { cycle_id: { $nin: terminalCycleIds } } },
+    { $group: { _id: '$cycle_id', coin: { $first: '$coin' } } },
+    { $project: { _id: 0, cycle_id: '$_id', coin: 1 } },
+  ])
 
   if (openCycles.length > 0) {
-    const seen = new Set<string>()
     for (const { cycle_id, coin } of openCycles) {
-      if (seen.has(cycle_id)) continue
-      seen.add(cycle_id)
-      logPipelineEvent('pipeline_cancelled', coin, cycle_id, { error: 'Server restarted' })
+      await logPipelineEvent('pipeline_cancelled', coin, cycle_id, { error: 'Server restarted' })
     }
-    logger.warn('Cancelled orphaned pipeline cycles on startup', { count: seen.size })
+    logger.warn('Cancelled orphaned pipeline cycles on startup', { count: openCycles.length })
   }
 
   // Env var seeds the DB setting on every startup so .env stays authoritative
   if (config.pipelineCron) {
-    updateSetting('pipeline_cron', config.pipelineCron)
+    await updateSetting('pipeline_cron', config.pipelineCron)
   }
 
   server = startAPI()
@@ -63,7 +59,7 @@ export async function start(): Promise<void> {
     try {
       const top3 = (await getTopPairs(3)).filter(isTradeable)
       if (top3.length > 0) {
-        updateSetting('watchlist', JSON.stringify(top3))
+        await updateSetting('watchlist', JSON.stringify(top3))
         settings = getSettings()
         logger.info('Watchlist seeded from top Binance pairs', { pairs: top3 })
       }
@@ -74,11 +70,11 @@ export async function start(): Promise<void> {
 
   const initialCoins = [
     ...settings.watchlist,
-    ...(getOpenEntries() as unknown as { coin: string }[]).filter(e => e.coin !== 'USDC').map(e => e.coin),
+    ...((await getOpenEntries()) as unknown as { coin: string }[]).filter(e => e.coin !== 'USDC').map(e => e.coin),
   ]
   if (initialCoins.length > 0) priceCache.subscribe([...new Set(initialCoins)])
 
-  entry.start(settings)
+  await entry.start(settings)
 
   startSchedulers(settings)
 
@@ -97,7 +93,7 @@ export async function shutdown(signal: string): Promise<void> {
   entry.stop()
   priceCache.stop()
   try { await closeBrowser() } catch {}
-  saveDB()
   if (server) server.close()
+  await shutdownDB()
   process.exit(0)
 }

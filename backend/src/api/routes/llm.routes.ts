@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { queryAll, queryOne, runSQL, getSettings } from '../../db/index.js'
+import { llmCalls, llmStatsSnapshots, getSettings } from '../../db/index.js'
 import { getRunningLLMCalls } from '../../core/llm.js'
 import { getEndpointHealth, runEndpointHealthCheck } from '../../core/endpointHealth.js'
 import { config } from '../../config/index.js'
@@ -49,34 +49,31 @@ router.get('/llm-calls/running', (_req: Request, res: Response) => {
   res.json(getRunningLLMCalls())
 })
 
-router.get('/llm-calls', (req: Request, res: Response) => {
+router.get('/llm-calls', async (req: Request, res: Response) => {
   try {
     const defaultLimit = getSettings().llm_debug_fetch_limit || 200
     const limit = Math.min(Math.max(parseInt((req.query.limit as string) || String(defaultLimit), 10), 1), 2000)
     const module = req.query.module as string | undefined
     const coin = req.query.coin as string | undefined
 
-    let sql = 'SELECT id, module, model, base_url, response, reasoning_content, error, prompt_tokens, completion_tokens, thinking_tokens, duration_ms, queue_ms, coin, cycle_id, created_at FROM llm_calls'
-    const params: (string | number)[] = []
-    const conditions: string[] = []
+    const filter: Record<string, unknown> = {}
+    if (module) filter.module = module
+    if (coin) filter.coin = coin
 
-    if (module) { conditions.push('module = ?'); params.push(module) }
-    if (coin) { conditions.push('coin = ?'); params.push(coin) }
-    if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ')
-    sql += ' ORDER BY created_at DESC LIMIT ?'
-    params.push(limit)
-
-    res.json(queryAll(sql, params))
+    res.json(await llmCalls.find(filter, {
+      sort: { created_at: -1 }, limit,
+      projection: { _id: 0, id: 1, module: 1, model: 1, base_url: 1, response: 1, reasoning_content: 1, error: 1, prompt_tokens: 1, completion_tokens: 1, thinking_tokens: 1, duration_ms: 1, queue_ms: 1, coin: 1, cycle_id: 1, created_at: 1 },
+    }))
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
 
-router.get('/llm-calls/:id', (req: Request, res: Response) => {
+router.get('/llm-calls/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id)
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
-    const call = queryOne('SELECT * FROM llm_calls WHERE id = ?', [id])
+    const call = await llmCalls.findById(id)
     if (!call) return res.status(404).json({ error: 'Not found' })
     res.json(call)
   } catch (err) {
@@ -84,18 +81,20 @@ router.get('/llm-calls/:id', (req: Request, res: Response) => {
   }
 })
 
-router.delete('/llm-calls', (_req: Request, res: Response) => {
+router.delete('/llm-calls', async (_req: Request, res: Response) => {
   try {
-    runSQL('DELETE FROM llm_calls')
+    await llmCalls.deleteMany({})
     res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
 
-router.get('/llm-stats-snapshots', (_req: Request, res: Response) => {
+router.get('/llm-stats-snapshots', async (_req: Request, res: Response) => {
   try {
-    const rows = queryAll('SELECT module, model, base_url, call_count, error_count, total_duration_ms, total_prompt_tokens, total_completion_tokens, total_thinking_tokens FROM llm_stats_snapshots')
+    const rows = await llmStatsSnapshots.find({}, {
+      projection: { _id: 0, module: 1, model: 1, base_url: 1, call_count: 1, error_count: 1, total_duration_ms: 1, total_prompt_tokens: 1, total_completion_tokens: 1, total_thinking_tokens: 1 },
+    })
     res.json(rows)
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })

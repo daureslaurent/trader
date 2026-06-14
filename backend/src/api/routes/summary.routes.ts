@@ -4,14 +4,14 @@ import { getSummaries, getLatestSummary, isRunning as isSummaryRunning, getActiv
 
 export const router = Router()
 
-router.get('/summary', (req: Request, res: Response) => {
+router.get('/summary', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '50', 10), 1), 200)
     const active = getActiveSummaryModel()
     res.json({
       running: isSummaryRunning(),
-      latest: getLatestSummary(),
-      history: getSummaries(limit),
+      latest: await getLatestSummary(),
+      history: await getSummaries(limit),
       model: { model: active.model, baseURL: active.baseURL },
     })
   } catch (err) {

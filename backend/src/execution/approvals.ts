@@ -1,4 +1,4 @@
-import { runSQL, getSettings } from '../db/index.js'
+import { trades, nowSql, getSettings } from '../db/index.js'
 import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
@@ -27,12 +27,11 @@ export async function handleTradeSignal(signal: Signal, price: number, atr?: num
 
   if (s.approval_required || config.approvalsEnabled) {
     const total = price * signal.quantity
-    const info = runSQL(
-      "INSERT INTO trades (coin, side, quantity, price, total, status) VALUES (?, ?, ?, ?, ?, 'PENDING')",
-      [signal.coin, signal.action, signal.quantity, price, total]
-    )
-
-    const tradeId = info.lastInsertRowid
+    const tradeId = Number(await trades.insert({
+      coin: signal.coin, side: signal.action, quantity: signal.quantity, price, total,
+      fee_cost: 0, fee_currency: 'USDC', signal_id: null, status: 'PENDING',
+      approved: null, error: null, created_at: nowSql(),
+    }))
     const req: ApprovalRequest = {
       tradeId,
       coin: signal.coin,
@@ -69,7 +68,7 @@ export async function approveTrade(tradeId: number): Promise<void> {
   if (!pending) {
     // In-memory state is gone (e.g. server restarted) — mark FAILED so the DB doesn't stay PENDING
     logger.error('Trade approval failed: in-memory state not found', { tradeId })
-    runSQL("UPDATE trades SET status = 'FAILED', error = 'Approval state lost (server restart)' WHERE id = ? AND status = 'PENDING'", [tradeId])
+    await trades.update({ _id: tradeId, status: 'PENDING' }, { status: 'FAILED', error: 'Approval state lost (server restart)' })
     broadcast('trade_failed', { tradeId, error: 'Approval state lost after server restart' })
     return
   }
@@ -85,13 +84,13 @@ export async function approveTrade(tradeId: number): Promise<void> {
 }
 
 /** Reject a pending approval: mark the trade FAILED and clear in-memory state. */
-export function rejectTrade(tradeId: number): void {
+export async function rejectTrade(tradeId: number): Promise<void> {
   const timer = approvalTimers.get(tradeId)
   if (timer) clearTimeout(timer)
   approvalTimers.delete(tradeId)
   pendingApprovals.delete(tradeId)
 
-  runSQL("UPDATE trades SET approved = 0, status = 'FAILED' WHERE id = ? AND status = 'PENDING'", [tradeId])
+  await trades.update({ _id: tradeId, status: 'PENDING' }, { approved: 0, status: 'FAILED' })
   broadcast('trade_rejected', tradeId)
   logger.info('Trade rejected by user', { tradeId })
 }

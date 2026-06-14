@@ -1,20 +1,20 @@
 import { Router, Request, Response } from 'express'
-import { queryAll, queryOne } from '../../db/index.js'
+import { decisions as decisionsRepo, pipelineEvents } from '../../db/index.js'
 import { bus } from '../../core/events.js'
 import { isPipelineRunning } from '../../pipeline/index.js'
 import { isTradeable } from '../../core/tradeable.js'
 
 export const router = Router()
 
-router.get('/decisions', (_req: Request, res: Response) => {
-  const decisions = queryAll('SELECT * FROM decisions ORDER BY created_at DESC LIMIT 50')
+router.get('/decisions', async (_req: Request, res: Response) => {
+  const decisions = await decisionsRepo.find({}, { sort: { created_at: -1 }, limit: 50 })
   res.json(decisions)
 })
 
-router.get('/chart', (_req: Request, res: Response) => {
-  const rows = queryAll(
-    'SELECT coin, action, confidence, created_at FROM decisions ORDER BY created_at ASC'
-  ) as { coin: string; action: string; confidence: number; created_at: string }[]
+router.get('/chart', async (_req: Request, res: Response) => {
+  const rows = (await decisionsRepo.find(
+    {}, { sort: { created_at: 1 }, projection: { _id: 0, coin: 1, action: 1, confidence: 1, created_at: 1 } },
+  )) as unknown as { coin: string; action: string; confidence: number; created_at: string }[]
   const data = rows.map((r) => ({
     coin: r.coin,
     action: r.action,
@@ -72,10 +72,10 @@ router.post('/pipeline/cancel/:cycleId', (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
-router.post('/pipeline/rerun', (req: Request, res: Response) => {
+router.post('/pipeline/rerun', async (req: Request, res: Response) => {
   const { cycle_id } = req.body
   if (!cycle_id || typeof cycle_id !== 'string') return res.status(400).json({ error: 'cycle_id required' })
-  const row = queryOne('SELECT coin FROM pipeline_events WHERE cycle_id = ? LIMIT 1', [cycle_id]) as { coin: string } | undefined
+  const row = (await pipelineEvents.findOne({ cycle_id }, { projection: { coin: 1 } })) as { coin: string } | null
   if (!row) return res.status(404).json({ error: 'Cycle not found' })
   const symbol = row.coin.includes('/') ? row.coin : `${row.coin}/USDC`
   const newCycleId = `${Date.now().toString(36)}-manual`
@@ -83,31 +83,17 @@ router.post('/pipeline/rerun', (req: Request, res: Response) => {
   res.json({ ok: true, cycle_id: newCycleId })
 })
 
-router.get('/pipeline-events', (req: Request, res: Response) => {
+router.get('/pipeline-events', async (req: Request, res: Response) => {
   const limit = Math.min(Math.max(Math.floor(parseFloat(req.query.limit as string)) || 100, 1), 500)
   const coin = req.query.coin as string | undefined
   const cycleId = req.query.cycle_id as string | undefined
 
-  let sql = 'SELECT * FROM pipeline_events'
-  const params: (string | number)[] = []
-  const conditions: string[] = []
+  const filter: Record<string, unknown> = {}
+  if (coin) filter.coin = coin
+  if (cycleId) filter.cycle_id = cycleId
+  // stage LIKE 'prefix%' → anchored prefix regex
+  if (req.query.stage) filter.stage = { $regex: `^${String(req.query.stage).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` }
 
-  if (coin) {
-    conditions.push('coin = ?')
-    params.push(coin)
-  }
-  if (cycleId) {
-    conditions.push('cycle_id = ?')
-    params.push(cycleId)
-  }
-  if (req.query.stage) {
-    conditions.push('stage LIKE ?')
-    params.push(`${req.query.stage as string}%`)
-  }
-  if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ')
-  sql += ' ORDER BY created_at DESC LIMIT ?'
-  params.push(limit)
-
-  const events = queryAll(sql, params)
+  const events = await pipelineEvents.find(filter, { sort: { created_at: -1 }, limit })
   res.json(events)
 })

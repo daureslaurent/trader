@@ -1,6 +1,6 @@
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
-import { queryAll } from '../db/index.js'
+import { positions as positionsRepo, portfolioSnapshots } from '../db/index.js'
 import { formatCurrency, esc, coinLabel, formatPnlPct, pnlEmoji } from './components/formatting.js'
 import { getBot, getChatId } from './bot.js'
 import type { PositionRecord, PortfolioSummary } from '../types.js'
@@ -138,16 +138,14 @@ export function startNotifier() {
   })
 
   // ── Portfolio snapshot ───────────────────────────────────────────────────────
-  bus.on('portfolio_updated', () => {
-    const snapshots = queryAll(
-      'SELECT total_value_usd FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 2'
+  bus.on('portfolio_updated', async () => {
+    const snapshots = await portfolioSnapshots.find(
+      {}, { sort: { created_at: -1 }, limit: 2, projection: { total_value_usd: 1 } },
     ) as { total_value_usd: number }[]
     if (!snapshots.length) return
 
     const current = Number(snapshots[0].total_value_usd)
-    const openCount = (queryAll(
-      "SELECT COUNT(*) as count FROM positions WHERE status = 'OPEN'"
-    ) as { count: number }[])[0]?.count ?? 0
+    const openCount = await positionsRepo.count({ status: 'OPEN' })
 
     let changeStr = ''
     if (snapshots[1]) {

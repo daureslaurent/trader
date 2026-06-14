@@ -1,5 +1,5 @@
 import { logger } from '../core/logger.js'
-import { queryOne, runSQL } from '../db/index.js'
+import { ohlcvCache } from '../db/index.js'
 
 export interface Candle {
   time: number   // epoch seconds (chart-friendly)
@@ -62,10 +62,10 @@ async function fetchFromBinance(symbol: string, timeframe: Timeframe, limit: num
  */
 export async function getOHLCV(symbol: string, timeframe: Timeframe, limit: number): Promise<Candle[]> {
   const cacheKey = `${symbol}|${timeframe}`
-  const cached = queryOne(
-    'SELECT data, fetched_at FROM ohlcv_cache WHERE cache_key = ?',
-    [cacheKey]
-  ) as { data: string; fetched_at: number } | null
+  const cached = (await ohlcvCache.findOne(
+    { _id: cacheKey },
+    { projection: { data: 1, fetched_at: 1 } },
+  )) as { data: string; fetched_at: number } | null
 
   if (cached) {
     const age = Date.now() - cached.fetched_at
@@ -90,10 +90,9 @@ export async function getOHLCV(symbol: string, timeframe: Timeframe, limit: numb
     throw err
   }
 
-  runSQL(
-    'INSERT OR REPLACE INTO ohlcv_cache (cache_key, symbol, timeframe, data, fetched_at) VALUES (?, ?, ?, ?, ?)',
-    [cacheKey, symbol, timeframe, JSON.stringify(candles), Date.now()]
-  )
+  await ohlcvCache.upsert(cacheKey, {
+    symbol, timeframe, data: JSON.stringify(candles), fetched_at: Date.now(),
+  })
 
   return candles.slice(-limit)
 }

@@ -1,4 +1,4 @@
-import { runSQL } from '../db/index.js'
+import { decisions, nowSql } from '../db/index.js'
 import { researchCoin } from '../researcher/index.js'
 import { extractResearch, selectArticles } from '../extractor/index.js'
 import { analyzeSignal } from '../analyst/index.js'
@@ -22,7 +22,7 @@ export type CoinAnalysisResult = {
  */
 export async function analyzeCoin(
   data: MarketDataItem,
-  portfolioState: ReturnType<typeof getPortfolioState>,
+  portfolioState: Awaited<ReturnType<typeof getPortfolioState>>,
   cycleId: string,
 ): Promise<CoinAnalysisResult> {
   // Research and market context are independent — fetch in parallel
@@ -77,10 +77,10 @@ export async function analyzeCoin(
     symbol: data.symbol, action: signal.action, reason: signal.reason, confidence: signal.confidence,
   })
 
-  runSQL(
-    'INSERT INTO decisions (coin, action, reason, confidence, context) VALUES (?, ?, ?, ?, ?)',
-    [data.symbol, signal.action, signal.reason, signal.confidence, JSON.stringify({ price: data.price, selectedResearch })]
-  )
+  await decisions.insert({
+    coin: data.symbol, action: signal.action, reason: signal.reason, confidence: signal.confidence,
+    context: JSON.stringify({ price: data.price, selectedResearch }), triggered_trade_id: null, created_at: nowSql(),
+  })
 
   return { data, signal, marketCtx, cycleId }
 }

@@ -134,7 +134,7 @@ function evaluate(): void {
   }
 }
 
-export function start(settings: BotSettings): void {
+export async function start(settings: BotSettings): Promise<void> {
   if (timer) return
 
   // Rehydrate from disk so a restart resumes where it left off. The activity feed
@@ -142,9 +142,9 @@ export function start(settings: BotSettings): void {
   // and re-subscribe the price feed. evaluate() reconciles each on the next tick —
   // a window that lapsed during downtime is handled by the normal expiry rule.
   recentEvents.length = 0
-  recentEvents.push(...store.loadRecentEvents())
+  recentEvents.push(...(await store.loadRecentEvents()))
 
-  const persisted = store.loadIntents()
+  const persisted = await store.loadIntents()
   if (persisted.length > 0) {
     for (const intent of persisted) intents.set(intent.coin, intent)
     priceCache.subscribe(persisted.map(i => i.coin))

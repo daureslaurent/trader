@@ -1,9 +1,9 @@
 import { Markup } from 'telegraf'
-import { queryAll, queryOne } from '../../../db/index.js'
+import { trades, decisions as decisionsRepo } from '../../../db/index.js'
 import { formatCurrency, confidenceBar, esc } from '../../components/formatting.js'
 
 export async function render(_ctx: any) {
-  const pending = queryAll("SELECT * FROM trades WHERE status = 'PENDING' ORDER BY created_at ASC") as any[]
+  const pending = await trades.find({ status: 'PENDING' }, { sort: { created_at: 1 } }) as any[]
   if (pending.length === 0) {
     return { text: '✅ <b>Pending Approvals</b>\n\nNo pending approvals.', buttons: [] }
   }
@@ -13,9 +13,9 @@ export async function render(_ctx: any) {
 
   for (const t of pending) {
     // Fetch latest decision for this coin to get reason + confidence
-    const decision = queryOne(
-      'SELECT confidence, reason FROM decisions WHERE coin = ? ORDER BY created_at DESC LIMIT 1',
-      [t.coin]
+    const decision = await decisionsRepo.findOne(
+      { coin: t.coin },
+      { sort: { created_at: -1 }, projection: { confidence: 1, reason: 1 } },
     ) as { confidence: number; reason: string } | null
 
     const coin = esc((t.coin as string).replace('/USDC', ''))

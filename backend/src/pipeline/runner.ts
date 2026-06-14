@@ -1,4 +1,4 @@
-import { queryOne, runSQL, getSettings } from '../db/index.js'
+import { portfolioSnapshots, positions as positionsRepo, portfolioEntries, nowSql, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
 import { broadcast } from '../api/ws.js'
@@ -33,7 +33,7 @@ async function handleBuySignal(args: {
   data: { symbol: string; price: number }
   marketCtx: { atr14: number }
   signal: Signal
-  portfolioState: ReturnType<typeof getPortfolioState>
+  portfolioState: Awaited<ReturnType<typeof getPortfolioState>>
   settings: ReturnType<typeof getSettings>
   cycleId: string
   checkActiveIntent: boolean
@@ -41,7 +41,7 @@ async function handleBuySignal(args: {
   const { data, marketCtx, signal, portfolioState, settings, cycleId, checkActiveIntent } = args
   const symbol = data.symbol
 
-  const evaluation = prepareBuyOrder({
+  const evaluation = await prepareBuyOrder({
     symbol, price: data.price, atr14: marketCtx.atr14,
     signal, portfolioState, settings, checkActiveIntent,
   })
@@ -117,7 +117,7 @@ async function tradingLoop() {
 
   // Include coins currently held in the portfolio so the bot can SELL them even
   // if they were removed from the watchlist.
-  const portfolioCoins = (getOpenEntries() as unknown as { coin: string }[])
+  const portfolioCoins = ((await getOpenEntries()) as unknown as { coin: string }[])
     .map(e => e.coin)
 
   const combined = [...new Set([...settings.watchlist, ...portfolioCoins])]
@@ -136,7 +136,7 @@ async function tradingLoop() {
 
   const balance = await fetchBalance()
   const usdcBalance = balance['USDC']?.total || 0
-  detectExternalWithdrawal(usdcBalance)
+  await detectExternalWithdrawal(usdcBalance)
 
   await checkOpenPositions()
 
@@ -155,7 +155,7 @@ async function tradingLoop() {
     }
     const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
     // Re-fetch portfolio state so position counts reflect any trades already done this cycle
-    const portfolioState = getPortfolioState(marketData, settings)
+    const portfolioState = await getPortfolioState(marketData, settings)
 
     try {
       const { signal, marketCtx } = await analyzeCoin(data, portfolioState, cycleId)
@@ -175,7 +175,7 @@ async function tradingLoop() {
           tradesInitiated++
         }
       } else if (signal.action === 'SELL') {
-        const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [data.symbol])
+        const existing = await positionsRepo.findOne({ coin: data.symbol, status: 'OPEN' })
         if (existing) {
           const qty = existing.quantity as number
           const sellSignal: Signal = { ...signal, quantity: qty }
@@ -203,7 +203,7 @@ async function tradingLoop() {
     }
   }
 
-  const snapshotEntries = getOpenEntries()
+  const snapshotEntries = await getOpenEntries()
   let snapshotTotal = 0
   const holdings: Record<string, number> = {}
   for (const snapEntry of snapshotEntries) {
@@ -219,10 +219,9 @@ async function tradingLoop() {
     }
   }
 
-  runSQL(
-    'INSERT INTO portfolio_snapshots (total_value_usd, holdings) VALUES (?, ?)',
-    [snapshotTotal, JSON.stringify(holdings)]
-  )
+  await portfolioSnapshots.insert({
+    total_value_usd: snapshotTotal, holdings: JSON.stringify(holdings), created_at: nowSql(),
+  })
 
   if (tradesInitiated > 0) bus.emit('portfolio_updated')
 
@@ -238,7 +237,7 @@ async function tradingLoop() {
 export async function runSingleCoinPipeline(symbol: string, cycleId: string): Promise<void> {
   logger.info('Manual pipeline started', { symbol, cycleId })
 
-  const existingHolding = queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [symbol])
+  const existingHolding = await portfolioEntries.findOne({ coin: symbol, status: 'OPEN' }, { projection: { id: 1 } })
   if (existingHolding) {
     logger.info('Skipping manual pipeline — coin already held in portfolio', { symbol })
     logPipelineEvent('trade_skipped', symbol, cycleId, { reason: 'Coin already held in portfolio — managed by monitor' })
@@ -254,7 +253,7 @@ export async function runSingleCoinPipeline(symbol: string, cycleId: string): Pr
     return
   }
 
-  const portfolioState = getPortfolioState(marketData, settings)
+  const portfolioState = await getPortfolioState(marketData, settings)
 
   try {
     const { signal, marketCtx } = await analyzeCoin(data, portfolioState, cycleId)
@@ -276,7 +275,7 @@ export async function runSingleCoinPipeline(symbol: string, cycleId: string): Pr
         bus.emit('portfolio_updated')
       }
     } else if (signal.action === 'SELL') {
-      const existing = queryOne("SELECT * FROM positions WHERE coin = ? AND status = 'OPEN'", [symbol])
+      const existing = await positionsRepo.findOne({ coin: symbol, status: 'OPEN' })
       if (!existing) {
         logPipelineEvent('trade_skipped', symbol, cycleId, { reason: 'No open position to sell' })
         return

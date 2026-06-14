@@ -2,7 +2,10 @@ import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
 import type { LLMTarget } from '../core/llm.js'
-import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
+import {
+  portfolioSummaries, portfolioSnapshots, positions as positionsRepo, portfolioEntries,
+  trades, positionReviews, nowSql, getSettings,
+} from '../db/index.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
@@ -76,12 +79,10 @@ function normList(value: unknown): string | null {
 }
 
 // Delete summaries older than the retention window. 0 = keep forever.
-function pruneSummaries(retainDays: number): void {
+async function pruneSummaries(retainDays: number): Promise<void> {
   if (!retainDays || retainDays <= 0) return
-  runSQL(
-    `DELETE FROM portfolio_summaries WHERE created_at < datetime('now', ?)`,
-    [`-${Math.floor(retainDays)} days`],
-  )
+  const cutoff = new Date(Date.now() - Math.floor(retainDays) * 86400_000).toISOString().replace('T', ' ').slice(0, 19)
+  await portfolioSummaries.deleteMany({ created_at: { $lt: cutoff } })
 }
 
 // Aggregate possibly-multiple OPEN entries per coin into one holding line.
@@ -96,15 +97,14 @@ function groupEntries(entries: PortfolioEntry[]): Map<string, { quantity: number
   return byCoin
 }
 
-export function getSummaries(limit = 50): PortfolioSummary[] {
-  return queryAll(
-    'SELECT * FROM portfolio_summaries ORDER BY created_at DESC LIMIT ?',
-    [Math.min(Math.max(limit, 1), 200)],
-  ) as unknown as PortfolioSummary[]
+export async function getSummaries(limit = 50): Promise<PortfolioSummary[]> {
+  return portfolioSummaries.find(
+    {}, { sort: { created_at: -1 }, limit: Math.min(Math.max(limit, 1), 200) },
+  ) as unknown as Promise<PortfolioSummary[]>
 }
 
-export function getLatestSummary(): PortfolioSummary | null {
-  return queryOne('SELECT * FROM portfolio_summaries ORDER BY created_at DESC LIMIT 1') as PortfolioSummary | null
+export async function getLatestSummary(): Promise<PortfolioSummary | null> {
+  return portfolioSummaries.findOne({}, { sort: { created_at: -1 } }) as unknown as Promise<PortfolioSummary | null>
 }
 
 export async function runPortfolioSummary(cycleId: string): Promise<void> {
@@ -121,9 +121,9 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
     const utcOffsetHours = s.utc_offset_hours
     const feeRate = s.fee_rate
 
-    const usdcEntry = getUsdcEntry()
+    const usdcEntry = await getUsdcEntry()
     const usdcBalance = usdcEntry ? usdcEntry.quantity : 0
-    const coinEntries = getCoinEntries()
+    const coinEntries = await getCoinEntries()
     const grouped = groupEntries(coinEntries)
     const coins = [...grouped.keys()]
 
@@ -169,15 +169,15 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
           logger.warn('Summary: market context failed', { coin, error: (err as Error).message })
         }
 
-        const pos = queryOne(
-          "SELECT stop_loss, take_profit, horizon FROM positions WHERE coin = ? AND status = 'OPEN' LIMIT 1",
-          [coin],
-        ) as { stop_loss: number | null; take_profit: number | null; horizon: string | null } | null
+        const pos = (await positionsRepo.findOne(
+          { coin, status: 'OPEN' },
+          { projection: { stop_loss: 1, take_profit: 1, horizon: 1 } },
+        )) as { stop_loss: number | null; take_profit: number | null; horizon: string | null } | null
 
-        const srcRow = queryOne(
-          "SELECT source FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at DESC LIMIT 1",
-          [coin],
-        ) as { source: string } | null
+        const srcRow = (await portfolioEntries.findOne(
+          { coin, status: 'OPEN' },
+          { sort: { created_at: -1 }, projection: { source: 1 } },
+        )) as { source: string } | null
 
         return {
           coin,
@@ -205,11 +205,12 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
     for (const h of holdings) h.allocationPct = totalValueUsd > 0 ? (h.valueUsd / totalValueUsd) * 100 : 0
     holdings.sort((a, b) => b.valueUsd - a.valueUsd)
 
-    const openBotPositions = (queryOne("SELECT COUNT(*) AS cnt FROM positions WHERE status = 'OPEN'") as { cnt: number } | null)?.cnt ?? 0
+    const openBotPositions = await positionsRepo.count({ status: 'OPEN' })
 
-    const recentTrades: SummaryTrade[] = (queryAll(
-      "SELECT side, coin, quantity, price, total, created_at FROM trades WHERE status = 'EXECUTED' ORDER BY created_at DESC LIMIT 10",
-    ) as { side: string; coin: string; quantity: number; price: number; total: number; created_at: string }[]).map(t => ({
+    const recentTrades: SummaryTrade[] = ((await trades.find(
+      { status: 'EXECUTED' },
+      { sort: { created_at: -1 }, limit: 10, projection: { side: 1, coin: 1, quantity: 1, price: 1, total: 1, created_at: 1 } },
+    )) as unknown as { side: string; coin: string; quantity: number; price: number; total: number; created_at: string }[]).map(t => ({
       side: t.side as 'BUY' | 'SELL',
       coin: t.coin,
       quantity: t.quantity,
@@ -218,14 +219,17 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
       date: t.created_at,
     }))
 
-    const recentlyClosed: SummaryClosed[] = (queryAll(
-      `SELECT p.coin, p.status, p.entry_price, p.pnl, p.created_at AS opened_at,
-              t.price AS exit_price, t.created_at AS closed_at
-       FROM positions p
-       LEFT JOIN trades t ON p.exit_id = t.id
-       WHERE p.status != 'OPEN'
-       ORDER BY COALESCE(t.created_at, p.created_at) DESC LIMIT 8`,
-    ) as { coin: string; status: string; entry_price: number | null; pnl: number | null; exit_price: number | null; closed_at: string | null; opened_at: string }[]).map(c => ({
+    const recentlyClosed: SummaryClosed[] = (await positionsRepo.aggregate<{
+      coin: string; status: string; entry_price: number | null; pnl: number | null; exit_price: number | null; closed_at: string | null; opened_at: string
+    }>([
+      { $match: { status: { $ne: 'OPEN' } } },
+      { $lookup: { from: 'trades', localField: 'exit_id', foreignField: 'id', as: 'exitTrade' } },
+      { $addFields: { exitTrade: { $arrayElemAt: ['$exitTrade', 0] } } },
+      { $addFields: { sortKey: { $ifNull: ['$exitTrade.created_at', '$created_at'] } } },
+      { $sort: { sortKey: -1 } },
+      { $limit: 8 },
+      { $project: { _id: 0, coin: 1, status: 1, entry_price: 1, pnl: 1, opened_at: '$created_at', exit_price: '$exitTrade.price', closed_at: '$exitTrade.created_at' } },
+    ])).map(c => ({
       coin: c.coin,
       status: c.status,
       entryPrice: c.entry_price,
@@ -234,10 +238,10 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
       closedAt: c.closed_at ?? c.opened_at,
     }))
 
-    const monitorActions: SummaryMonitorAction[] = (queryAll(
-      `SELECT coin, action, confidence, reasoning, reduce_to_pct, new_stop_loss, new_take_profit, created_at
-       FROM position_reviews ORDER BY created_at DESC LIMIT 12`,
-    ) as { coin: string; action: string; confidence: number; reasoning: string; reduce_to_pct: number | null; new_stop_loss: number | null; new_take_profit: number | null; created_at: string }[]).map(r => ({
+    const monitorActions: SummaryMonitorAction[] = ((await positionReviews.find(
+      {},
+      { sort: { created_at: -1 }, limit: 12, projection: { coin: 1, action: 1, confidence: 1, reasoning: 1, reduce_to_pct: 1, new_stop_loss: 1, new_take_profit: 1, created_at: 1 } },
+    )) as unknown as { coin: string; action: string; confidence: number; reasoning: string; reduce_to_pct: number | null; new_stop_loss: number | null; new_take_profit: number | null; created_at: string }[]).map(r => ({
       coin: r.coin,
       action: r.action as SummaryMonitorAction['action'],
       confidence: r.confidence,
@@ -248,9 +252,9 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
       createdAt: r.created_at,
     }))
 
-    const snaps = (queryAll(
-      'SELECT total_value_usd, created_at FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 8',
-    ) as { total_value_usd: number; created_at: string }[]).reverse()
+    const snaps = ((await portfolioSnapshots.find(
+      {}, { sort: { created_at: -1 }, limit: 8, projection: { total_value_usd: 1, created_at: 1 } },
+    )) as unknown as { total_value_usd: number; created_at: string }[]).reverse()
     const valueTrend = snaps.map(s => ({ date: s.created_at.slice(0, 16), value: Number(s.total_value_usd) }))
     const valueChangePct = valueTrend.length >= 2 && valueTrend[0].value > 0
       ? ((valueTrend[valueTrend.length - 1].value - valueTrend[0].value) / valueTrend[0].value) * 100
@@ -324,11 +328,10 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
     const whatHappened = typeof raw.what_happened === 'string' && raw.what_happened.trim() ? raw.what_happened.trim() : null
     const snapshot = JSON.stringify(ctx)
 
-    const { lastInsertRowid } = runSQL(
-      `INSERT INTO portfolio_summaries (summary, what_happened, health, risk_level, observations, suggestions, snapshot, model, cycle_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [raw.summary.trim(), whatHappened, health, riskLevel, observations, suggestions, snapshot, active.model, cycleId],
-    )
+    const lastInsertRowid = await portfolioSummaries.insert({
+      summary: raw.summary.trim(), what_happened: whatHappened, health, risk_level: riskLevel,
+      observations, suggestions, snapshot, model: active.model, cycle_id: cycleId, created_at: nowSql(),
+    })
 
     const summary: PortfolioSummary = {
       id: Number(lastInsertRowid),
@@ -344,7 +347,7 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
       created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
     }
 
-    pruneSummaries(s.summary_retain_days)
+    await pruneSummaries(s.summary_retain_days)
 
     logger.info('Portfolio summary saved', { cycleId, id: summary.id, health, riskLevel })
     broadcast('summary_completed', { cycle_id: cycleId, summary })

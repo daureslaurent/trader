@@ -1,4 +1,4 @@
-import { queryAll, queryOne, runSQL, withTransaction, getSettings } from '../db/index.js'
+import { trades, positions as positionsRepo, portfolioEntries, withTransaction, nowSql, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
 import { broadcast } from '../api/ws.js'
@@ -8,6 +8,16 @@ import {
   reduceEntryQuantity, increaseEntryQuantity, getUsdcEntry, seedUsdcIfAbsent,
 } from '../portfolio/index.js'
 import { claimExit, releaseExit } from './exitsInFlight.js'
+
+// Record a FAILED SELL trade and broadcast it. Shared by the exit handlers' catch blocks.
+async function recordFailedSell(coin: string, errMsg: string): Promise<void> {
+  const id = await trades.insert({
+    coin, side: 'SELL', quantity: 0, price: 0, total: 0, fee_cost: 0, fee_currency: 'USDC',
+    signal_id: null, status: 'FAILED', approved: 1, error: errMsg, created_at: nowSql(),
+  })
+  broadcast('trade_failed', await trades.findById(id as number))
+  bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+}
 
 // Monitor-initiated CLOSE: move SL to current price so the OCO stop leg
 // triggers immediately on Binance (avoids the cancel-then-market-sell path
@@ -23,10 +33,10 @@ export async function executeMonitorClose(
     return
   }
   try {
-    const pos = queryOne(
-      "SELECT quantity, oco_status, take_profit FROM positions WHERE id = ? AND status = 'OPEN'",
-      [positionId],
-    ) as { quantity: number; oco_status: string; take_profit: number | null } | null
+    const pos = (await positionsRepo.findOne(
+      { _id: positionId, status: 'OPEN' },
+      { projection: { quantity: 1, oco_status: 1, take_profit: 1 } },
+    )) as { quantity: number; oco_status: string; take_profit: number | null } | null
     if (!pos) return
 
     const qty = pos.quantity
@@ -35,16 +45,13 @@ export async function executeMonitorClose(
     // cancelling it and issuing a market sell. The stop-limit triggers immediately,
     // and the reconciler closes the ledger entry once the fill is detected.
     if (pos.oco_status === 'ACTIVE' && pos.take_profit != null && pos.take_profit > triggerPrice) {
-      runSQL(
-        'UPDATE positions SET stop_loss = ?, current_sl = ? WHERE id = ?',
-        [triggerPrice, triggerPrice, positionId],
-      )
+      await positionsRepo.update({ _id: positionId }, { stop_loss: triggerPrice, current_sl: triggerPrice })
       await replaceProtection(positionId)
 
-      const refreshed = queryOne(
-        "SELECT oco_status FROM positions WHERE id = ? AND status = 'OPEN'",
-        [positionId],
-      ) as { oco_status: string } | null
+      const refreshed = (await positionsRepo.findOne(
+        { _id: positionId, status: 'OPEN' },
+        { projection: { oco_status: 1 } },
+      )) as { oco_status: string } | null
 
       if (refreshed?.oco_status === 'ACTIVE') {
         logger.warn('Monitor CLOSE: SL moved to current price, awaiting OCO fill', { coin, positionId, price: triggerPrice })
@@ -59,7 +66,7 @@ export async function executeMonitorClose(
     // No active OCO or OCO replacement failed: cancel any remnants and market-sell.
     await cancelProtection(positionId)
     const result = await executeTrade({ coin, action: 'SELL', quantity: qty, reason: `Monitor close: ${reasoning}`, confidence: 1 })
-    closePositionFromExit({
+    await closePositionFromExit({
       positionId,
       coin,
       status: 'CLOSED',
@@ -72,13 +79,7 @@ export async function executeMonitorClose(
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     logger.error('Monitor close failed', { coin, error: errMsg })
-    runSQL(
-      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved, error) VALUES (?, 'SELL', 0, 0, 0, 0, 'USDC', 'FAILED', 1, ?)",
-      [coin, errMsg]
-    )
-    const failedTrade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
-    broadcast('trade_failed', failedTrade)
-    bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+    await recordFailedSell(coin, errMsg)
   } finally {
     releaseExit(positionId)
   }
@@ -99,10 +100,10 @@ export async function executeMonitorReduce(
     return
   }
 
-  const pos = queryOne(
-    "SELECT quantity FROM positions WHERE id = ? AND status = 'OPEN'",
-    [positionId],
-  ) as { quantity: number } | null
+  const pos = (await positionsRepo.findOne(
+    { _id: positionId, status: 'OPEN' },
+    { projection: { quantity: 1 } },
+  )) as { quantity: number } | null
   if (!pos) {
     releaseExit(positionId)
     return
@@ -133,40 +134,41 @@ export async function executeMonitorReduce(
     const fillPrice = result.price || triggerPrice
     const proceeds = fillQty * fillPrice
 
-    withTransaction(() => {
-      runSQL('UPDATE positions SET quantity = quantity - ? WHERE id = ?', [fillQty, positionId])
+    await withTransaction(async (session) => {
+      await positionsRepo.update({ _id: positionId }, { $inc: { quantity: -fillQty } }, { session })
 
       // FIFO-reduce the local ledger entries for the coin.
       let remaining = fillQty
-      const entries = queryAll(
-        "SELECT id, quantity FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' ORDER BY created_at ASC",
-        [coin],
-      ) as { id: number; quantity: number }[]
+      const entries = (await portfolioEntries.find(
+        { coin, status: 'OPEN' },
+        { sort: { created_at: 1 }, projection: { id: 1, quantity: 1 }, session },
+      )) as unknown as { id: number; quantity: number }[]
       for (const e of entries) {
         if (remaining <= 0) break
         const take = Math.min(e.quantity, remaining)
-        reduceEntryQuantity(e.id, take)
+        await reduceEntryQuantity(e.id, take, { session })
         remaining -= take
       }
 
-      let usdcEntry = getUsdcEntry()
+      let usdcEntry = await getUsdcEntry({ session })
       if (!usdcEntry) {
-        seedUsdcIfAbsent(0)
-        usdcEntry = getUsdcEntry()
+        await seedUsdcIfAbsent(0, { session })
+        usdcEntry = await getUsdcEntry({ session })
       }
-      if (usdcEntry) increaseEntryQuantity(usdcEntry.id, proceeds)
+      if (usdcEntry) await increaseEntryQuantity(usdcEntry.id, proceeds, { session })
       else logger.error('Monitor REDUCE: USDC entry missing after seed attempt — proceeds lost', { coin, proceeds })
 
-      runSQL(
-        "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved) VALUES (?, 'SELL', ?, ?, ?, ?, 'USDC', 'EXECUTED', 1)",
-        [coin, fillQty, fillPrice, proceeds, getSettings().fee_rate * proceeds],
-      )
+      await trades.insert({
+        coin, side: 'SELL', quantity: fillQty, price: fillPrice, total: proceeds,
+        fee_cost: getSettings().fee_rate * proceeds, fee_currency: 'USDC',
+        signal_id: null, status: 'EXECUTED', approved: 1, error: null, created_at: nowSql(),
+      }, { session })
     })
 
     // Re-place the OCO for the remaining quantity at the existing SL/TP levels.
     await replaceProtection(positionId)
 
-    const trade = queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1')
+    const trade = await trades.findOne({}, { sort: { id: -1 } })
     if (trade) broadcast('trade_executed', trade)
     broadcast('monitor_position_reduced', { coin, positionId, soldQty: fillQty, keptQty: keepQty, price: fillPrice, reduceToPct, reasoning })
     bus.emit('portfolio_updated')
@@ -174,12 +176,7 @@ export async function executeMonitorReduce(
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     logger.error('Monitor reduce failed', { coin, error: errMsg })
-    runSQL(
-      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved, error) VALUES (?, 'SELL', 0, 0, 0, 0, 'USDC', 'FAILED', 1, ?)",
-      [coin, errMsg],
-    )
-    broadcast('trade_failed', queryOne('SELECT * FROM trades ORDER BY id DESC LIMIT 1'))
-    bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+    await recordFailedSell(coin, errMsg)
     // The sell may have failed after the OCO cancel — re-protect whatever remains.
     await replaceProtection(positionId).catch(() => {})
   } finally {
@@ -204,11 +201,11 @@ export async function executeFallbackExit(
     return
   }
   try {
-    const pos = queryOne("SELECT quantity FROM positions WHERE id = ? AND status = 'OPEN'", [positionId])
+    const pos = await positionsRepo.findOne({ _id: positionId, status: 'OPEN' }, { projection: { quantity: 1 } })
     if (!pos) return
     const qty = pos.quantity as number
     const result = await executeTrade({ coin, action: 'SELL', quantity: qty, reason: label, confidence: 1 })
-    closePositionFromExit({
+    await closePositionFromExit({
       positionId,
       coin,
       status,
@@ -219,13 +216,7 @@ export async function executeFallbackExit(
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     logger.error(`Failed to execute ${label.toLowerCase()}`, { coin, error: errMsg })
-    runSQL(
-      "INSERT INTO trades (coin, side, quantity, price, total, fee_cost, fee_currency, status, approved, error) VALUES (?, 'SELL', 0, 0, 0, 0, 'USDC', 'FAILED', 1, ?)",
-      [coin, errMsg]
-    )
-    const failedId = (queryOne('SELECT last_insert_rowid() AS id') as any)?.id
-    broadcast('trade_failed', failedId ? queryOne('SELECT * FROM trades WHERE id = ?', [failedId]) : null)
-    bus.emit('trade_failed', { coin, side: 'SELL', error: errMsg })
+    await recordFailedSell(coin, errMsg)
   } finally {
     releaseExit(positionId)
   }

@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf'
-import { queryAll, queryOne } from '../../../db/index.js'
+import { positions as positionsRepo, portfolioSnapshots } from '../../../db/index.js'
 import { formatCurrency, formatPnlPct, pnlEmoji, esc } from '../../components/formatting.js'
 
 async function fetchLivePrice(coin: string, fallback: number): Promise<number> {
@@ -14,8 +14,8 @@ async function fetchLivePrice(coin: string, fallback: number): Promise<number> {
 }
 
 export async function render(_ctx: any) {
-  const positions = queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as any[]
-  const snap = queryOne('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1') as any
+  const positions = await positionsRepo.find({ status: 'OPEN' }, { sort: { created_at: 1 } }) as any[]
+  const snap = await portfolioSnapshots.findOne({}, { sort: { created_at: -1 } }) as any
 
   const lines: string[] = ['💼 <b>Portfolio</b>', '']
 

@@ -1,4 +1,4 @@
-import { queryOne, getSettings } from '../db/index.js'
+import { portfolioEntries, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import {
   getPortfolioState, getUsdcEntry,
@@ -17,7 +17,7 @@ interface PrepareBuyArgs {
   price: number
   atr14: number
   signal: Signal
-  portfolioState: ReturnType<typeof getPortfolioState>
+  portfolioState: Awaited<ReturnType<typeof getPortfolioState>>
   settings: ReturnType<typeof getSettings>
   /** Whether to reject when an entry-timing intent is already pending (live pipeline only). */
   checkActiveIntent: boolean
@@ -32,7 +32,7 @@ interface PrepareBuyArgs {
  * The SL/TP here are decision-time levels used for display and the fee-edge
  * check; the executed levels are recomputed at the real fill price in submitTrade.
  */
-export function prepareBuyOrder(args: PrepareBuyArgs): BuyEvaluation {
+export async function prepareBuyOrder(args: PrepareBuyArgs): Promise<BuyEvaluation> {
   const { symbol, price, atr14, signal, portfolioState, settings, checkActiveIntent } = args
 
   if (portfolioState.openPositionCount >= portfolioState.maxOpenPositions) {
@@ -40,7 +40,7 @@ export function prepareBuyOrder(args: PrepareBuyArgs): BuyEvaluation {
     return { ok: false, reason: 'Max open positions reached' }
   }
 
-  const existingHolding = queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [symbol])
+  const existingHolding = await portfolioEntries.findOne({ coin: symbol, status: 'OPEN' }, { projection: { id: 1 } })
   if (existingHolding) {
     logger.warn('Skipping BUY — coin already held in portfolio', { coin: symbol })
     return { ok: false, reason: 'Coin already held in portfolio' }
@@ -51,7 +51,7 @@ export function prepareBuyOrder(args: PrepareBuyArgs): BuyEvaluation {
     return { ok: false, reason: 'Entry intent already pending for this coin' }
   }
 
-  const availableUsdc = getUsdcEntry()?.quantity ?? 0
+  const availableUsdc = (await getUsdcEntry())?.quantity ?? 0
   if (availableUsdc < settings.min_trade_usdc) {
     logger.warn('Skipping BUY — USDC below minimum threshold', { coin: symbol, availableUsdc, min: settings.min_trade_usdc })
     return { ok: false, reason: `Insufficient USDC ($${availableUsdc.toFixed(2)} < minimum $${settings.min_trade_usdc})` }

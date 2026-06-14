@@ -1,23 +1,21 @@
 import { Markup } from 'telegraf'
-import { queryAll, queryOne } from '../../../db/index.js'
+import { positions as positionsRepo, trades, portfolioSnapshots, pipelineEvents, getSettings } from '../../../db/index.js'
 import { formatCurrency, formatDate, code } from '../../components/formatting.js'
 
 export async function render(_ctx: any) {
-  const snap = queryOne('SELECT * FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1') as any
-  const prev = queryOne('SELECT total_value_usd FROM portfolio_snapshots ORDER BY created_at DESC LIMIT 1 OFFSET 1') as any
-  const tradesToday = (queryAll("SELECT COUNT(*) as count FROM trades WHERE date(created_at) = date('now')") as any[])[0]
-  const pendingCount = (queryAll("SELECT COUNT(*) as count FROM trades WHERE status = 'PENDING'") as any[])[0]
-  const openPos = (queryAll("SELECT COUNT(*) as count FROM positions WHERE status = 'OPEN'") as any[])[0]
-  const maxRow = queryOne('SELECT value FROM settings WHERE key = ?', ['max_open_positions']) as any
-  const lastRun = queryOne(
-    "SELECT created_at FROM pipeline_events WHERE stage = 'signal_generated' ORDER BY created_at DESC LIMIT 1"
-  ) as any
+  const todayStart = new Date().toISOString().slice(0, 10) + ' 00:00:00'
+  const [snap, prevRows, tradesCount, pending, openCount, lastRun] = await Promise.all([
+    portfolioSnapshots.findOne({}, { sort: { created_at: -1 } }) as any,
+    portfolioSnapshots.find({}, { sort: { created_at: -1 }, skip: 1, limit: 1, projection: { total_value_usd: 1 } }) as any,
+    trades.count({ created_at: { $gte: todayStart } }),
+    trades.count({ status: 'PENDING' }),
+    positionsRepo.count({ status: 'OPEN' }),
+    pipelineEvents.findOne({ stage: 'signal_generated' }, { sort: { created_at: -1 }, projection: { created_at: 1 } }) as any,
+  ])
+  const prev = prevRows[0] ?? null
 
   const totalValue = snap ? Number(snap.total_value_usd) : 0
-  const openCount = openPos?.count ?? 0
-  const maxOpen = maxRow ? parseInt(maxRow.value as string) : 5
-  const tradesCount = tradesToday?.count ?? 0
-  const pending = pendingCount?.count ?? 0
+  const maxOpen = getSettings().max_open_positions
 
   let changeStr = ''
   if (prev && Number(prev.total_value_usd) > 0) {
@@ -39,8 +37,9 @@ export async function render(_ctx: any) {
     lines.push(`🕐 Last Signal: <i>${formatDate(lastRun.created_at as string)}</i>`)
   }
 
-  const hits = queryAll(
-    "SELECT coin, status, created_at FROM positions WHERE status IN ('SL_HIT','TP_HIT') ORDER BY created_at DESC LIMIT 3"
+  const hits = await positionsRepo.find(
+    { status: { $in: ['SL_HIT', 'TP_HIT'] } },
+    { sort: { created_at: -1 }, limit: 3, projection: { coin: 1, status: 1, created_at: 1 } },
   ) as any[]
   if (hits.length > 0) {
     lines.push('')
