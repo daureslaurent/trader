@@ -91,6 +91,8 @@ export function getSettings(): BotSettings {
     entry_on_expiry: (map.entry_on_expiry === 'cancel' ? 'cancel' : 'market'),
     entry_poll_seconds: parseFloat(map.entry_poll_seconds || '3'),
     entry_planner_enabled: map.entry_planner_enabled === 'true',
+    entry_planner_candle_tf: map.entry_planner_candle_tf || '15m',
+    entry_planner_candle_count: parseInt(map.entry_planner_candle_count || '24', 10),
     llm_endpoints: parseEndpoints(map.llm_endpoints),
     llm_analyst_endpoint: map.llm_analyst_endpoint || '',
     llm_analyst_max_tokens: parseInt(map.llm_analyst_max_tokens || '0', 10),

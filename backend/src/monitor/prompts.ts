@@ -1,5 +1,5 @@
 import { PositionReview } from '../types.js'
-import { Candle } from '../market/index.js'
+import { Candle, fmtPrice, renderCandleTable } from '../market/index.js'
 import { minStopGapPct } from '../portfolio/risk.js'
 
 export interface PositionContext {
@@ -46,14 +46,6 @@ export function fmtOffsetLabel(offsetHours: number): string {
   const h = Math.floor(abs)
   const m = Math.round((abs - h) * 60)
   return m > 0 ? `UTC${sign}${h}:${m.toString().padStart(2, '0')}` : `UTC${sign}${h}`
-}
-
-export function fmtPrice(n: number): string {
-  if (!isFinite(n) || n === 0) return '0'
-  if (n >= 1000) return n.toFixed(2)
-  if (n >= 1) return n.toFixed(4)
-  if (n >= 0.01) return n.toFixed(6)
-  return n.toPrecision(5)
 }
 
 const HORIZON_BEHAVIOR: Record<'short' | 'medium' | 'long', string> = {
@@ -258,29 +250,8 @@ RSI(14):  ${p.rsi14.toFixed(1)} | Trend: ${p.trend} | Volatility: ${p.volatility
 ATR(14):  $${fmtPrice(p.atr14)} | SMA7: $${fmtPrice(p.sma7)} | SMA25: $${fmtPrice(p.sma25)}`
 
   // ── Candle history section ────────────────────────────────────────────────
-  let candleHistoryText = ''
-  if (candles.length > 0) {
-    const nowSec = Math.floor(Date.now() / 1000)
-    const rows = candles.map(c => {
-      const ageSec = nowSec - c.time
-      const ageH = ageSec / 3600
-      let ageLabel: string
-      if (ageH < 1) ageLabel = `${Math.round(ageSec / 60)}m ago`
-      else if (ageH < 24) ageLabel = `${Math.round(ageH)}h ago`
-      else ageLabel = `${Math.round(ageH / 24)}d ago`
-
-      const chPct = c.open > 0 ? ((c.close - c.open) / c.open) * 100 : 0
-      const chSign = chPct >= 0 ? '+' : ''
-      const vol = c.volume >= 1_000_000
-        ? `${(c.volume / 1_000_000).toFixed(1)}M`
-        : c.volume >= 1_000
-          ? `${(c.volume / 1_000).toFixed(0)}K`
-          : c.volume.toFixed(0)
-      return `  ${ageLabel.padEnd(8)} O:${fmtPrice(c.open).padEnd(10)} H:${fmtPrice(c.high).padEnd(10)} L:${fmtPrice(c.low).padEnd(10)} C:${fmtPrice(c.close).padEnd(10)} vol:${vol.padEnd(7)} Δ:${chSign}${chPct.toFixed(2)}%`
-    })
-    candleHistoryText = `\n\n── Price history (${candleTf} candles, oldest→newest) ─────────────────────────
-${rows.join('\n')}`
-  }
+  const candleTable = renderCandleTable(candles, candleTf)
+  const candleHistoryText = candleTable ? `\n\n${candleTable}` : ''
 
   // ── Persistent notes (LLM's own memory from previous reviews) ────────────
   let notesText = ''

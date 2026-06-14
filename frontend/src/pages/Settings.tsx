@@ -50,6 +50,8 @@ interface SettingsData {
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
   entry_planner_enabled: boolean
+  entry_planner_candle_tf: string
+  entry_planner_candle_count: number
   llm_endpoints: LLMEndpoint[]
   llm_analyst_endpoint: string
   llm_analyst_max_tokens: number
@@ -1033,6 +1035,33 @@ export default function Settings() {
                     <span className="font-medium text-foreground"> fallback</span> when the planner is disabled or unavailable. Each pick is logged to LLM Debug and shown on the Entry Desk.
                   </span>
                 </div>
+              )}
+
+              {settings.entry_planner_enabled && (
+                <Row label="Price history" hint="Candle timeframe and count fed to the Entry Planner as price-action context so it can anchor the band on recent swing lows and ranges. A shorter timeframe than the monitor's suits entry timing, since the band fires within minutes.">
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={settings.entry_planner_candle_tf}
+                      onChange={e => set('entry_planner_candle_tf', e.target.value)}
+                      className="text-sm bg-surface-elevated border border-border rounded-xl px-2.5 py-2 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+                    >
+                      {['1m', '5m', '15m', '1h', '4h', '1d'].map(tf => (
+                        <option key={tf} value={tf}>{tf}</option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-muted">×</span>
+                    <UnitInput
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="100"
+                      unit="candles"
+                      value={settings.entry_planner_candle_count}
+                      onChange={e => set('entry_planner_candle_count', parseInt(e.target.value) || 24)}
+                      className="w-28"
+                    />
+                  </div>
+                </Row>
               )}
 
               <Row

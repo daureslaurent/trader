@@ -1,4 +1,5 @@
 import { MarketContext, Signal } from '../types.js'
+import { Candle, renderCandleTable } from '../market/index.js'
 
 /**
  * Build the Entry Planner prompt. The model is handed the live market context and
@@ -13,6 +14,8 @@ export function buildEntryPlannerPrompt(
   price: number,
   market: MarketContext,
   signal: Signal,
+  candles: Candle[] = [],
+  candleTf = '15m',
 ): { system: string; user: string } {
   const system = [
     'You are the Entry Planner for a crypto trading bot.',
@@ -26,6 +29,10 @@ export function buildEntryPlannerPrompt(
     '- Strong uptrend / high momentum → a small pullback (price may not dip much) and a slightly looser chase cap.',
     '- Downtrend / weak momentum → a deeper, more patient pullback but a tighter invalidate (protect against breakdown).',
     '- High analyst confidence → you can be a touch more aggressive chasing; low confidence → demand a better discount.',
+    '- Use the recent price-history candles to anchor levels on real structure, not round numbers:',
+    '  put the pullback target near a recent swing low / support that price is likely to retest, and the',
+    '  invalidate just below the level whose break would signal a breakdown rather than an ordinary dip.',
+    '  Read the recent bar ranges to judge whether a dip of that size can realistically happen within the TTL.',
     '- The invalidate distance MUST be larger than the pullback target (you cannot cancel above where you intend to buy).',
     '',
     'Return ONLY a JSON object, no prose, with these numeric fields (percent values are plain numbers, e.g. 1.5 means 1.5%):',
@@ -50,6 +57,8 @@ export function buildEntryPlannerPrompt(
     `- RSI(14): ${market.rsi14?.toFixed?.(1) ?? market.rsi14}`,
     `- ATR(14): ${market.atr14} (${price > 0 ? ((market.atr14 / price) * 100).toFixed(2) : '?'}% of price)`,
     `- SMA 7 / 25 / 99: ${market.sma7} / ${market.sma25} / ${market.sma99}`,
+    '',
+    renderCandleTable(candles, candleTf),
     '',
     'Analyst BUY thesis:',
     `- Confidence: ${(signal.confidence * 100).toFixed(0)}%`,

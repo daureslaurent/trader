@@ -157,6 +157,11 @@ export interface BotSettings {
    *  failure/invalid output) the static entry_* values above are used. Only takes
    *  effect when entry_timing_enabled is on. */
   entry_planner_enabled: boolean
+  /** Candle timeframe for the price-history table shown in the Entry Planner prompt (e.g. '15m').
+   *  Shorter than the monitor's default since the entry band fires within minutes. */
+  entry_planner_candle_tf: string
+  /** Number of candles to include in the Entry Planner prompt (1–100). */
+  entry_planner_candle_count: number
   /** Shared catalog of named LLM endpoints. Each module references one by id via
    *  `llm_<module>_endpoint`; a blank id falls back to the module's env-var config. */
   llm_endpoints: LLMEndpoint[]

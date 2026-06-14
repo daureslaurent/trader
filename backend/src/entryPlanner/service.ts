@@ -3,6 +3,7 @@ import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
 import { resolveLLM } from '../config/llm.js'
 import { MarketContext, Signal, BotSettings } from '../types.js'
+import { getOHLCV, isTimeframe, Candle } from '../market/index.js'
 import { buildEntryPlannerPrompt } from './prompts.js'
 import { EntryPlan, EntryBand } from './types.js'
 
@@ -12,6 +13,10 @@ interface PlanArgs {
   price: number
   market: MarketContext
   signal: Signal
+  /** Candle timeframe for the price-history table fed to the planner. */
+  candleTf: string
+  /** Number of candles to include (clamped 1–100). */
+  candleCount: number
 }
 
 /**
@@ -61,7 +66,21 @@ function parsePlan(content: string): EntryPlan | null {
  */
 export async function planEntry(args: PlanArgs): Promise<EntryPlan | null> {
   const { coin, price, market, signal } = args
-  const { system, user } = buildEntryPlannerPrompt(coin, price, market, signal)
+
+  // Recent candles let the planner anchor the entry band on real price structure
+  // (swing lows, momentum, recent ranges) rather than ATR alone. A fetch failure
+  // is non-fatal — the prompt simply omits the table and the planner reasons from
+  // the aggregate stats, exactly as before this data was available.
+  const tf = isTimeframe(args.candleTf) ? args.candleTf : '15m'
+  const count = Math.max(1, Math.min(100, args.candleCount))
+  let candles: Candle[] = []
+  try {
+    candles = await getOHLCV(coin, tf, count)
+  } catch (err) {
+    logger.warn('Failed to fetch candle history for entry planner prompt', { coin, tf, error: (err as Error).message })
+  }
+
+  const { system, user } = buildEntryPlannerPrompt(coin, price, market, signal, candles, tf)
   const llm = resolveLLM('entryPlanner')
   logger.info('Request LLM', { module: 'entryPlanner', coin, model: llm.model })
 
