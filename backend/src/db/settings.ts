@@ -1,5 +1,18 @@
-import { queryAll, runSQL } from './helpers.js'
+import { settings as settingsRepo, Row } from './repositories.js'
 import { BotSettings, LLMEndpoint } from '../types.js'
+
+// In-memory settings cache. getSettings() is called synchronously in dozens of
+// hot paths (config resolution, every engine tick, every route), so we keep the
+// key/value map in memory rather than making it an async DB read. The cache is
+// loaded once at startup (loadSettings) and kept in sync on every updateSetting.
+let rawMap: Record<string, string> = {}
+
+export async function loadSettings(): Promise<void> {
+  const rows = (await settingsRepo.find()) as Row[]
+  const map: Record<string, string> = {}
+  for (const row of rows) map[row._id as string] = row.value as string
+  rawMap = map
+}
 
 // Parse the persisted endpoint catalog, defensively skipping malformed entries so
 // a corrupt row can never crash settings reads (which run on every LLM call).
@@ -26,9 +39,7 @@ function parseEndpoints(raw: string | undefined): LLMEndpoint[] {
 }
 
 export function getSettings(): BotSettings {
-  const rows = queryAll('SELECT key, value FROM settings')
-  const map: Record<string, string> = {}
-  for (const row of rows) map[row.key as string] = row.value as string
+  const map = rawMap
   return {
     watchlist: JSON.parse(map.watchlist || '[]'),
     pipeline_cron: map.pipeline_cron || '0 * * * *',
@@ -118,6 +129,13 @@ export function getSettings(): BotSettings {
   }
 }
 
-export function updateSetting(key: string, value: string): void {
-  runSQL('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [key, value])
+export async function updateSetting(key: string, value: string): Promise<void> {
+  rawMap[key] = value  // keep the in-memory cache consistent for the next read
+  await settingsRepo.upsert(key, { value })
+}
+
+// Synchronous read of a raw setting value for keys that aren't part of the typed
+// BotSettings shape (e.g. monitor_alternate_last). Served from the same cache.
+export function getRawSetting(key: string): string | undefined {
+  return rawMap[key]
 }

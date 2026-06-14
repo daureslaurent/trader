@@ -1,9 +1,9 @@
 import { Markup } from 'telegraf'
-import { queryAll } from '../../../db/index.js'
+import { decisions as decisionsRepo } from '../../../db/index.js'
 import { actionEmoji, confidenceBar, esc, formatDate } from '../../components/formatting.js'
 
 export async function render(_ctx: any) {
-  const decisions = queryAll('SELECT * FROM decisions ORDER BY created_at DESC LIMIT 15') as any[]
+  const decisions = await decisionsRepo.find({}, { sort: { created_at: -1 }, limit: 15 }) as any[]
   if (decisions.length === 0) {
     return { text: '🧠 <b>LLM Decisions</b>\n\nNo decisions yet.', buttons: [] }
   }

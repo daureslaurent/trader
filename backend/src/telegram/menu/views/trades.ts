@@ -1,12 +1,12 @@
 import { Markup } from 'telegraf'
-import { queryAll } from '../../../db/index.js'
+import { trades } from '../../../db/index.js'
 import { formatCurrency, formatDate, tradeStatusEmoji, actionEmoji, esc } from '../../components/formatting.js'
 import { paginationButtons, paginate } from '../../components/pagination.js'
 
 const PER_PAGE = 5
 
 export async function render(ctx: any) {
-  const allTrades = queryAll('SELECT * FROM trades ORDER BY created_at DESC LIMIT 50') as any[]
+  const allTrades = await trades.find({}, { sort: { created_at: -1 }, limit: 50 }) as any[]
   if (allTrades.length === 0) {
     return { text: '📜 <b>Trade History</b>\n\nNo trades yet.', buttons: [] }
   }

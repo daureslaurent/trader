@@ -5,7 +5,7 @@
 // it can mutate is the watchlist and kicking off the engines that already run on crons.
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
-import { getSettings, updateSetting, queryAll } from '../db/index.js'
+import { getSettings, updateSetting, trades, decisions } from '../db/index.js'
 import { isTradeable } from '../core/tradeable.js'
 import * as priceCache from '../market/index.js'
 import { fetchMarketData } from '../trader/index.js'
@@ -58,9 +58,9 @@ function newCycleId(tag: string): string {
 // ── read tools ─────────────────────────────────────────────────────────────
 
 async function getPortfolio(): Promise<unknown> {
-  const usdc = getUsdcEntry()
+  const usdc = await getUsdcEntry()
   const usdcBalance = usdc ? usdc.quantity : 0
-  const entries = getCoinEntries()
+  const entries = await getCoinEntries()
 
   // Group multiple OPEN entries per coin into one holding line.
   const byCoin = new Map<string, { quantity: number; cost: number }>()
@@ -107,8 +107,8 @@ async function getPortfolio(): Promise<unknown> {
   }
 }
 
-function listOpenPositions(): unknown {
-  const positions = getOpenPositions()
+async function listOpenPositions(): Promise<unknown> {
+  const positions = await getOpenPositions()
   return {
     count: positions.length,
     maxOpenPositions: getSettings().max_open_positions,
@@ -133,16 +133,14 @@ function listOpenPositions(): unknown {
   }
 }
 
-function listRecentTrades(args: Record<string, unknown>): unknown {
+async function listRecentTrades(args: Record<string, unknown>): Promise<unknown> {
   const limit = clampLimit(args.limit, 15, 100)
   const coin = args.coin ? normalizeCoin(args.coin) : null
-  const where = coin ? 'WHERE status = ? AND coin = ?' : 'WHERE status = ?'
-  const params = coin ? ['EXECUTED', coin, limit] : ['EXECUTED', limit]
-  const rows = queryAll(
-    `SELECT side, coin, quantity, price, total, fee_cost, created_at
-     FROM trades ${where} ORDER BY created_at DESC LIMIT ?`,
-    params as (string | number)[],
-  )
+  const filter: Record<string, unknown> = { status: 'EXECUTED', ...(coin ? { coin } : {}) }
+  const rows = await trades.find(filter, {
+    sort: { created_at: -1 }, limit,
+    projection: { _id: 0, side: 1, coin: 1, quantity: 1, price: 1, total: 1, fee_cost: 1, created_at: 1 },
+  })
   return { count: rows.length, trades: rows }
 }
 
@@ -186,26 +184,23 @@ async function getMarket(args: Record<string, unknown>): Promise<unknown> {
   }
 }
 
-function listRecentSignals(args: Record<string, unknown>): unknown {
+async function listRecentSignals(args: Record<string, unknown>): Promise<unknown> {
   const limit = clampLimit(args.limit, 10, 50)
   const coin = args.coin ? normalizeCoin(args.coin) : null
-  const where = coin ? 'WHERE coin = ?' : ''
-  const params = coin ? [coin, limit] : [limit]
-  const rows = queryAll(
-    `SELECT coin, action, reason, confidence, created_at
-     FROM decisions ${where} ORDER BY created_at DESC LIMIT ?`,
-    params as (string | number)[],
-  )
+  const rows = await decisions.find(coin ? { coin } : {}, {
+    sort: { created_at: -1 }, limit,
+    projection: { _id: 0, coin: 1, action: 1, reason: 1, confidence: 1, created_at: 1 },
+  })
   return { count: rows.length, signals: rows }
 }
 
-function listDiscoveries(args: Record<string, unknown>): unknown {
+async function listDiscoveries(args: Record<string, unknown>): Promise<unknown> {
   const limit = clampLimit(args.limit, 15, 50)
-  return { discoveries: getDiscoveries(limit) }
+  return { discoveries: await getDiscoveries(limit) }
 }
 
-function getPortfolioSummary(): unknown {
-  const latest = getLatestSummary()
+async function getPortfolioSummary(): Promise<unknown> {
+  const latest = await getLatestSummary()
   if (!latest) return { note: 'No portfolio summary generated yet. You can trigger one with trigger_summary.' }
   return {
     summary: latest.summary,
@@ -218,9 +213,9 @@ function getPortfolioSummary(): unknown {
   }
 }
 
-function listPositionReviews(args: Record<string, unknown>): unknown {
+async function listPositionReviews(args: Record<string, unknown>): Promise<unknown> {
   const limit = clampLimit(args.limit, 12, 50)
-  return { reviews: getReviews(limit) }
+  return { reviews: await getReviews(limit) }
 }
 
 function getTradingSettings(): unknown {
@@ -249,27 +244,27 @@ function safeJson(raw: string): unknown {
 
 // ── safe-action tools ────────────────────────────────────────────────────────
 
-function addToWatchlist(args: Record<string, unknown>): unknown {
+async function addToWatchlist(args: Record<string, unknown>): Promise<unknown> {
   const coin = normalizeCoin(args.coin)
   if (!coin) return { error: 'Provide a coin, e.g. "SOL".' }
   if (!isTradeable(coin)) return { error: `${coin} is a fiat/stablecoin and can't be watched.` }
   const s = getSettings()
   if (s.watchlist.includes(coin)) return { added: false, reason: 'already on watchlist', watchlist: s.watchlist }
   const next = [...s.watchlist, coin]
-  updateSetting('watchlist', JSON.stringify(next))
+  await updateSetting('watchlist', JSON.stringify(next))
   priceCache.subscribe([coin])
   bus.emit('settings_updated', getSettings())
   logger.info('Agent added coin to watchlist', { coin })
   return { added: true, coin, watchlist: next }
 }
 
-function removeFromWatchlist(args: Record<string, unknown>): unknown {
+async function removeFromWatchlist(args: Record<string, unknown>): Promise<unknown> {
   const coin = normalizeCoin(args.coin)
   if (!coin) return { error: 'Provide a coin to remove.' }
   const s = getSettings()
   if (!s.watchlist.includes(coin)) return { removed: false, reason: 'not on watchlist', watchlist: s.watchlist }
   const next = s.watchlist.filter(c => c !== coin)
-  updateSetting('watchlist', JSON.stringify(next))
+  await updateSetting('watchlist', JSON.stringify(next))
   bus.emit('settings_updated', getSettings())
   logger.info('Agent removed coin from watchlist', { coin })
   return { removed: true, coin, watchlist: next }

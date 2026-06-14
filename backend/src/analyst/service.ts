@@ -79,7 +79,7 @@ export async function analyzeSignal(
   research: ExtractedResearch,
 ): Promise<Signal> {
   const settings = getSettings()
-  const coinCtx = getCoinPortfolioContext(coin)
+  const coinCtx = await getCoinPortfolioContext(coin)
 
   // Deterministic regime — handed to the LLM as a fact, never asked of it (#1).
   const regime = classifyRegime(market)

@@ -1,4 +1,4 @@
-import { queryAll, queryOne, getSettings } from '../db/index.js'
+import { portfolioEntries, positions as positionsRepo, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
 import { getUsdcEntry } from '../portfolio/index.js'
@@ -25,16 +25,16 @@ export async function executeEntryFire({ signal, price, atr }: EntryFireInput): 
     logger.warn('Entry fire aborted — non-positive quantity', { coin })
     return
   }
-  if (queryOne("SELECT id FROM portfolio_entries WHERE coin = ? AND status = 'OPEN'", [coin])) {
+  if (await portfolioEntries.findOne({ coin, status: 'OPEN' }, { projection: { id: 1 } })) {
     logger.warn('Entry fire aborted — coin already held', { coin })
     return
   }
-  const openPositions = (queryAll("SELECT id FROM positions WHERE status = 'OPEN'") as unknown[]).length
+  const openPositions = await positionsRepo.count({ status: 'OPEN' })
   if (openPositions >= settings.max_open_positions) {
     logger.warn('Entry fire aborted — max open positions reached', { coin, openPositions })
     return
   }
-  const availableUsdc = getUsdcEntry()?.quantity ?? 0
+  const availableUsdc = (await getUsdcEntry())?.quantity ?? 0
   if (availableUsdc < settings.min_trade_usdc || availableUsdc < price * signal.quantity) {
     logger.warn('Entry fire aborted — insufficient USDC', { coin, availableUsdc, needed: price * signal.quantity })
     return

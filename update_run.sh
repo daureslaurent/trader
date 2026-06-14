@@ -6,13 +6,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+echo "==> Stopping running containers..."
+docker compose down
+
 echo "==> Updating main from git..."
 git fetch origin main
 git checkout main
 git reset --hard origin/main
-
-echo "==> Stopping running containers..."
-docker compose down
 
 echo "==> Building and starting containers..."
 docker compose up -d --build

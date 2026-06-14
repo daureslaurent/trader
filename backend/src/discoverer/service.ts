@@ -1,7 +1,7 @@
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
 import { resolveLLM } from '../config/llm.js'
-import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
+import { coinDiscoveries, pipelineEvents, nowSql, getSettings, updateSetting } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { getTopPairs, fetchMarketData } from '../trader/index.js'
 import { getOpenEntries } from '../portfolio/index.js'
@@ -22,25 +22,20 @@ function getDiscovererExtractorConfig(): ExtractorLLMConfig {
 
 let running = false
 
-function logDiscoveryEvent(
+async function logDiscoveryEvent(
   stage: string,
   coin: string,
   cycleId: string,
   data: Record<string, unknown>,
-): void {
+): Promise<void> {
   const payload = JSON.stringify(data)
-  const { lastInsertRowid } = runSQL(
-    'INSERT INTO pipeline_events (coin, cycle_id, stage, data) VALUES (?, ?, ?, ?)',
-    [coin, cycleId, stage, payload]
-  )
-  broadcast('pipeline_event', {
-    id: lastInsertRowid,
-    coin,
-    cycle_id: cycleId,
-    stage,
-    data: payload,
-    created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
-  })
+  const created_at = nowSql()
+  try {
+    const id = await pipelineEvents.insert({ coin, cycle_id: cycleId, stage, data: payload, created_at })
+    broadcast('pipeline_event', { id, coin, cycle_id: cycleId, stage, data: payload, created_at })
+  } catch (err) {
+    logger.warn('Failed to persist discovery event', { stage, coin, error: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 async function evaluateCandidate(
@@ -220,10 +215,10 @@ export async function runDiscovery(cycleId: string): Promise<void> {
           const marketDataJson = JSON.stringify(result.marketData)
           const createdAt = new Date().toISOString().replace('T', ' ').slice(0, 19)
 
-          const { lastInsertRowid } = runSQL(
-            'INSERT INTO coin_discoveries (coin, score, reasoning, market_data, status, cycle_id) VALUES (?, ?, ?, ?, ?, ?)',
-            [d.symbol, result.score, result.reasoning, marketDataJson, status, cycleId]
-          )
+          const lastInsertRowid = await coinDiscoveries.insert({
+            coin: d.symbol, score: result.score, reasoning: result.reasoning,
+            market_data: marketDataJson, status, cycle_id: cycleId, created_at: createdAt,
+          })
           totalDiscovered++
 
           if (shouldAutoAdd && !newWatchlist.includes(d.symbol)) {
@@ -249,7 +244,7 @@ export async function runDiscovery(cycleId: string): Promise<void> {
     }
 
     if (autoAdded > 0) {
-      updateSetting('watchlist', JSON.stringify(newWatchlist))
+      await updateSetting('watchlist', JSON.stringify(newWatchlist))
       bus.emit('settings_updated', getSettings() as import('../types.js').BotSettings)
     }
 
@@ -273,15 +268,12 @@ export async function runDiscovery(cycleId: string): Promise<void> {
   }
 }
 
-export function getDiscoveries(limit = 50): DiscoveryResult[] {
-  return queryAll(
-    'SELECT * FROM coin_discoveries ORDER BY created_at DESC LIMIT ?',
-    [limit]
-  ) as unknown as DiscoveryResult[]
+export async function getDiscoveries(limit = 50): Promise<DiscoveryResult[]> {
+  return coinDiscoveries.find({}, { sort: { created_at: -1 }, limit }) as unknown as Promise<DiscoveryResult[]>
 }
 
-export function approveDiscovery(id: number): { ok: boolean; error?: string } {
-  const discovery = queryOne('SELECT * FROM coin_discoveries WHERE id = ?', [id])
+export async function approveDiscovery(id: number): Promise<{ ok: boolean; error?: string }> {
+  const discovery = await coinDiscoveries.findById(id)
   if (!discovery) return { ok: false, error: 'Discovery not found' }
   if (discovery.status !== 'pending') return { ok: false, error: `Already ${discovery.status}` }
 
@@ -291,25 +283,25 @@ export function approveDiscovery(id: number): { ok: boolean; error?: string } {
 
   if (!watchlist.includes(coin)) {
     watchlist.push(coin)
-    updateSetting('watchlist', JSON.stringify(watchlist))
+    await updateSetting('watchlist', JSON.stringify(watchlist))
     bus.emit('settings_updated', getSettings() as import('../types.js').BotSettings)
   }
 
-  runSQL("UPDATE coin_discoveries SET status = 'approved' WHERE id = ?", [id])
+  await coinDiscoveries.update({ _id: id }, { status: 'approved' })
   logger.info('Discovery approved, added to watchlist', { coin, id })
   return { ok: true }
 }
 
-export function rejectDiscovery(id: number): { ok: boolean; error?: string } {
-  const discovery = queryOne('SELECT * FROM coin_discoveries WHERE id = ?', [id])
+export async function rejectDiscovery(id: number): Promise<{ ok: boolean; error?: string }> {
+  const discovery = await coinDiscoveries.findById(id)
   if (!discovery) return { ok: false, error: 'Discovery not found' }
   if (discovery.status !== 'pending') return { ok: false, error: `Already ${discovery.status}` }
 
-  runSQL("UPDATE coin_discoveries SET status = 'rejected' WHERE id = ?", [id])
+  await coinDiscoveries.update({ _id: id }, { status: 'rejected' })
   logger.info('Discovery rejected', { coin: discovery.coin, id })
   return { ok: true }
 }
 
-export function deleteDiscovery(id: number): void {
-  runSQL('DELETE FROM coin_discoveries WHERE id = ?', [id])
+export async function deleteDiscovery(id: number): Promise<void> {
+  await coinDiscoveries.deleteOne({ _id: id })
 }

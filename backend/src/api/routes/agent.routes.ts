@@ -21,45 +21,45 @@ router.get('/agent/meta', (_req: Request, res: Response) => {
   } catch (err) { errOut(res, err) }
 })
 
-router.get('/agent/conversations', (_req: Request, res: Response) => {
+router.get('/agent/conversations', async (_req: Request, res: Response) => {
   try {
-    res.json(listConversations())
+    res.json(await listConversations())
   } catch (err) { errOut(res, err) }
 })
 
-router.post('/agent/conversations', (_req: Request, res: Response) => {
+router.post('/agent/conversations', async (_req: Request, res: Response) => {
   try {
-    res.json(createConversation())
+    res.json(await createConversation())
   } catch (err) { errOut(res, err) }
 })
 
-router.get('/agent/conversations/:id', (req: Request, res: Response) => {
+router.get('/agent/conversations/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id)
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid id' })
-    const convo = getConversation(id)
+    const convo = await getConversation(id)
     if (!convo) return res.status(404).json({ error: 'Conversation not found' })
-    res.json({ conversation: convo, messages: getMessages(id), generating: isGenerating(id) })
+    res.json({ conversation: convo, messages: await getMessages(id), generating: isGenerating(id) })
   } catch (err) { errOut(res, err) }
 })
 
-router.patch('/agent/conversations/:id', (req: Request, res: Response) => {
+router.patch('/agent/conversations/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id)
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid id' })
-    if (!getConversation(id)) return res.status(404).json({ error: 'Conversation not found' })
+    if (!(await getConversation(id))) return res.status(404).json({ error: 'Conversation not found' })
     const title = String((req.body as { title?: string })?.title ?? '').trim()
     if (!title) return res.status(400).json({ error: 'Title required' })
-    renameConversation(id, title)
-    res.json(getConversation(id))
+    await renameConversation(id, title)
+    res.json(await getConversation(id))
   } catch (err) { errOut(res, err) }
 })
 
-router.delete('/agent/conversations/:id', (req: Request, res: Response) => {
+router.delete('/agent/conversations/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id)
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid id' })
-    deleteConversation(id)
+    await deleteConversation(id)
     res.json({ ok: true })
   } catch (err) { errOut(res, err) }
 })
@@ -71,7 +71,7 @@ router.post('/agent/conversations/:id/chat', async (req: Request, res: Response)
   try {
     const id = Number(req.params.id)
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid id' })
-    if (!getConversation(id)) return res.status(404).json({ error: 'Conversation not found' })
+    if (!(await getConversation(id))) return res.status(404).json({ error: 'Conversation not found' })
     if (isGenerating(id)) return res.status(409).json({ error: 'A response is already being generated' })
 
     const message = String((req.body as { message?: string })?.message ?? '').trim()

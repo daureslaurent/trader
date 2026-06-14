@@ -21,7 +21,14 @@ npm run preview  # serve the production build
 
 **Docker** (from repo root):
 ```bash
-docker-compose up   # backend on :3000, frontend on :5173 (data/ is bind-mounted)
+docker-compose up   # mongo (single-node replica set rs0), backend on :3000, frontend on :5173
+```
+
+**Data migration** (one-off, legacy sql.js `data/*.db` → MongoDB), from `backend/`:
+```bash
+npm run migrate:mongo            # trading + settings collections (caches skipped)
+npm run migrate:mongo -- --all   # include pipeline/cache too
+npm run migrate:mongo -- --reset # wipe target collections first
 ```
 
 There are no unit tests; `npm run lint` (type-check) is the only automated gate. Verify behavior by running the app.
@@ -68,9 +75,15 @@ Each module can also select an optional **fallback** endpoint from the same cata
 
 ### Database (`db/`)
 
-SQLite via **sql.js** (in-memory; loaded from and persisted to `data/cryptobot.db`). Saved on graceful shutdown and via `scheduleSave()`. Schema is managed by **versioned migrations** (`db/migrations.ts`) that execute the namespaced `.sql` files in `db/sql/{settings,trading,pipeline,cache}/` — a broken migration crashes startup (fail-fast) rather than leaving a half-migrated DB. Access only via the helpers: `queryAll`, `queryOne`, `runSQL`, `withTransaction`. Key tables: `trades`, `decisions`, `positions`, `position_adjustments`, `position_reviews`, `portfolio_entries`, `portfolio_snapshots`, `portfolio_summaries`, `pipeline_events`, `coin_discoveries`, `llm_calls`, `settings`.
+**MongoDB** via the native `mongodb` driver. One database (`cryptobot`, set by `MONGO_DB`) with one collection per former table. Connection is `MONGO_URL` (default `mongodb://localhost:27017/?directConnection=true`); `initDB()` connects and ensures indexes (`db/indexes.ts`). Access collections through the thin typed **`Repository`** instances in `db/repositories.ts` (`trades`, `positions`, `portfolioEntries`, `decisions`, …) — never reach into the driver directly. Repos expose async `find/findOne/findById/insert/update/upsert/deleteOne/deleteMany/count/aggregate`.
 
-Settings live in the `settings` key-value table via `getSettings()` / `updateSetting()`. Env vars seed the corresponding DB setting on every startup, so `.env` stays authoritative for things like crons.
+- **Integer ids preserved**: former `INTEGER PRIMARY KEY AUTOINCREMENT` rows keep integer ids via a `counters` collection (`nextId()`), stored as **both `_id` and `id`** so existing `row.id` reads/filters work. Natural-key collections (settings→key, monitor_notes→coin, entry_intents/entry_events→id, extraction_cache→url, ohlcv_cache→cache_key) use `Repository(..., false)` and set `_id` to the natural key.
+- **`created_at`** stays the `'YYYY-MM-DD HH:MM:SS'` UTC string (`nowSql()` in `db/time.ts`).
+- **Transactions**: `withTransaction(async session => …)` over a Mongo session (single-node replica set `rs0`, started by docker-compose). Pass the `session` into each repo write so it enrolls. `submitTrade()`/`closePositionFromExit()` use this for atomic trade+position+portfolio writes.
+
+Settings live in the `settings` collection (`_id` = key). `getSettings()` is **synchronous**, served from an in-memory cache loaded once at startup by `loadSettings()` and kept current by the async `updateSetting()`. Env vars seed the corresponding setting on startup, so `.env` stays authoritative for things like crons.
+
+Legacy sql.js data lives in `data/*.db` and is one-off migrated by `scripts/migrate-sqlite-to-mongo.ts` (`npm run migrate:mongo`).
 
 ### Portfolio & base currency
 
@@ -102,4 +115,4 @@ Single-page app, **no router library** — page switching is `useState<Page>` in
 
 Required: `BINANCE_API_KEY`, `BINANCE_SECRET`, `LLAMA_BASE_URL`, `LLAMA_MODEL`.
 Optional per-module LLM overrides (default to the `LLAMA_*` values): `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` / `MONITOR_*_B`, `SUMMARY_*`, `AGENT_*` (each `_BASE_URL`, `_MODEL`, `_MAX_TOKENS`).
-Optional other: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PORT` (3000), `APPROVAL_TIMEOUT_MINUTES` (5), `PIPELINE_CRON`.
+Optional other: `MONGO_URL` (default `mongodb://localhost:27017/?directConnection=true`), `MONGO_DB` (default `cryptobot`), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PORT` (3000), `APPROVAL_TIMEOUT_MINUTES` (5), `PIPELINE_CRON`.

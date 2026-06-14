@@ -1,19 +1,23 @@
 import { Markup } from 'telegraf'
-import { queryAll } from '../../../db/index.js'
+import { pipelineEvents } from '../../../db/index.js'
 import { actionEmoji, formatDate, esc } from '../../components/formatting.js'
 
 export async function render(_ctx: any) {
-  const cycles = queryAll(
-    `SELECT cycle_id, coin,
-            MAX(CASE WHEN stage IN ('pipeline_error','pipeline_failed','pipeline_timeout','pipeline_cancelled','discovery_error') THEN 1 ELSE 0 END) as has_error,
-            MAX(CASE WHEN stage = 'pipeline_cancelled' THEN 1 ELSE 0 END) as is_cancelled,
-            MAX(CASE WHEN stage IN ('signal_generated','discovery_completed') THEN 1 ELSE 0 END) as has_signal,
-            MAX(created_at) as last_event
-     FROM pipeline_events
-     GROUP BY cycle_id
-     ORDER BY last_event DESC
-     LIMIT 10`
-  ) as any[]
+  const cycles = await pipelineEvents.aggregate([
+    {
+      $group: {
+        _id: '$cycle_id',
+        coin: { $first: '$coin' },
+        has_error: { $max: { $cond: [{ $in: ['$stage', ['pipeline_error', 'pipeline_failed', 'pipeline_timeout', 'pipeline_cancelled', 'discovery_error']] }, 1, 0] } },
+        is_cancelled: { $max: { $cond: [{ $eq: ['$stage', 'pipeline_cancelled'] }, 1, 0] } },
+        has_signal: { $max: { $cond: [{ $in: ['$stage', ['signal_generated', 'discovery_completed']] }, 1, 0] } },
+        last_event: { $max: '$created_at' },
+      },
+    },
+    { $sort: { last_event: -1 } },
+    { $limit: 10 },
+    { $project: { _id: 0, cycle_id: '$_id', coin: 1, has_error: 1, is_cancelled: 1, has_signal: 1, last_event: 1 } },
+  ]) as any[]
 
   if (cycles.length === 0) {
     return { text: '🔬 <b>Pipeline Cycles</b>\n\nNo pipeline activity yet.', buttons: [] }
@@ -38,9 +42,8 @@ export async function render(_ctx: any) {
 }
 
 export async function renderCycle(_ctx: any, cycleId: string) {
-  const events = queryAll(
-    'SELECT * FROM pipeline_events WHERE cycle_id = ? ORDER BY created_at ASC',
-    [cycleId]
+  const events = await pipelineEvents.find(
+    { cycle_id: cycleId }, { sort: { created_at: 1 } },
   ) as any[]
 
   if (events.length === 0) {

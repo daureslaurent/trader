@@ -1,16 +1,16 @@
 import { Router, Request, Response } from 'express'
-import { queryAll, queryOne } from '../../db/index.js'
+import { positionReviews, positionAdjustments } from '../../db/index.js'
 import { bus } from '../../core/events.js'
 import { resolveLLM } from '../../config/llm.js'
 import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning, getActiveMonitorModel } from '../../monitor/index.js'
 
 export const router = Router()
 
-router.get('/monitor', (_req: Request, res: Response) => {
+router.get('/monitor', async (_req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((_req.query.limit as string) || '100', 10), 1), 500)
-    const reviews = getReviews(limit)
-    res.json({ running: isMonitorRunning(), reviews, notes: getMonitorNotes() })
+    const reviews = await getReviews(limit)
+    res.json({ running: isMonitorRunning(), reviews, notes: await getMonitorNotes() })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
@@ -34,14 +34,13 @@ router.post('/monitor/run', (_req: Request, res: Response) => {
   res.json({ ok: true, cycle_id: cycleId })
 })
 
-router.get('/monitor/reviews/:coin', (req: Request, res: Response) => {
+router.get('/monitor/reviews/:coin', async (req: Request, res: Response) => {
   try {
     const raw = decodeURIComponent(req.params.coin).trim().toUpperCase()
     const coin = raw.includes('/') ? raw : `${raw}/USDC`
-    const reviews = queryAll(
-      `SELECT id, coin, action, confidence, reasoning, created_at
-       FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 200`,
-      [coin],
+    const reviews = await positionReviews.find(
+      { coin },
+      { sort: { created_at: -1 }, limit: 200, projection: { _id: 0, id: 1, coin: 1, action: 1, confidence: 1, reasoning: 1, created_at: 1 } },
     )
     res.json(reviews)
   } catch (err) {
@@ -51,34 +50,30 @@ router.get('/monitor/reviews/:coin', (req: Request, res: Response) => {
 
 // ── Position SL/TP adjustments ──────────────────────────────────────────────
 
-router.get('/adjustments', (req: Request, res: Response) => {
+router.get('/adjustments', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '50', 10), 1), 200)
     const status = req.query.status as string | undefined
-    let sql = 'SELECT * FROM position_adjustments'
-    const params: (string | number)[] = []
-    if (status) { sql += ' WHERE status = ?'; params.push(status.toUpperCase()) }
-    sql += ' ORDER BY created_at DESC LIMIT ?'
-    params.push(limit)
-    res.json(queryAll(sql, params))
+    const filter = status ? { status: status.toUpperCase() } : {}
+    res.json(await positionAdjustments.find(filter, { sort: { created_at: -1 }, limit }))
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
 
-router.post('/adjustment/approve/:id', (req: Request, res: Response) => {
+router.post('/adjustment/approve/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
-  const row = queryOne("SELECT id FROM position_adjustments WHERE id = ? AND status = 'PENDING'", [id])
+  const row = await positionAdjustments.findOne({ _id: id, status: 'PENDING' }, { projection: { id: 1 } })
   if (!row) return res.status(404).json({ error: 'Adjustment not found or not pending' })
   bus.emit('adjustment_approved', id)
   res.json({ ok: true })
 })
 
-router.post('/adjustment/reject/:id', (req: Request, res: Response) => {
+router.post('/adjustment/reject/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
-  const row = queryOne("SELECT id FROM position_adjustments WHERE id = ? AND status = 'PENDING'", [id])
+  const row = await positionAdjustments.findOne({ _id: id, status: 'PENDING' }, { projection: { id: 1 } })
   if (!row) return res.status(404).json({ error: 'Adjustment not found or not pending' })
   bus.emit('adjustment_rejected', id)
   res.json({ ok: true })

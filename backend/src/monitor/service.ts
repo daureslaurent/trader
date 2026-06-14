@@ -2,7 +2,10 @@ import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
 import type { LLMTarget } from '../core/llm.js'
-import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
+import {
+  getSettings, updateSetting, getRawSetting, nowSql,
+  positionReviews, monitorNotes, positionAdjustments, positions as positionsRepo, portfolioEntries,
+} from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { validateSlTpAdjustment, minStopGapPct } from '../portfolio/risk.js'
 import * as priceCache from '../market/index.js'
@@ -28,8 +31,7 @@ function resolveSlot(slot: 'a' | 'b'): MonitorSlot {
 // In 'alternate' mode the slot flips each cycle. `monitor_alternate_last` records
 // the slot used by the previous cycle; the next slot is its opposite (default 'a').
 function alternateNextSlot(): 'a' | 'b' {
-  const last = queryOne("SELECT value FROM settings WHERE key = 'monitor_alternate_last'") as { value: string } | null
-  return last?.value === 'a' ? 'b' : 'a'
+  return getRawSetting('monitor_alternate_last') === 'a' ? 'b' : 'a'
 }
 
 // Resolves the monitor LLM slot the user selected in settings into its concrete
@@ -44,11 +46,11 @@ export function getActiveMonitorModel(): MonitorSlot {
 
 // Picks the slot for a cycle about to run, advancing the alternate rotation as a
 // side effect so the next cycle gets the other model. Non-alternate modes are fixed.
-export function advanceMonitorModel(): MonitorSlot {
+export async function advanceMonitorModel(): Promise<MonitorSlot> {
   const mode = getSettings().monitor_model
   if (mode !== 'alternate') return resolveSlot(mode === 'b' ? 'b' : 'a')
   const slot = alternateNextSlot()
-  updateSetting('monitor_alternate_last', slot)
+  await updateSetting('monitor_alternate_last', slot)
   return resolveSlot(slot)
 }
 
@@ -118,15 +120,15 @@ function cronIntervalMinutes(expr: string): number | null {
   return null
 }
 
-function pruneMonitorHistory(maxCycles = 20): void {
-  runSQL(`
-    DELETE FROM position_reviews
-    WHERE cycle_id NOT IN (
-      SELECT cycle_id FROM (
-        SELECT DISTINCT cycle_id FROM position_reviews ORDER BY created_at DESC LIMIT ?
-      )
-    )
-  `, [maxCycles])
+async function pruneMonitorHistory(maxCycles = 20): Promise<void> {
+  // Keep the most recent `maxCycles` distinct cycles (by latest created_at), delete the rest.
+  const recent = await positionReviews.aggregate<{ _id: string }>([
+    { $group: { _id: '$cycle_id', latest: { $max: '$created_at' } } },
+    { $sort: { latest: -1 } },
+    { $limit: maxCycles },
+  ])
+  const keep = recent.map(r => r._id)
+  await positionReviews.deleteMany({ cycle_id: { $nin: keep } })
 }
 
 async function monitorCoin(
@@ -147,15 +149,15 @@ async function monitorCoin(
   feeRate: number,
   adjustCooldownMin: number,
 ): Promise<PositionReview | null> {
-  const history = queryAll(
-    'SELECT * FROM position_reviews WHERE coin = ? ORDER BY created_at DESC LIMIT 3',
-    [ctx.coin],
-  ) as unknown as PositionReview[]
+  const history = (await positionReviews.find(
+    { coin: ctx.coin },
+    { sort: { created_at: -1 }, limit: 3 },
+  )) as unknown as PositionReview[]
 
-  const storedNotes = queryOne(
-    'SELECT notes, updated_at FROM monitor_notes WHERE coin = ?',
-    [ctx.coin],
-  ) as MonitorNotes | null
+  const storedNotes = (await monitorNotes.findOne(
+    { _id: ctx.coin },
+    { projection: { notes: 1, updated_at: 1 } },
+  )) as MonitorNotes | null
 
   const tf = isTimeframe(historyTf) ? historyTf : '1h'
   const count = Math.max(1, Math.min(100, historyCount))
@@ -248,10 +250,10 @@ async function monitorCoin(
       ctx.stopLoss != null && ctx.takeProfit != null) {
     const horizonFactor = ctx.horizon === 'short' ? 0.5 : ctx.horizon === 'long' ? 2 : 1
     const cooldownMs = adjustCooldownMin * horizonFactor * 60_000
-    const last = queryOne(
-      "SELECT created_at FROM position_adjustments WHERE position_id = ? AND status = 'APPLIED' ORDER BY id DESC LIMIT 1",
-      [ctx.positionId],
-    ) as { created_at: string } | null
+    const last = (await positionAdjustments.findOne(
+      { position_id: ctx.positionId, status: 'APPLIED' },
+      { sort: { id: -1 }, projection: { created_at: 1 } },
+    )) as { created_at: string } | null
     if (last) {
       const elapsed = Date.now() - new Date(last.created_at.replace(' ', 'T') + 'Z').getTime()
       if (elapsed >= 0 && elapsed < cooldownMs) {
@@ -370,9 +372,9 @@ async function monitorCoin(
 
   // Guard: if the position closed while the LLM was thinking (race with OCO reconciler),
   // discard the review rather than inserting stale data for a coin we no longer hold.
-  const stillOpen = queryOne(
-    "SELECT 1 FROM portfolio_entries WHERE coin = ? AND status = 'OPEN' LIMIT 1",
-    [ctx.coin],
+  const stillOpen = await portfolioEntries.findOne(
+    { coin: ctx.coin, status: 'OPEN' },
+    { projection: { _id: 1 } },
   )
   if (!stillOpen) {
     logger.info('Monitor review discarded — position closed during analysis', { coin: ctx.coin, cycleId })
@@ -382,20 +384,19 @@ async function monitorCoin(
   // Persist the LLM's note: a non-empty string replaces the stored one, null/absent keeps it.
   if (typeof raw.notes === 'string' && raw.notes.trim().length > 0) {
     const notes = raw.notes.trim().slice(0, MAX_NOTES_LENGTH)
-    runSQL(`
-      INSERT INTO monitor_notes (coin, notes, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(coin) DO UPDATE SET notes = excluded.notes, updated_at = excluded.updated_at
-    `, [ctx.coin, notes])
+    await monitorNotes.upsert(ctx.coin, { coin: ctx.coin, notes, updated_at: nowSql() })
     logger.info('Monitor notes updated', { coin: ctx.coin, length: notes.length })
   }
 
-  const { lastInsertRowid } = runSQL(
-    'INSERT INTO position_reviews (coin, action, confidence, reasoning, reduce_to_pct, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, market_data, model, cycle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [ctx.coin, raw.action, confidence, raw.reasoning, reduceToPct, ctx.stopLoss ?? null, ctx.takeProfit ?? null, newStopLoss, newTakeProfit, marketData, llm.model, cycleId],
-  )
+  const reviewId = await positionReviews.insert({
+    coin: ctx.coin, action: raw.action, confidence, reasoning: raw.reasoning,
+    reduce_to_pct: reduceToPct, old_stop_loss: ctx.stopLoss ?? null, old_take_profit: ctx.takeProfit ?? null,
+    new_stop_loss: newStopLoss, new_take_profit: newTakeProfit, market_data: marketData,
+    model: llm.model, cycle_id: cycleId, created_at: nowSql(),
+  })
 
   const review: PositionReview = {
-    id: Number(lastInsertRowid),
+    id: Number(reviewId),
     coin: ctx.coin,
     action: raw.action,
     confidence,
@@ -462,9 +463,9 @@ export function isRunning(): boolean {
   return running
 }
 
-export function clearReviewsForCoin(coin: string): void {
-  runSQL('DELETE FROM position_reviews WHERE coin = ?', [coin])
-  runSQL('DELETE FROM monitor_notes WHERE coin = ?', [coin])
+export async function clearReviewsForCoin(coin: string): Promise<void> {
+  await positionReviews.deleteMany({ coin })
+  await monitorNotes.deleteMany({ _id: coin })
   logger.info('Monitor history cleared for closed position', { coin })
 }
 
@@ -478,18 +479,28 @@ export async function runMonitor(cycleId: string): Promise<void> {
   broadcast('monitor_started', { cycle_id: cycleId })
 
   try {
-    // #2c: Use weighted-average julian date instead of MIN to reflect the true
-    // centre of mass of a position that was built across multiple entries.
-    const entries = queryAll(`
-      SELECT
-        coin,
-        SUM(quantity) AS quantity,
-        SUM(quantity * buy_price) / SUM(quantity) AS avg_buy_price,
-        SUM(quantity * julianday(created_at)) / SUM(quantity) AS avg_date_jd
-      FROM portfolio_entries
-      WHERE status = 'OPEN' AND coin != 'USDC'
-      GROUP BY coin
-    `) as { coin: string; quantity: number; avg_buy_price: number; avg_date_jd: number }[]
+    // #2c: Use a weighted-average entry timestamp (centre of mass in epoch ms)
+    // instead of MIN, to reflect a position built across multiple entries.
+    const entries = await portfolioEntries.aggregate<{ coin: string; quantity: number; avg_buy_price: number; avg_date_ms: number }>([
+      { $match: { status: 'OPEN', coin: { $ne: 'USDC' } } },
+      {
+        $group: {
+          _id: '$coin',
+          quantity: { $sum: '$quantity' },
+          qBuy: { $sum: { $multiply: ['$quantity', '$buy_price'] } },
+          qMs: { $sum: { $multiply: ['$quantity', { $toLong: { $dateFromString: { dateString: '$created_at', format: '%Y-%m-%d %H:%M:%S', timezone: 'UTC' } } }] } },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          coin: '$_id',
+          quantity: 1,
+          avg_buy_price: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$qBuy', '$quantity'] }, 0] },
+          avg_date_ms: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$qMs', '$quantity'] }, 0] },
+        },
+      },
+    ])
 
     if (entries.length === 0) {
       logger.info('Position monitor: no open positions to review')
@@ -501,7 +512,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
     const allPrices = priceCache.getAll()
 
     const s = getSettings()
-    const active = advanceMonitorModel()
+    const active = await advanceMonitorModel()
     const llm: MonitorLLM = {
       client: new OpenAI({ baseURL: active.baseURL, apiKey: 'ollama' }),
       model: active.model,
@@ -536,12 +547,10 @@ export async function runMonitor(cycleId: string): Promise<void> {
 
         const [marketCtx, position] = await Promise.all([
           getMarketContext(entry.coin, currentPrice),
-          Promise.resolve(
-            queryOne(
-              "SELECT id, stop_loss, take_profit, horizon FROM positions WHERE coin = ? AND status = 'OPEN' LIMIT 1",
-              [entry.coin],
-            ) as { id: number; stop_loss: number | null; take_profit: number | null; horizon: string | null } | null
-          ),
+          positionsRepo.findOne(
+            { coin: entry.coin, status: 'OPEN' },
+            { projection: { id: 1, stop_loss: 1, take_profit: 1, horizon: 1 } },
+          ) as Promise<{ id: number; stop_loss: number | null; take_profit: number | null; horizon: string | null } | null>,
         ])
 
         const pnlUsd = (currentPrice - entry.avg_buy_price) * entry.quantity
@@ -558,9 +567,8 @@ export async function runMonitor(cycleId: string): Promise<void> {
           ? ((takeProfit - currentPrice) / currentPrice) * 100
           : null
 
-        // Convert Julian Day Number back to ms since epoch:
-        // JDN 2440587.5 = 1970-01-01T00:00:00Z
-        const msFromJd = (entry.avg_date_jd - 2440587.5) * 86400000
+        // Weighted-average entry timestamp (epoch ms) from the aggregation above.
+        const msFromJd = entry.avg_date_ms
         const ageHours = (Date.now() - msFromJd) / (1000 * 60 * 60)
         const entryDate = new Date(msFromJd + utcOffsetHours * 3600000)
           .toISOString().replace('T', ' ').slice(0, 19) + ' ' + fmtOffsetLabel(utcOffsetHours)
@@ -615,7 +623,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
       }
     }
 
-    pruneMonitorHistory()
+    await pruneMonitorHistory()
 
     broadcast('monitor_completed', { cycle_id: cycleId, reviews })
     logger.info('Position monitor completed', { cycleId, reviewed: reviews.length })
@@ -628,29 +636,26 @@ export async function runMonitor(cycleId: string): Promise<void> {
   }
 }
 
-export function getNotes(): (MonitorNotes & { coin: string })[] {
-  // Same open-position filter as getReviews: hide notes left behind by a race
-  // between position close and a monitor run.
-  return queryAll(
-    `SELECT mn.coin, mn.notes, mn.updated_at FROM monitor_notes mn
-     WHERE EXISTS (
-       SELECT 1 FROM portfolio_entries pe
-       WHERE pe.coin = mn.coin AND pe.status = 'OPEN'
-     )
-     ORDER BY mn.coin`,
-  ) as unknown as (MonitorNotes & { coin: string })[]
+async function openCoinSet(): Promise<string[]> {
+  return portfolioEntries.col().distinct('coin', { status: 'OPEN' }) as Promise<string[]>
 }
 
-export function getReviews(limit = 100): PositionReview[] {
+export async function getNotes(): Promise<(MonitorNotes & { coin: string })[]> {
+  // Same open-position filter as getReviews: hide notes left behind by a race
+  // between position close and a monitor run.
+  const coins = await openCoinSet()
+  return monitorNotes.find(
+    { coin: { $in: coins } },
+    { sort: { coin: 1 }, projection: { coin: 1, notes: 1, updated_at: 1 } },
+  ) as unknown as Promise<(MonitorNotes & { coin: string })[]>
+}
+
+export async function getReviews(limit = 100): Promise<PositionReview[]> {
   // Only return reviews for coins that still have an open position.
   // This filters stale reviews left behind if the delete raced with a monitor run.
-  return queryAll(
-    `SELECT pr.* FROM position_reviews pr
-     WHERE EXISTS (
-       SELECT 1 FROM portfolio_entries pe
-       WHERE pe.coin = pr.coin AND pe.status = 'OPEN'
-     )
-     ORDER BY pr.created_at DESC LIMIT ?`,
-    [limit],
-  ) as unknown as PositionReview[]
+  const coins = await openCoinSet()
+  return positionReviews.find(
+    { coin: { $in: coins } },
+    { sort: { created_at: -1 }, limit },
+  ) as unknown as Promise<PositionReview[]>
 }

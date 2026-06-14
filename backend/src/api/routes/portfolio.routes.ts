@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { queryAll, queryOne, getSettings } from '../../db/index.js'
+import { positions as positionsRepo, portfolioSnapshots, trades, getSettings } from '../../db/index.js'
 import { getExchange } from '../../trader/service.js'
 import { logger } from '../../core/logger.js'
 import { PortfolioEntry } from '../../types.js'
@@ -13,9 +13,14 @@ import { normalizeSymbol } from './helpers.js'
 
 export const router = Router()
 
+// Parse a 'YYYY-MM-DD HH:MM:SS' UTC string (as the DB stores) to epoch ms.
+function sqlToMs(s: string): number {
+  return new Date(s.replace(' ', 'T') + 'Z').getTime()
+}
+
 router.get('/portfolio', async (_req: Request, res: Response) => {
   try {
-    const entries = getOpenEntries() as unknown as PortfolioEntry[]
+    const entries = (await getOpenEntries()) as unknown as PortfolioEntry[]
     const symbols = entries.filter(e => e.coin !== 'USDC').map(e => e.coin)
     priceCache.subscribe(symbols)
     const allPrices = priceCache.getAll()
@@ -38,7 +43,7 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
 
     const localUsdc = entries.find(e => e.coin === 'USDC')?.quantity ?? 0
 
-    const botPositionCount = (queryAll("SELECT COUNT(*) AS cnt FROM positions WHERE status = 'OPEN'")[0]?.cnt as number) ?? 0
+    const botPositionCount = await positionsRepo.count({ status: 'OPEN' })
 
     res.json({
       total_value: Math.round(totalValue * 100) / 100,
@@ -54,23 +59,23 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
   }
 })
 
-router.post('/portfolio/entry', (req: Request, res: Response) => {
+router.post('/portfolio/entry', async (req: Request, res: Response) => {
   const { coin, quantity, buy_price, buy_date, source } = req.body
   if (!coin || typeof coin !== 'string') return res.status(400).json({ error: 'coin required' })
   if (typeof quantity !== 'number' || quantity <= 0) return res.status(400).json({ error: 'quantity must be positive number' })
   if (typeof buy_price !== 'number' || buy_price <= 0) return res.status(400).json({ error: 'buy_price must be positive number' })
   const date = buy_date || new Date().toISOString().split('T')[0]
-  const id = addEntry(coin, quantity, buy_price, date, source || 'manual')
+  const id = await addEntry(coin, quantity, buy_price, date, source || 'manual')
   res.json({ ok: true, id })
 })
 
-router.patch('/portfolio/entry/:id', (req: Request, res: Response) => {
+router.patch('/portfolio/entry/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
-  const entry = getEntryById(id)
+  const entry = await getEntryById(id)
   if (!entry) return res.status(404).json({ error: 'Entry not found' })
   const { quantity, buy_price, buy_date } = req.body
-  updateEntry(id, { quantity, buy_price, buy_date })
+  await updateEntry(id, { quantity, buy_price, buy_date })
   res.json({ ok: true })
 })
 
@@ -95,7 +100,7 @@ router.post('/portfolio/usdc/deposit', async (req: Request, res: Response) => {
     return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
   }
 
-  const balance = depositUsdc(amount)
+  const balance = await depositUsdc(amount)
   res.json({ ok: true, balance })
 })
 
@@ -120,7 +125,7 @@ router.post('/portfolio/usdc/withdraw', async (req: Request, res: Response) => {
     return res.status(502).json({ error: 'Could not verify Binance balance: ' + (err instanceof Error ? err.message : String(err)) })
   }
 
-  const result = withdrawUsdc(amount)
+  const result = await withdrawUsdc(amount)
   if (!result.ok) return res.status(400).json({ error: result.error, balance: result.balance })
   res.json({ ok: true, balance: result.balance })
 })
@@ -177,12 +182,12 @@ router.post('/portfolio/transfer', async (req: Request, res: Response) => {
       }
 
       const date = new Date().toISOString().split('T')[0]
-      const id = addEntry(symbol, quantity, buy_price, date, 'transfer')
+      const id = await addEntry(symbol, quantity, buy_price, date, 'transfer')
       return res.json({ ok: true, id })
     }
 
     // to_binance: remove from local tracking FIFO
-    const entries = (getOpenEntries() as unknown as PortfolioEntry[]).filter(e => e.coin === symbol)
+    const entries = ((await getOpenEntries()) as unknown as PortfolioEntry[]).filter(e => e.coin === symbol)
     if (entries.length === 0) {
       return res.status(400).json({ error: `No open local position for ${symbol}` })
     }
@@ -201,9 +206,9 @@ router.post('/portfolio/transfer', async (req: Request, res: Response) => {
       if (remaining <= 1e-10) break
       if (entry.quantity <= remaining + 1e-10) {
         remaining -= entry.quantity
-        closeEntry(entry.id)
+        await closeEntry(entry.id)
       } else {
-        reduceEntryQuantity(entry.id, remaining)
+        await reduceEntryQuantity(entry.id, remaining)
         remaining = 0
       }
     }
@@ -214,53 +219,50 @@ router.post('/portfolio/transfer', async (req: Request, res: Response) => {
   }
 })
 
-router.delete('/portfolio/entry/:id', (req: Request, res: Response) => {
+router.delete('/portfolio/entry/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
-  removeEntry(id)
+  await removeEntry(id)
   res.json({ ok: true })
 })
 
-router.get('/portfolio/gains', (_req: Request, res: Response) => {
+router.get('/portfolio/gains', async (_req: Request, res: Response) => {
   try {
-    const rows = queryAll(`
-      SELECT
-        p.id,
-        p.coin,
-        p.quantity,
-        p.entry_price,
-        p.status,
-        p.pnl,
-        p.created_at                                                   AS opened_at,
-        h.created_at                                                   AS closed_at,
-        CAST((julianday(COALESCE(h.created_at, 'now')) - julianday(p.created_at)) * 86400 AS INTEGER)
-                                                                       AS duration_seconds
-      FROM positions p
-      LEFT JOIN sl_tp_history h ON h.position_id = p.id AND h.event = 'close'
-      WHERE p.status IN ('CLOSED', 'SL_HIT', 'TP_HIT')
-        AND p.pnl IS NOT NULL
-        AND p.coin != 'USDC'
-      ORDER BY COALESCE(h.created_at, p.created_at) DESC
-    `) as {
+    const rows = (await positionsRepo.aggregate<{
       id: number; coin: string; quantity: number; entry_price: number
       status: string; pnl: number; opened_at: string; closed_at: string | null
-      duration_seconds: number
-    }[]
+    }>([
+      { $match: { status: { $in: ['CLOSED', 'SL_HIT', 'TP_HIT'] }, pnl: { $ne: null }, coin: { $ne: 'USDC' } } },
+      {
+        $lookup: {
+          from: 'sl_tp_history',
+          let: { pid: '$id' },
+          pipeline: [{ $match: { $expr: { $and: [{ $eq: ['$position_id', '$$pid'] }, { $eq: ['$event', 'close'] }] } } }],
+          as: 'closeEvt',
+        },
+      },
+      { $addFields: { closeEvt: { $arrayElemAt: ['$closeEvt', 0] } } },
+      { $addFields: { closed_at: '$closeEvt.created_at', sortKey: { $ifNull: ['$closeEvt.created_at', '$created_at'] } } },
+      { $sort: { sortKey: -1 } },
+      { $project: { _id: 0, id: 1, coin: 1, quantity: 1, entry_price: 1, status: 1, pnl: 1, opened_at: '$created_at', closed_at: 1 } },
+    ]))
 
-    const feeRow = queryOne(`
-      SELECT SUM(fee_cost) AS total_bnb_fees
-      FROM trades
-      WHERE fee_currency = 'BNB' AND status = 'EXECUTED' AND fee_cost > 0
-    `) as { total_bnb_fees: number | null } | null
+    const feeAgg = await trades.aggregate<{ total: number }>([
+      { $match: { fee_currency: 'BNB', status: 'EXECUTED', fee_cost: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$fee_cost' } } },
+    ])
 
     const total_pnl = rows.reduce((s, r) => s + (r.pnl ?? 0), 0)
-    const total_bnb_fees = Math.round((feeRow?.total_bnb_fees ?? 0) * 1e8) / 1e8
+    const total_bnb_fees = Math.round((feeAgg[0]?.total ?? 0) * 1e8) / 1e8
 
     res.json({
       total_pnl: Math.round(total_pnl * 100) / 100,
       total_bnb_fees,
       positions: rows.map(r => {
         const invested = r.quantity * r.entry_price
+        const durationSeconds = Math.max(0, Math.floor(
+          ((r.closed_at ? sqlToMs(r.closed_at) : Date.now()) - sqlToMs(r.opened_at)) / 1000,
+        ))
         return {
           id: r.id,
           coin: r.coin,
@@ -271,7 +273,7 @@ router.get('/portfolio/gains', (_req: Request, res: Response) => {
           pnl_pct: invested > 0 ? Math.round(((r.pnl ?? 0) / invested) * 10000) / 100 : 0,
           opened_at: r.opened_at,
           closed_at: r.closed_at,
-          duration_seconds: r.duration_seconds ?? 0,
+          duration_seconds: durationSeconds,
         }
       }),
     })
@@ -280,9 +282,9 @@ router.get('/portfolio/gains', (_req: Request, res: Response) => {
   }
 })
 
-router.get('/portfolio/history', (_req: Request, res: Response) => {
+router.get('/portfolio/history', async (_req: Request, res: Response) => {
   try {
-    const entries = getAllEntries()
+    const entries = await getAllEntries()
     const symbols = [...new Set(entries.filter(e => e.status === 'OPEN').map(e => e.coin))]
     priceCache.subscribe(symbols)
     const allPrices = priceCache.getAll()
@@ -297,33 +299,32 @@ router.get('/portfolio/history', (_req: Request, res: Response) => {
   }
 })
 
-router.get('/portfolio/snapshots', (req: Request, res: Response) => {
+router.get('/portfolio/snapshots', async (req: Request, res: Response) => {
   try {
-    const RANGES: Record<string, string> = {
-      '24h': '-24 hours',
-      '7d': '-7 days',
-      '30d': '-30 days',
+    const RANGE_MS: Record<string, number> = {
+      '24h': 24 * 3600_000,
+      '7d': 7 * 86400_000,
+      '30d': 30 * 86400_000,
     }
     const range = String(req.query.range ?? 'all')
-    const modifier = RANGES[range]
-    const rows = (modifier
-      ? queryAll(
-          "SELECT total_value_usd, created_at FROM portfolio_snapshots WHERE created_at >= datetime('now', ?) ORDER BY created_at ASC",
-          [modifier]
-        )
-      : queryAll('SELECT total_value_usd, created_at FROM portfolio_snapshots ORDER BY created_at ASC')
-    ) as { total_value_usd: number; created_at: string }[]
+    const ms = RANGE_MS[range]
+    const filter = ms
+      ? { created_at: { $gte: new Date(Date.now() - ms).toISOString().replace('T', ' ').slice(0, 19) } }
+      : {}
+    const rows = await portfolioSnapshots.find(filter, {
+      sort: { created_at: 1 }, projection: { _id: 0, total_value_usd: 1, created_at: 1 },
+    })
     res.json(rows)
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
 
-router.get('/sl-tp/:coin', (req: Request, res: Response) => {
+router.get('/sl-tp/:coin', async (req: Request, res: Response) => {
   try {
     const raw = decodeURIComponent(req.params.coin).trim().toUpperCase()
     const coin = raw.includes('/') ? raw : `${raw}/USDC`
-    res.json(getSlTpHistory(coin))
+    res.json(await getSlTpHistory(coin))
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }

@@ -1,4 +1,4 @@
-import { queryAll, runSQL } from '../db/index.js'
+import { entryIntents, entryEvents } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { Signal } from '../types.js'
 import { EntryIntent, EntryEvent } from './types.js'
@@ -26,32 +26,44 @@ function rowToIntent(r: Record<string, unknown>): EntryIntent {
   }
 }
 
-export function loadIntents(): EntryIntent[] {
+export async function loadIntents(): Promise<EntryIntent[]> {
   try {
-    return queryAll('SELECT * FROM entry_intents').map(rowToIntent)
+    return (await entryIntents.find()).map(rowToIntent)
   } catch (err) {
     logger.error('Failed to load entry intents from DB', { error: err instanceof Error ? err.message : String(err) })
     return []
   }
 }
 
-export function saveIntent(intent: EntryIntent): void {
-  // INSERT OR REPLACE keyed on the PK; coin is also UNIQUE so the one-per-coin
-  // invariant is enforced by the schema as well as the service's Map.
-  runSQL(
-    `INSERT OR REPLACE INTO entry_intents
-       (id, coin, signal, signal_price, target_price, invalidate_price, chase_cap_price, notional_usdc, atr, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      intent.id, intent.coin, JSON.stringify(intent.signal),
-      intent.signalPrice, intent.targetPrice, intent.invalidatePrice, intent.chaseCapPrice,
-      intent.notionalUsdc, intent.atr, intent.createdAt, intent.expiresAt,
-    ],
-  )
+export async function saveIntent(intent: EntryIntent): Promise<void> {
+  // Upsert keyed on the intent id; coin is also UNIQUE so the one-per-coin
+  // invariant is enforced by the index as well as the service's Map.
+  // Best-effort: callers fire-and-forget, so never reject (in-memory state is source of truth).
+  try {
+    await entryIntents.upsert(intent.id, {
+      id: intent.id,
+      coin: intent.coin,
+      signal: JSON.stringify(intent.signal),
+      signal_price: intent.signalPrice,
+      target_price: intent.targetPrice,
+      invalidate_price: intent.invalidatePrice,
+      chase_cap_price: intent.chaseCapPrice,
+      notional_usdc: intent.notionalUsdc,
+      atr: intent.atr,
+      created_at: intent.createdAt,
+      expires_at: intent.expiresAt,
+    })
+  } catch (err) {
+    logger.error('Failed to persist entry intent', { coin: intent.coin, error: err instanceof Error ? err.message : String(err) })
+  }
 }
 
-export function deleteIntent(coin: string): void {
-  runSQL('DELETE FROM entry_intents WHERE coin = ?', [coin])
+export async function deleteIntent(coin: string): Promise<void> {
+  try {
+    await entryIntents.deleteMany({ coin })
+  } catch (err) {
+    logger.error('Failed to delete entry intent', { coin, error: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 /* ---------------------------------- events --------------------------------- */
@@ -70,23 +82,29 @@ function rowToEvent(r: Record<string, unknown>): EntryEvent {
   }
 }
 
-export function loadRecentEvents(): EntryEvent[] {
+export async function loadRecentEvents(): Promise<EntryEvent[]> {
   try {
-    return queryAll('SELECT * FROM entry_events ORDER BY created_at DESC LIMIT ?', [MAX_EVENTS]).map(rowToEvent)
+    return (await entryEvents.find({}, { sort: { created_at: -1 }, limit: MAX_EVENTS })).map(rowToEvent)
   } catch (err) {
     logger.error('Failed to load entry events from DB', { error: err instanceof Error ? err.message : String(err) })
     return []
   }
 }
 
-export function saveEvent(event: EntryEvent): void {
-  runSQL(
-    `INSERT OR REPLACE INTO entry_events
-       (id, coin, type, reason, signal_price, target_price, price, slippage_pct, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      event.id, event.coin, event.type, event.reason ?? null,
-      event.signalPrice, event.targetPrice, event.price ?? null, event.slippagePct ?? null, event.at,
-    ],
-  )
+export async function saveEvent(event: EntryEvent): Promise<void> {
+  try {
+    await entryEvents.upsert(event.id, {
+      id: event.id,
+      coin: event.coin,
+      type: event.type,
+      reason: event.reason ?? null,
+      signal_price: event.signalPrice,
+      target_price: event.targetPrice,
+      price: event.price ?? null,
+      slippage_pct: event.slippagePct ?? null,
+      created_at: event.at,
+    })
+  } catch (err) {
+    logger.error('Failed to persist entry event', { coin: event.coin, error: err instanceof Error ? err.message : String(err) })
+  }
 }

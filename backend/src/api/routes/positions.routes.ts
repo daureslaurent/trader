@@ -1,13 +1,13 @@
 import { Router, Request, Response } from 'express'
-import { queryAll, queryOne, runSQL } from '../../db/index.js'
+import { positions as positionsRepo } from '../../db/index.js'
 import * as priceCache from '../../market/index.js'
 import { cancelProtection, closePositionFromExit } from '../../portfolio/index.js'
 
 export const router = Router()
 
-router.get('/positions', (_req: Request, res: Response) => {
+router.get('/positions', async (_req: Request, res: Response) => {
   try {
-    const positions = queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as Record<string, unknown>[]
+    const positions = await positionsRepo.find({ status: 'OPEN' }, { sort: { created_at: 1 } }) as Record<string, unknown>[]
     if (positions.length === 0) return res.json([])
     const coins = [...new Set(positions.map(p => p.coin as string))]
     priceCache.subscribe(coins)
@@ -43,16 +43,16 @@ router.get('/positions', (_req: Request, res: Response) => {
   }
 })
 
-router.patch('/positions/:id/horizon', (req: Request, res: Response) => {
+router.patch('/positions/:id/horizon', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id, 10)
     const { horizon } = req.body as { horizon?: string }
     if (!['short', 'medium', 'long', 'disabled', 'llm'].includes(horizon ?? '')) {
       return res.status(400).json({ error: 'horizon must be short, medium, long, disabled, or llm' })
     }
-    const pos = queryOne("SELECT id FROM positions WHERE id = ? AND status = 'OPEN'", [id])
+    const pos = await positionsRepo.findOne({ _id: id, status: 'OPEN' }, { projection: { id: 1 } })
     if (!pos) return res.status(404).json({ error: 'Position not found' })
-    runSQL('UPDATE positions SET horizon = ? WHERE id = ?', [horizon!, id])
+    await positionsRepo.update({ _id: id }, { horizon: horizon! })
     res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
@@ -66,7 +66,7 @@ router.post('/positions/:id/close', async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10)
     if (isNaN(id)) return res.status(400).json({ error: 'Invalid id' })
 
-    const pos = queryOne("SELECT * FROM positions WHERE id = ? AND status = 'OPEN'", [id]) as Record<string, unknown> | null
+    const pos = await positionsRepo.findOne({ _id: id, status: 'OPEN' }) as Record<string, unknown> | null
     if (!pos) return res.status(404).json({ error: 'Position not found or already closed' })
 
     const coin = pos.coin as string
@@ -82,7 +82,7 @@ router.post('/positions/:id/close', async (req: Request, res: Response) => {
       fillPrice = priceCache.getAll().get(coin)?.price ?? (pos.entry_price as number)
     }
 
-    const closed = closePositionFromExit({
+    const closed = await closePositionFromExit({
       positionId: id,
       coin,
       status: 'CLOSED',

@@ -1,9 +1,9 @@
-import { queryAll } from '../db/index.js'
+import { positions as positionsRepo } from '../db/index.js'
 import { PositionRecord } from '../types.js'
 import { reconcileOpenPositions } from './service.js'
 
-export function getOpenPositions(): PositionRecord[] {
-  return queryAll("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY created_at ASC") as unknown[] as PositionRecord[]
+export async function getOpenPositions(): Promise<PositionRecord[]> {
+  return positionsRepo.find({ status: 'OPEN' }, { sort: { created_at: 1 } }) as unknown as Promise<PositionRecord[]>
 }
 
 /**

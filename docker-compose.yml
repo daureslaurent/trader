@@ -1,16 +1,48 @@
 services:
+  mongo:
+    image: mongo:7
+    # Single-node replica set (rs0). A replica set — even with one member — is
+    # required for MongoDB multi-document transactions, which submitTrade() relies
+    # on for atomic trade + position + portfolio writes.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./data/mongodb:/data/db
+    healthcheck:
+      # Initiate the replica set on first boot, then report healthy once it has a
+      # PRIMARY. Idempotent: rs.initiate() throws "already initialized" on reruns.
+      test: >
+        mongosh --quiet --eval '
+          try { rs.status().ok }
+          catch (e) {
+            rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }).ok
+          }
+        '
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
   backend:
     build: ./backend
     ports:
       - "3000:3000"
     env_file: .env
+    environment:
+      # In-network single node; directConnection bypasses replica-set host
+      # discovery while still permitting transactions against the rs0 primary.
+      MONGO_URL: mongodb://mongo:27017/?directConnection=true
+      MONGO_DB: cryptobot
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    volumes:
-      - ./data:/app/data
+    depends_on:
+      mongo:
+        condition: service_healthy
     restart: unless-stopped
     command: ["npx", "tsx", "src/index.ts"]
-    # command: ["npx", "tsx", "src/index.ts", "--stub", "--approval"]
+    # command: ["npx", "tsx", "src/index.ts", "--approval"]
 
   frontend:
     build: ./frontend

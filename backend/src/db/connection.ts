@@ -1,112 +1,19 @@
-import fs from 'fs'
-import path from 'path'
-import initSqlJs, { Database as SqlJsDatabase } from 'sql.js'
-import { SCHEMAS } from './schema.js'
-import { runMigrations } from './migrations.js'
+import { connectMongo, closeMongo } from './client.js'
+import { ensureIndexes } from './indexes.js'
 import { logger } from '../core/logger.js'
 
-const DATA_DIR = process.env.DB_DIR || './data'
-
-const DB_FILES: Record<string, string> = {
-  settings: path.join(DATA_DIR, 'settings.db'),
-  trading:  path.join(DATA_DIR, 'trading.db'),
-  pipeline: path.join(DATA_DIR, 'pipeline.db'),
-  cache:    path.join(DATA_DIR, 'cache.db'),
-}
-
-const DBS: Record<string, SqlJsDatabase> = {}
-
-// Table → db name registry (populated at init from SCHEMAS)
-const TABLE_DB: Record<string, string> = {}
-
-let savePending = false
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-const SAVE_DEBOUNCE_MS = 2000
-
-// Transaction guard: prevents partial-state saves mid-transaction
-let inTransactionFlag = false
-
-export function isInTransaction(): boolean { return inTransactionFlag }
-export function setTransactionState(active: boolean): void { inTransactionFlag = active }
-
-function loadOrCreate(SQL: initSqlJs.SqlJsStatic, filePath: string): SqlJsDatabase {
-  if (fs.existsSync(filePath)) {
-    return new SQL.Database(fs.readFileSync(filePath))
-  }
-  return new SQL.Database()
-}
-
-function buildTableRegistry(): void {
-  const tablePattern = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi
-  for (const [dbName, sql] of Object.entries(SCHEMAS)) {
-    let match: RegExpExecArray | null
-    while ((match = tablePattern.exec(sql)) !== null) {
-      TABLE_DB[match[1].toLowerCase()] = dbName
-    }
-    tablePattern.lastIndex = 0
-  }
-}
-
+// Initialize the database layer: open the Mongo connection and ensure indexes.
+// Unlike the old sql.js layer there is no schema-creation step (collections are
+// created lazily on first write) and no on-disk save/migration machinery — the
+// server persists every write itself.
 export async function initDB(): Promise<void> {
-  logger.info('Initializing databases', { dir: DATA_DIR })
-
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
-
-  const SQL = await initSqlJs()
-
-  buildTableRegistry()
-
-  for (const [name, filePath] of Object.entries(DB_FILES)) {
-    DBS[name] = loadOrCreate(SQL, filePath)
-    DBS[name].run(SCHEMAS[name])
-  }
-
-  runMigrations(DBS)
-  saveAll()
-
-  logger.info('Databases initialized', { dbs: Object.keys(DB_FILES) })
+  await connectMongo()
+  await ensureIndexes()
+  logger.info('Database initialized (MongoDB)')
 }
 
-export function getDB(name: string = 'trading'): SqlJsDatabase {
-  const db = DBS[name]
-  if (!db) throw new Error(`DB "${name}" not initialized. Call initDB() first.`)
-  return db
-}
-
-export function getTableDB(table: string): SqlJsDatabase {
-  const name = TABLE_DB[table.toLowerCase()] ?? 'trading'
-  return getDB(name)
-}
-
-export function getTableDBName(table: string): string {
-  return TABLE_DB[table.toLowerCase()] ?? 'trading'
-}
-
-export function saveOne(name: string): void {
-  const filePath = DB_FILES[name]
-  const db = DBS[name]
-  if (!db || !filePath) return
-  fs.writeFileSync(filePath, Buffer.from(db.export()))
-}
-
-export function saveAll(): void {
-  for (const [name, filePath] of Object.entries(DB_FILES)) {
-    const db = DBS[name]
-    if (!db) continue
-    fs.writeFileSync(filePath, Buffer.from(db.export()))
-  }
-}
-
-// Keep saveDB as an alias for backwards-compat (saves all)
-export const saveDB = saveAll
-
-export function scheduleSave(): void {
-  if (inTransactionFlag) return  // never persist partial transaction state
-  if (savePending) return
-  savePending = true
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    saveAll()
-    savePending = false
-  }, SAVE_DEBOUNCE_MS)
+// Graceful-shutdown hook. sql.js needed an explicit flush-to-disk; Mongo just
+// needs the client closed cleanly.
+export async function shutdownDB(): Promise<void> {
+  await closeMongo()
 }

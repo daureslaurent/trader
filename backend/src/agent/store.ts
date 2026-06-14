@@ -1,61 +1,60 @@
 // Persistence for Agent conversations and messages. Thin DB layer kept separate
 // from the chat orchestration (service.ts) so the loop stays focused on the LLM.
-import { queryAll, queryOne, runSQL } from '../db/index.js'
+import { agentConversations, agentMessages, nowSql } from '../db/index.js'
 import type { AgentConversation, AgentMessage } from '../types.js'
 
-export function listConversations(limit = 100): AgentConversation[] {
-  return queryAll(
-    'SELECT * FROM agent_conversations ORDER BY updated_at DESC LIMIT ?',
-    [Math.min(Math.max(limit, 1), 500)],
-  ) as unknown as AgentConversation[]
+export async function listConversations(limit = 100): Promise<AgentConversation[]> {
+  return agentConversations.find(
+    {}, { sort: { updated_at: -1 }, limit: Math.min(Math.max(limit, 1), 500) },
+  ) as unknown as Promise<AgentConversation[]>
 }
 
-export function getConversation(id: number): AgentConversation | null {
-  return queryOne('SELECT * FROM agent_conversations WHERE id = ?', [id]) as AgentConversation | null
+export async function getConversation(id: number): Promise<AgentConversation | null> {
+  return agentConversations.findById(id) as unknown as Promise<AgentConversation | null>
 }
 
-export function createConversation(title = 'New chat'): AgentConversation {
-  const { lastInsertRowid } = runSQL(
-    'INSERT INTO agent_conversations (title) VALUES (?)',
-    [title.slice(0, 200)],
-  )
-  return getConversation(Number(lastInsertRowid))!
+export async function createConversation(title = 'New chat'): Promise<AgentConversation> {
+  const now = nowSql()
+  const id = await agentConversations.insert({
+    title: title.slice(0, 200), total_tokens: 0, last_context_tokens: 0,
+    created_at: now, updated_at: now,
+  })
+  return (await getConversation(Number(id)))!
 }
 
-export function renameConversation(id: number, title: string): void {
-  runSQL('UPDATE agent_conversations SET title = ? WHERE id = ?', [title.slice(0, 200), id])
+export async function renameConversation(id: number, title: string): Promise<void> {
+  await agentConversations.update({ _id: id }, { title: title.slice(0, 200) })
 }
 
-export function touchConversation(id: number): void {
-  runSQL("UPDATE agent_conversations SET updated_at = datetime('now') WHERE id = ?", [id])
+export async function touchConversation(id: number): Promise<void> {
+  await agentConversations.update({ _id: id }, { updated_at: nowSql() })
 }
 
 // Record one finished turn's token usage on the conversation: add to the cumulative
 // counter, and replace last_context_tokens with this turn's peak single-request size
 // (the number that approaches the model's context window as the thread grows).
-export function recordConversationUsage(id: number, turnTokens: number, peakContextTokens: number): void {
-  runSQL(
-    'UPDATE agent_conversations SET total_tokens = total_tokens + ?, last_context_tokens = ? WHERE id = ?',
-    [Math.max(0, Math.round(turnTokens)), Math.max(0, Math.round(peakContextTokens)), id],
+export async function recordConversationUsage(id: number, turnTokens: number, peakContextTokens: number): Promise<void> {
+  await agentConversations.update(
+    { _id: id },
+    { $inc: { total_tokens: Math.max(0, Math.round(turnTokens)) }, $set: { last_context_tokens: Math.max(0, Math.round(peakContextTokens)) } },
   )
 }
 
 // Add to the cumulative token counter only (used by title generation, whose tiny
 // request should count toward cost but must not move the context-window figure).
-export function addConversationTokens(id: number, tokens: number): void {
-  runSQL('UPDATE agent_conversations SET total_tokens = total_tokens + ? WHERE id = ?', [Math.max(0, Math.round(tokens)), id])
+export async function addConversationTokens(id: number, tokens: number): Promise<void> {
+  await agentConversations.update({ _id: id }, { $inc: { total_tokens: Math.max(0, Math.round(tokens)) } })
 }
 
-export function deleteConversation(id: number): void {
-  runSQL('DELETE FROM agent_messages WHERE conversation_id = ?', [id])
-  runSQL('DELETE FROM agent_conversations WHERE id = ?', [id])
+export async function deleteConversation(id: number): Promise<void> {
+  await agentMessages.deleteMany({ conversation_id: id })
+  await agentConversations.deleteOne({ _id: id })
 }
 
-export function getMessages(conversationId: number): AgentMessage[] {
-  return queryAll(
-    'SELECT * FROM agent_messages WHERE conversation_id = ? ORDER BY id ASC',
-    [conversationId],
-  ) as unknown as AgentMessage[]
+export async function getMessages(conversationId: number): Promise<AgentMessage[]> {
+  return agentMessages.find(
+    { conversation_id: conversationId }, { sort: { id: 1 } },
+  ) as unknown as Promise<AgentMessage[]>
 }
 
 export interface NewMessage {
@@ -66,18 +65,15 @@ export interface NewMessage {
   name?: string | null
 }
 
-export function addMessage(conversationId: number, msg: NewMessage): AgentMessage {
-  const { lastInsertRowid } = runSQL(
-    `INSERT INTO agent_messages (conversation_id, role, content, tool_calls, tool_call_id, name)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      conversationId,
-      msg.role,
-      msg.content ?? null,
-      msg.tool_calls ?? null,
-      msg.tool_call_id ?? null,
-      msg.name ?? null,
-    ],
-  )
-  return queryOne('SELECT * FROM agent_messages WHERE id = ?', [Number(lastInsertRowid)]) as unknown as AgentMessage
+export async function addMessage(conversationId: number, msg: NewMessage): Promise<AgentMessage> {
+  const id = await agentMessages.insert({
+    conversation_id: conversationId,
+    role: msg.role,
+    content: msg.content ?? null,
+    tool_calls: msg.tool_calls ?? null,
+    tool_call_id: msg.tool_call_id ?? null,
+    name: msg.name ?? null,
+    created_at: nowSql(),
+  })
+  return (await agentMessages.findById(Number(id))) as unknown as AgentMessage
 }

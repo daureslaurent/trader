@@ -3,7 +3,7 @@ import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
 import type { LLMTarget } from '../core/llm.js'
 import { resolveLLM } from '../config/llm.js'
-import { queryOne, runSQL } from '../db/index.js'
+import { extractionCache, getSettings, nowSql } from '../db/index.js'
 import { ResearchResult, ArticleContent } from '../researcher/index.js'
 import { buildChallengePrompt, buildSingleArticlePrompt, buildSelectionPrompt } from './prompts.js'
 import { ExtractedResearch, ExtractedArticle, ArticleSkipReason } from './types.js'
@@ -67,17 +67,15 @@ function makeSkippedArticle(
 
 // ── Cache helpers ────────────────────────────────────────────────────────────
 
-function getCacheTtlHours(): number {
-  const row = queryOne("SELECT value FROM settings WHERE key = 'cache_ttl_hours'") as { value: string } | null
-  return row ? (parseInt(row.value, 10) || 13) : 13
-}
-
-function getCached(url: string): ExtractedArticle | null {
-  const ttl = getCacheTtlHours()
-  const row = queryOne(
-    `SELECT data FROM extraction_cache WHERE url = ? AND datetime(cached_at, '+${ttl} hours') > datetime('now')`,
-    [url]
-  ) as { data: string } | null
+async function getCached(url: string): Promise<ExtractedArticle | null> {
+  const ttl = getSettings().cache_ttl_hours || 13
+  // Fresh = cached within the TTL window; compare the stored 'YYYY-MM-DD HH:MM:SS'
+  // string against the cutoff (lexical order matches chronological order here).
+  const cutoff = new Date(Date.now() - ttl * 3600_000).toISOString().replace('T', ' ').slice(0, 19)
+  const row = (await extractionCache.findOne(
+    { _id: url, cached_at: { $gt: cutoff } },
+    { projection: { data: 1 } },
+  )) as { data: string } | null
   if (!row) return null
   try {
     return JSON.parse(row.data) as ExtractedArticle
@@ -86,12 +84,9 @@ function getCached(url: string): ExtractedArticle | null {
   }
 }
 
-function setCached(coin: string, url: string, article: ExtractedArticle): void {
+async function setCached(coin: string, url: string, article: ExtractedArticle): Promise<void> {
   const { from_cache: _, ...toStore } = article
-  runSQL(
-    "INSERT OR REPLACE INTO extraction_cache (url, coin, data, cached_at) VALUES (?, ?, ?, datetime('now'))",
-    [url, coin, JSON.stringify(toStore)]
-  )
+  await extractionCache.upsert(url, { coin, data: JSON.stringify(toStore), cached_at: nowSql() })
 }
 
 // ── Parsers ──────────────────────────────────────────────────────────────────
@@ -174,7 +169,7 @@ async function extractSingleArticle(
   article: ArticleContent,
   llm: ExtractorLLMConfig,
 ): Promise<ExtractedArticle | null> {
-  const cached = getCached(article.url)
+  const cached = await getCached(article.url)
   if (cached) {
     logger.debug('Article cache hit', { coin, url: article.url })
     return { ...cached, from_cache: true }
@@ -184,14 +179,14 @@ async function extractSingleArticle(
   if (blocked) {
     logger.info('Article blocked, skipping LLM', { coin, url: article.url, skip_reason: blocked })
     const skipped = makeSkippedArticle(article, blocked)
-    setCached(coin, article.url, skipped)
+    await setCached(coin, article.url, skipped)
     return skipped
   }
 
   const challenge = await challengeArticle(coin, article, llm)
   if (!challenge.relevant) {
     const skipped = { ...makeSkippedArticle(article, 'irrelevant'), summary: challenge.reason }
-    setCached(coin, article.url, skipped)
+    await setCached(coin, article.url, skipped)
     return skipped
   }
 
@@ -222,7 +217,7 @@ async function extractSingleArticle(
         return null
       }
 
-      setCached(coin, article.url, extracted)
+      await setCached(coin, article.url, extracted)
       return extracted
     } catch (err) {
       if (attempt === 0) {

@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { runSQL, getSettings } from '../db/index.js'
+import { llmCalls, getSettings, nowSql } from '../db/index.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from './logger.js'
 
@@ -321,32 +321,28 @@ async function runChat(
       _runningCalls.delete(tempId)
 
       try {
-        const { lastInsertRowid } = runSQL(
-          `INSERT INTO llm_calls
-            (module, model, base_url, system_prompt, user_prompt, response, reasoning_content, error, prompt_tokens, completion_tokens, thinking_tokens, duration_ms, queue_ms, coin, cycle_id, tool_calls)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            meta.module,
-            params.model,
-            baseUrl,
-            systemPrompt,
-            userPrompt,
-            responseText,
-            reasoningContent,
-            effectiveError,
-            resp?.usage?.prompt_tokens ?? null,
-            resp?.usage?.completion_tokens ?? null,
-            thinkingTokens,
-            durationMs,
-            queueMs,
-            meta.coin ?? null,
-            meta.cycle_id ?? null,
-            toolCallsJson,
-          ],
-        )
+        const insertedId = await llmCalls.insert({
+          module: meta.module,
+          model: params.model,
+          base_url: baseUrl,
+          system_prompt: systemPrompt,
+          user_prompt: userPrompt,
+          response: responseText,
+          reasoning_content: reasoningContent,
+          error: effectiveError,
+          prompt_tokens: resp?.usage?.prompt_tokens ?? null,
+          completion_tokens: resp?.usage?.completion_tokens ?? null,
+          thinking_tokens: thinkingTokens,
+          duration_ms: durationMs,
+          queue_ms: queueMs,
+          coin: meta.coin ?? null,
+          cycle_id: meta.cycle_id ?? null,
+          tool_calls: toolCallsJson,
+          created_at: nowSql(),
+        })
 
         broadcast('llm_call', {
-          id: Number(lastInsertRowid),
+          id: Number(insertedId),
           temp_id: tempId,
           module: meta.module,
           model: params.model,

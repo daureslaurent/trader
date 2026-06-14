@@ -105,7 +105,7 @@ async function generateConversationTitle(conversationId: number): Promise<void> 
   titleInFlight.add(conversationId)
   try {
     const limit = Math.min(Math.max(getSettings().agent_title_context_messages || 6, 2), 40)
-    const recent = store.getMessages(conversationId)
+    const recent = (await store.getMessages(conversationId))
       .filter(m => m.role !== 'tool' && (m.content ?? '').trim())
       .slice(-limit)
     if (!recent.length) return
@@ -138,9 +138,9 @@ async function generateConversationTitle(conversationId: number): Promise<void> 
     const title = cleanTitle(resp.choices[0]?.message?.content ?? '')
     if (!title) return
 
-    store.renameConversation(conversationId, title)
+    await store.renameConversation(conversationId, title)
     const u = resp.usage
-    if (u) store.addConversationTokens(conversationId, (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0))
+    if (u) await store.addConversationTokens(conversationId, (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0))
     broadcast('agent_conversation_updated', { id: conversationId, title })
     logger.info('Agent conversation title generated', { conversationId, title })
   } catch (err) {
@@ -161,7 +161,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
   if (!text) throw new Error('Message is empty')
   if (inFlight.has(conversationId)) throw new Error('A response is already being generated for this conversation')
 
-  const convo = store.getConversation(conversationId)
+  const convo = await store.getConversation(conversationId)
   if (!convo) throw new Error('Conversation not found')
 
   inFlight.add(conversationId)
@@ -180,21 +180,21 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
   let userTurns = 0
 
   try {
-    const priorCount = store.getMessages(conversationId).length
+    const priorCount = (await store.getMessages(conversationId)).length
 
-    const userMsg = store.addMessage(conversationId, { role: 'user', content: text })
-    store.touchConversation(conversationId)
+    const userMsg = await store.addMessage(conversationId, { role: 'user', content: text })
+    await store.touchConversation(conversationId)
     step(conversationId, { type: 'user', message: userMsg })
 
     // Instant placeholder title from the first message so the rail isn't "New chat";
     // the LLM-generated title replaces it once this turn completes (see the finally).
     if (priorCount === 0 && convo.title === 'New chat') {
-      store.renameConversation(conversationId, titleFrom(text))
+      await store.renameConversation(conversationId, titleFrom(text))
     }
 
     const active = resolveLLM('agent')
     const tools = getToolSchemas()
-    const history = store.getMessages(conversationId)
+    const history = await store.getMessages(conversationId)
     userTurns = history.filter(m => m.role === 'user').length
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: SYSTEM_PROMPT },
@@ -232,7 +232,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
 
       if (toolCalls.length > 0) {
         // Persist + echo the assistant's tool-call request, then execute each call.
-        const assistantMsg = store.addMessage(conversationId, {
+        const assistantMsg = await store.addMessage(conversationId, {
           role: 'assistant',
           content: content || null,
           tool_calls: JSON.stringify(toolCalls),
@@ -252,7 +252,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
           step(conversationId, { type: 'tool_call', tool: name, args, read_only: isReadOnlyTool(name), tool_call_id: tc.id })
           const result = await runTool(name, args)
           const resultStr = JSON.stringify(result)
-          const toolMsg = store.addMessage(conversationId, {
+          const toolMsg = await store.addMessage(conversationId, {
             role: 'tool', content: resultStr, tool_call_id: tc.id, name,
           })
           produced.push(toolMsg)
@@ -264,16 +264,16 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
 
       // No tool calls → this is the final answer.
       const finalText = content.trim() || "I couldn't produce a response. Please try rephrasing."
-      const finalMsg = store.addMessage(conversationId, { role: 'assistant', content: finalText })
+      const finalMsg = await store.addMessage(conversationId, { role: 'assistant', content: finalText })
       produced.push(finalMsg)
-      store.touchConversation(conversationId)
+      await store.touchConversation(conversationId)
       step(conversationId, { type: 'assistant', message: finalMsg })
       succeeded = true
       return { produced }
     }
 
     // Exhausted the round budget without a plain answer.
-    const capMsg = store.addMessage(conversationId, {
+    const capMsg = await store.addMessage(conversationId, {
       role: 'assistant',
       content: 'I gathered a lot of data but hit the tool-call limit before wrapping up. Could you narrow the question a bit?',
     })
@@ -289,7 +289,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
   } finally {
     // Persist token usage for the turn (even on error — those tokens were still spent).
     if (turnTokens > 0) {
-      try { store.recordConversationUsage(conversationId, turnTokens, peakContext) } catch { /* non-fatal */ }
+      try { await store.recordConversationUsage(conversationId, turnTokens, peakContext) } catch { /* non-fatal */ }
     }
     // Auto-(re)name the conversation on the first turn and periodically as it grows.
     // Fire-and-forget so it never delays the reply the user is waiting on.
