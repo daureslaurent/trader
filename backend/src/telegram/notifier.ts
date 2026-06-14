@@ -1,9 +1,9 @@
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
-import { positions as positionsRepo, portfolioSnapshots } from '../db/index.js'
+import { positions as positionsRepo, portfolioSnapshots, getSettings } from '../db/index.js'
 import { formatCurrency, esc, coinLabel, formatPnlPct, pnlEmoji } from './components/formatting.js'
 import { getBot, getChatId } from './bot.js'
-import type { PositionRecord, PortfolioSummary } from '../types.js'
+import type { PositionRecord, PortfolioSummary, BotSettings } from '../types.js'
 
 function send(text: string): void {
   const bot = getBot()
@@ -12,6 +12,16 @@ function send(text: string): void {
   bot.telegram.sendMessage(chatId, text, { parse_mode: 'HTML' }).catch((err) => {
     logger.warn('Telegram send failed', { error: err.message })
   })
+}
+
+// Per-event notification keys (each a boolean in settings). A notification is
+// sent only when the master switch and the event's own toggle are both on.
+type NotifyKey = Extract<keyof BotSettings, `telegram_notify_${string}`>
+
+function notify(key: NotifyKey, text: string): void {
+  const settings = getSettings()
+  if (!settings.telegram_notify_enabled || !settings[key]) return
+  send(text)
 }
 
 const SEP = '─────────────────'
@@ -38,7 +48,7 @@ function formatSlTp(value: number | null, entry: number | null, label: string): 
 }
 
 export function startNotifier() {
-  send(`✅ <b>CryptoBot started</b>\nMarkets are being monitored.`)
+  notify('telegram_notify_startup', `✅ <b>CryptoBot started</b>\nMarkets are being monitored.`)
 
   // ── New position opened ──────────────────────────────────────────────────────
   bus.on('position_opened', (pos: PositionRecord) => {
@@ -57,7 +67,7 @@ export function startNotifier() {
       formatSlTp(pos.stop_loss, pos.entry_price, 'Stop Loss'),
       formatSlTp(pos.take_profit ?? null, pos.entry_price, 'Take Profit'),
     ]
-    send(lines.join('\n'))
+    notify('telegram_notify_position_opened', lines.join('\n'))
   })
 
   // ── Position closed (SL / TP / monitor / manual) ─────────────────────────────
@@ -95,7 +105,7 @@ export function startNotifier() {
       dur ? dur.trim() : '',
     ].filter(Boolean)
 
-    send(lines.join('\n'))
+    notify('telegram_notify_position_closed', lines.join('\n'))
   })
 
   // ── SL/TP adjusted by monitor ────────────────────────────────────────────────
@@ -134,11 +144,13 @@ export function startNotifier() {
       `  Take Profit   ${fmtChange(oldTakeProfit, newTakeProfit)}`,
     ].filter(l => l !== undefined && l !== null)
 
-    send(lines.join('\n'))
+    notify('telegram_notify_sl_tp_adjusted', lines.join('\n'))
   })
 
   // ── Portfolio snapshot ───────────────────────────────────────────────────────
   bus.on('portfolio_updated', async () => {
+    const s = getSettings()
+    if (!s.telegram_notify_enabled || !s.telegram_notify_portfolio) return
     const snapshots = await portfolioSnapshots.find(
       {}, { sort: { created_at: -1 }, limit: 2, projection: { total_value_usd: 1 } },
     ) as { total_value_usd: number }[]
@@ -156,7 +168,7 @@ export function startNotifier() {
       }
     }
 
-    send(
+    notify('telegram_notify_portfolio',
       `📊 <b>Portfolio</b>  ${formatCurrency(current)}${changeStr}\n` +
       `  ${openCount} open position${openCount !== 1 ? 's' : ''}`
     )
@@ -164,7 +176,7 @@ export function startNotifier() {
 
   // ── Trade failed ─────────────────────────────────────────────────────────────
   bus.on('trade_failed', ({ coin, side, error }: { coin: string; side: string; error: string }) => {
-    send(
+    notify('telegram_notify_trade_failed',
       `❌ <b>Trade Failed</b>  ${side} ${coinLabel(coin)}\n` +
       `<code>${SEP}</code>\n` +
       `<code>${esc(error)}</code>`
@@ -173,7 +185,7 @@ export function startNotifier() {
 
   // ── System error ─────────────────────────────────────────────────────────────
   bus.on('error', (err: Error) => {
-    send(`❌ <b>Error:</b> ${esc(err.message)}`)
+    notify('telegram_notify_errors', `❌ <b>Error:</b> ${esc(err.message)}`)
   })
 
   // ── Portfolio summary produced ───────────────────────────────────────────────
@@ -207,7 +219,7 @@ export function startNotifier() {
       suggestions.length ? `\n<b>Suggestions</b>\n${suggestions.map(x => `  • ${esc(x)}`).join('\n')}` : '',
     ].filter(Boolean)
 
-    send(lines.join('\n'))
+    notify('telegram_notify_summary', lines.join('\n'))
   })
 
   // ── New coin discovered ───────────────────────────────────────────────────────
@@ -215,7 +227,7 @@ export function startNotifier() {
     const coin = coinLabel(result.coin)
     const score = Number(result.score).toFixed(1)
     const tag = result.status === 'auto_added' ? '\n  → <b>Auto-added to watchlist</b>' : ''
-    send(`🔍 <b>Discovered</b>  ${coin}  ·  score <b>${score}</b>${tag}`)
+    notify('telegram_notify_discovery', `🔍 <b>Discovered</b>  ${coin}  ·  score <b>${score}</b>${tag}`)
   })
 
   logger.info('Telegram notifier started')

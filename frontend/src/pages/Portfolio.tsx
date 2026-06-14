@@ -537,6 +537,23 @@ function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClos
                 )}
               </div>
             </div>
+            {pos.stop_loss != null && (() => {
+              const slPnl = Math.round((pos.stop_loss - pos.entry_price) * pos.quantity * 100) / 100
+              return (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted">If stopped out</span>
+                  <span
+                    title="Realised P&L in USDC if this position is closed at the stop-loss"
+                    className={cn(
+                      'inline-flex items-center px-2 py-0.5 rounded-md font-semibold tabular-nums border',
+                      slPnl >= 0 ? 'bg-buy/10 text-buy border-buy/20' : 'bg-sell/10 text-sell border-sell/20',
+                    )}
+                  >
+                    {slPnl >= 0 ? '+' : ''}{fmtUSD(slPnl)}
+                  </span>
+                </div>
+              )
+            })()}
             {slProgress != null && (
               <div className="h-1.5 rounded-full bg-surface-hover overflow-hidden">
                 <div className="h-full rounded-full bg-sell/60 transition-all" style={{ width: `${slProgress}%` }} />
@@ -964,6 +981,7 @@ export default function Portfolio() {
                   const coin = pos.coin.replace('/USDC', '')
                   const slPct = pos.distance_to_sl_pct
                   const tpPct = pos.distance_to_tp_pct
+                  const slPnl = pos.stop_loss ? Math.round((pos.stop_loss - pos.entry_price) * pos.quantity * 100) / 100 : null
                   const openedAt = pos.created_at ? new Date(pos.created_at.includes('T') ? pos.created_at : pos.created_at + 'Z') : null
                   const durationSec = openedAt ? Math.floor((Date.now() - openedAt.getTime()) / 1000) : null
                   const hasPriceTrack = pos.stop_loss && pos.take_profit && pos.current_price
@@ -1030,12 +1048,25 @@ export default function Portfolio() {
                           ) : <span className="text-muted">—</span>}
                         </Td>
                         <Td right>
-                          <div>
+                          <div className="flex flex-col items-end gap-1">
                             <div className="font-medium text-sell tabular-nums">{fmtUSD(pos.stop_loss)}</div>
                             {slPct != null && (
                               <div className={cn('text-xs', slPct < 2 ? 'text-sell font-semibold' : 'text-muted')}>
                                 {slPct.toFixed(1)}% away
                               </div>
+                            )}
+                            {slPnl != null && (
+                              <span
+                                title="Realised P&L in USDC if this position is closed at the stop-loss"
+                                className={cn(
+                                  'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-semibold tabular-nums border',
+                                  slPnl >= 0
+                                    ? 'bg-buy/10 text-buy border-buy/20'
+                                    : 'bg-sell/10 text-sell border-sell/20',
+                                )}
+                              >
+                                {slPnl >= 0 ? '+' : ''}{fmtUSD(slPnl)} at stop
+                              </span>
                             )}
                           </div>
                         </Td>

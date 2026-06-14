@@ -136,6 +136,16 @@ export function getSettings(): BotSettings {
     summary_auto_run: map.summary_auto_run === 'true',
     summary_cron: map.summary_cron || '0 */6 * * *',
     summary_retain_days: parseInt(map.summary_retain_days || '30', 10),
+    telegram_notify_enabled: (map.telegram_notify_enabled ?? 'true') === 'true',
+    telegram_notify_startup: (map.telegram_notify_startup ?? 'true') === 'true',
+    telegram_notify_position_opened: (map.telegram_notify_position_opened ?? 'true') === 'true',
+    telegram_notify_position_closed: (map.telegram_notify_position_closed ?? 'true') === 'true',
+    telegram_notify_sl_tp_adjusted: (map.telegram_notify_sl_tp_adjusted ?? 'true') === 'true',
+    telegram_notify_portfolio: (map.telegram_notify_portfolio ?? 'true') === 'true',
+    telegram_notify_summary: (map.telegram_notify_summary ?? 'true') === 'true',
+    telegram_notify_discovery: (map.telegram_notify_discovery ?? 'true') === 'true',
+    telegram_notify_trade_failed: (map.telegram_notify_trade_failed ?? 'true') === 'true',
+    telegram_notify_errors: (map.telegram_notify_errors ?? 'true') === 'true',
   }
 }
 

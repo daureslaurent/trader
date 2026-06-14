@@ -222,6 +222,28 @@ export interface BotSettings {
   summary_cron: string
   /** Delete portfolio summaries older than this many days. 0 = keep forever. */
   summary_retain_days: number
+  /** Master switch for outbound Telegram push notifications. When false, no event
+   *  notifications are sent. Trade-approval prompts are unaffected — they're
+   *  functional (you reply to them), not notifications. */
+  telegram_notify_enabled: boolean
+  /** "CryptoBot started" message on boot. */
+  telegram_notify_startup: boolean
+  /** A new position was opened. */
+  telegram_notify_position_opened: boolean
+  /** A position was closed (SL/TP hit, monitor, or manual). */
+  telegram_notify_position_closed: boolean
+  /** The monitor adjusted a position's SL/TP. */
+  telegram_notify_sl_tp_adjusted: boolean
+  /** Portfolio snapshot (total value + open-position count) after each cycle. Noisy. */
+  telegram_notify_portfolio: boolean
+  /** A portfolio summary was produced by the summary engine. */
+  telegram_notify_summary: boolean
+  /** A new candidate coin was discovered. */
+  telegram_notify_discovery: boolean
+  /** A trade failed to execute on the exchange. */
+  telegram_notify_trade_failed: boolean
+  /** System/runtime errors surfaced to Telegram. */
+  telegram_notify_errors: boolean
 }
 
 /** One run of the portfolio-summary engine: an LLM narrative + structured read of

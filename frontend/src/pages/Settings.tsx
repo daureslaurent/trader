@@ -95,7 +95,30 @@ interface SettingsData {
   summary_auto_run: boolean
   summary_cron: string
   summary_retain_days: number
+  telegram_notify_enabled: boolean
+  telegram_notify_startup: boolean
+  telegram_notify_position_opened: boolean
+  telegram_notify_position_closed: boolean
+  telegram_notify_sl_tp_adjusted: boolean
+  telegram_notify_portfolio: boolean
+  telegram_notify_summary: boolean
+  telegram_notify_discovery: boolean
+  telegram_notify_trade_failed: boolean
+  telegram_notify_errors: boolean
 }
+
+// Telegram per-event notification toggles, rendered as one row each.
+const TELEGRAM_EVENTS: { key: keyof SettingsData; label: string; hint: string }[] = [
+  { key: 'telegram_notify_position_opened', label: 'Position opened', hint: 'A new position was opened.' },
+  { key: 'telegram_notify_position_closed', label: 'Position closed', hint: 'A position was closed — stop-loss / take-profit hit, monitor exit, or manual close.' },
+  { key: 'telegram_notify_sl_tp_adjusted', label: 'SL/TP adjusted', hint: 'The monitor moved a position’s stop-loss or take-profit.' },
+  { key: 'telegram_notify_trade_failed', label: 'Trade failed', hint: 'An order failed to execute on the exchange.' },
+  { key: 'telegram_notify_summary', label: 'Portfolio summary', hint: 'A new portfolio summary briefing was produced.' },
+  { key: 'telegram_notify_discovery', label: 'Coin discovered', hint: 'The discoverer found a new candidate coin.' },
+  { key: 'telegram_notify_portfolio', label: 'Portfolio snapshot', hint: 'Total value + open-position count after each cycle. Can be noisy.' },
+  { key: 'telegram_notify_errors', label: 'System errors', hint: 'Runtime errors surfaced by the bot.' },
+  { key: 'telegram_notify_startup', label: 'Startup message', hint: '“CryptoBot started” notice when the bot boots.' },
+]
 
 const CRON_PRESETS = [
   { label: '5 min',  value: '*/5 * * * *' },
@@ -134,6 +157,7 @@ const SECTIONS = [
   { id: 'agent',      label: 'Agent',            icon: 'M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 01.778-.332 48.294 48.294 0 005.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z' },
   { id: 'appearance', label: 'Appearance',       icon: 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z' },
   { id: 'llm',        label: 'LLM Data',         icon: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5' },
+  { id: 'telegram',   label: 'Telegram',         icon: 'M21.5 4.5L2.5 12l6 2m13-9.5l-3 15-7-5.5m10-9.5L8.5 16m0 0v4.5l3.5-3.5' },
 ] as const
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -874,7 +898,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1524,6 +1548,30 @@ export default function Settings() {
               onChange={e => set('llm_retain_days', parseInt(e.target.value) || 0)}
             />
           </Row>
+        </Section>
+
+        {/* Telegram */}
+        <Section id="telegram" title="Telegram" subtitle="Choose which events get pushed to your Telegram chat" icon={SECTIONS[9].icon}>
+          <Row
+            label="Notifications"
+            hint="Master switch for all outbound Telegram push notifications. Trade-approval prompts are always sent regardless — you reply to those to approve or reject a trade."
+          >
+            <Toggle
+              label="Enable Telegram notifications"
+              checked={settings.telegram_notify_enabled}
+              onChange={() => toggle('telegram_notify_enabled')}
+            />
+          </Row>
+
+          {settings.telegram_notify_enabled && TELEGRAM_EVENTS.map(ev => (
+            <Row key={ev.key} label={ev.label} hint={ev.hint}>
+              <Toggle
+                label={ev.label}
+                checked={settings[ev.key] as boolean}
+                onChange={() => toggle(ev.key as Parameters<typeof toggle>[0])}
+              />
+            </Row>
+          ))}
         </Section>
 
         {/* Floating save bar */}
