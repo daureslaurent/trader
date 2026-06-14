@@ -162,7 +162,7 @@ export async function runDiscovery(cycleId: string): Promise<void> {
 
     const topPairs = await getTopPairs(settings.discover_top_n)
 
-    const portfolioEntries = getOpenEntries() as unknown as { coin: string }[]
+    const portfolioEntries = await getOpenEntries() as unknown as { coin: string }[]
 
     // Normalize to base currency so BTC/USDC and BTC both match
     const toBase = (s: string) => (s.includes('/') ? s.split('/')[0] : s).toUpperCase()
