@@ -1,4 +1,59 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'agent'
+
+/** One message in an Agent conversation (GET /api/agent/conversations/:id). */
+export interface AgentMessage {
+  id: number
+  conversation_id: number
+  role: 'user' | 'assistant' | 'tool'
+  content: string | null
+  tool_calls: string | null
+  tool_call_id: string | null
+  name: string | null
+  created_at: string
+}
+
+export interface AgentConversation {
+  id: number
+  title: string
+  /** Cumulative tokens (prompt + completion) across every model call in the thread. */
+  total_tokens: number
+  /** Peak single-request tokens of the most recent turn — the context-window usage to
+   *  watch against the model's limit (grows as the conversation gets longer). */
+  last_context_tokens: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentToolInfo {
+  name: string
+  description: string
+  readOnly: boolean
+}
+
+/** One portfolio-summary run, from GET /api/summary. Mirrors the backend row. */
+export interface PortfolioSummary {
+  id: number
+  summary: string
+  what_happened: string | null
+  health: string | null
+  risk_level: string | null
+  /** JSON-encoded string[] — parse before rendering. */
+  observations: string | null
+  /** JSON-encoded string[] — parse before rendering. */
+  suggestions: string | null
+  /** JSON-encoded snapshot of the data fed to the LLM. */
+  snapshot: string
+  model: string | null
+  cycle_id: string
+  created_at: string
+}
+
+export interface SummaryResponse {
+  running: boolean
+  latest: PortfolioSummary | null
+  history: PortfolioSummary[]
+  model: { model: string; baseURL: string }
+}
 
 export interface PortfolioSnapshot {
   total_value_usd: number
@@ -216,6 +271,7 @@ export interface PositionReview {
   new_stop_loss?: number | null
   new_take_profit?: number | null
   market_data: string
+  model: string | null
   cycle_id: string
   created_at: string
 }
@@ -243,6 +299,7 @@ export interface PositionAdjustment {
   reasoning: string | null
   confidence: number | null
   status: 'PENDING' | 'APPLIED' | 'REJECTED' | 'EXPIRED'
+  model: string | null
   cycle_id: string | null
   created_at: string
 }
@@ -258,6 +315,54 @@ export interface MonitorResponse {
   reviews: PositionReview[]
   notes?: MonitorNote[]
 }
+
+export interface MonitorModelSlot {
+  model: string
+  baseURL: string
+}
+
+export interface MonitorModelsResponse {
+  active: 'a' | 'b'
+  a: MonitorModelSlot
+  b: MonitorModelSlot
+}
+
+/** A named LLM endpoint in the shared catalog. Modules reference one by `id`. */
+export interface LLMEndpoint {
+  id: string
+  name: string
+  baseURL: string
+  model: string
+  /** Default max-tokens for this endpoint (0 = use the env-var default). A
+   *  per-module override takes precedence. */
+  maxTokens: number
+  /** When true, calls to this endpoint may run in parallel even while same-URL
+   *  serialization is on. */
+  parallel: boolean
+  /** Max concurrent calls when `parallel` is on (0 = unlimited). */
+  maxParallel: number
+}
+
+/** Module keys whose LLM endpoint/model/max-tokens can be overridden from Settings. */
+export type LLMModuleKey =
+  | 'analyst'
+  | 'extractor'
+  | 'discoverer'
+  | 'discovererExtractor'
+  | 'monitorA'
+  | 'monitorB'
+  | 'summary'
+  | 'agent'
+
+/** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */
+export interface LLMDefault {
+  model: string
+  baseURL: string
+  maxTokens: number
+}
+
+/** Env-var fallback per overridable module, from GET /api/llm/defaults. */
+export type LLMDefaults = Record<LLMModuleKey, LLMDefault>
 
 export interface SlTpEvent {
   position_id: number
@@ -279,13 +384,20 @@ export interface LLMCall {
   user_prompt?: string
   response: string | null
   reasoning_content: string | null
+  /** JSON-encoded OpenAI tool_calls array when the model requested tools this turn. */
+  tool_calls?: string | null
   error: string | null
   prompt_tokens: number | null
   completion_tokens: number | null
   thinking_tokens: number | null
+  /** Pure LLM inference latency, excluding any time spent waiting in the per-URL queue. */
   duration_ms: number
+  /** Time spent waiting in the per-URL serialization queue before going in flight. */
+  queue_ms?: number | null
+  /** When the call went in flight (live calls only); null/absent while still queued. */
+  running_at?: string | null
   coin: string | null
   cycle_id: string | null
   created_at: string
-  status?: 'running' | 'done'
+  status?: 'queued' | 'running' | 'done'
 }

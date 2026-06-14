@@ -42,6 +42,15 @@ function parseMarketData(raw: string): Record<string, number | string | null> {
   try { return JSON.parse(raw) } catch { return {} }
 }
 
+function ModelBadge({ model }: { model: string | null }) {
+  if (!model) return <span className="text-muted">—</span>
+  return (
+    <Badge variant="accent" dot className="max-w-[140px]" title={model}>
+      <span className="truncate">{model}</span>
+    </Badge>
+  )
+}
+
 function ActionBadge({ action }: { action: string }) {
   const s = ACTION_STYLES[action] ?? ACTION_STYLES.HOLD
   return (
@@ -475,6 +484,7 @@ export default function Monitor() {
                   <th className="px-3 py-2.5">Take Profit</th>
                   <th className="px-3 py-2.5 text-right">Confidence</th>
                   <th className="px-3 py-2.5">Status</th>
+                  <th className="px-3 py-2.5">Model</th>
                   <th className="px-5 py-2.5 text-right">When</th>
                 </tr>
               </thead>
@@ -494,6 +504,7 @@ export default function Monitor() {
                     <td className="px-3 py-3">
                       <Badge variant={ADJUSTMENT_VARIANTS[a.status] ?? 'neutral'}>{a.status}</Badge>
                     </td>
+                    <td className="px-3 py-3"><ModelBadge model={a.model} /></td>
                     <td className="px-5 py-3 text-right text-muted tabular-nums">{formatDate(a.created_at)}</td>
                   </tr>
                 ))}
@@ -521,6 +532,7 @@ export default function Monitor() {
                   <th className="px-3 py-2.5">Action</th>
                   <th className="px-3 py-2.5 text-right">Confidence</th>
                   <th className="px-3 py-2.5 text-right">P&L at review</th>
+                  <th className="px-3 py-2.5">Model</th>
                   <th className="px-3 py-2.5">Reasoning</th>
                   <th className="px-5 py-2.5 text-right">When</th>
                 </tr>
@@ -540,6 +552,7 @@ export default function Monitor() {
                       )}>
                         {pnl != null ? `${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%` : '—'}
                       </td>
+                      <td className="px-3 py-3"><ModelBadge model={r.model} /></td>
                       <td className="px-3 py-3 text-muted max-w-md">
                         <span className="line-clamp-1" title={r.reasoning}>{r.reasoning}</span>
                       </td>

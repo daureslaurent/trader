@@ -10,6 +10,8 @@ const MODULE_META: Record<string, { label: string; color: string; bg: string }> 
   analyst:    { label: 'Analyst',    color: 'text-accent',     bg: 'bg-accent/15'     },
   discoverer: { label: 'Discoverer', color: 'text-buy',        bg: 'bg-buy/15'        },
   monitor:    { label: 'Monitor',    color: 'text-warn',       bg: 'bg-warn/15'       },
+  summary:    { label: 'Summary',    color: 'text-sky-400',    bg: 'bg-sky-500/15'    },
+  agent:      { label: 'Agent',      color: 'text-accent2',    bg: 'bg-accent2/15'    },
 }
 
 function moduleMeta(mod: string) {
@@ -18,8 +20,14 @@ function moduleMeta(mod: string) {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// Backend timestamps are space-separated UTC without a 'Z'. Normalize so the
+// browser parses them as UTC rather than local time.
+function parseTs(iso: string): number {
+  return new Date(iso.includes('T') ? iso : iso + 'Z').getTime()
+}
+
 function formatTime(iso: string) {
-  const d = new Date(iso.includes('T') ? iso : iso + 'Z')
+  const d = new Date(parseTs(iso))
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
@@ -46,6 +54,17 @@ function tryFormatJSON(text: string): { formatted: string; isJSON: boolean } {
   }
 }
 
+// ── Icons ────────────────────────────────────────────────────────────────────
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  )
+}
+
 // ── Module badge ─────────────────────────────────────────────────────────────
 
 function ModuleBadge({ module }: { module: string }) {
@@ -60,8 +79,10 @@ function ModuleBadge({ module }: { module: string }) {
 // ── List item ────────────────────────────────────────────────────────────────
 
 function CallListItem({ call, selected, onClick }: { call: LLMCall; selected: boolean; onClick: () => void }) {
+  const isQueued = call.status === 'queued'
   const isRunning = call.status === 'running'
   const hasError = !!call.error
+  const toolCount = parseToolCalls(call.tool_calls).length
   return (
     <button
       onClick={onClick}
@@ -72,14 +93,28 @@ function CallListItem({ call, selected, onClick }: { call: LLMCall; selected: bo
     >
       <div className="flex items-center justify-between gap-2">
         <ModuleBadge module={call.module} />
+        {isQueued && (
+          <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">
+            <ClockIcon className="w-2.5 h-2.5" />
+            QUEUED
+          </span>
+        )}
         {isRunning && (
           <span className="flex items-center gap-1 text-[10px] font-semibold text-warn bg-warn/10 px-1.5 py-0.5 rounded">
             <span className="w-1.5 h-1.5 rounded-full bg-warn animate-pulse" />
             RUN
           </span>
         )}
-        {!isRunning && hasError && (
+        {!isQueued && !isRunning && hasError && (
           <span className="text-[10px] font-semibold text-sell bg-sell/10 px-1.5 py-0.5 rounded">ERR</span>
+        )}
+        {!isQueued && !isRunning && !hasError && toolCount > 0 && (
+          <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">
+            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" />
+            </svg>
+            {toolCount}
+          </span>
         )}
       </div>
       <div className="flex items-center gap-1.5 text-xs flex-wrap">
@@ -90,7 +125,12 @@ function CallListItem({ call, selected, onClick }: { call: LLMCall; selected: bo
         )}
         <span className="text-muted/60 font-mono">{formatTime(call.created_at)}</span>
       </div>
-      {isRunning ? (
+      {isQueued ? (
+        <div className="flex items-center gap-1.5 text-[11px] text-accent2/70">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent2/60" />
+          <span>in queue</span>
+        </div>
+      ) : isRunning ? (
         <div className="flex items-center gap-1.5 text-[11px] text-warn/70">
           <span className="w-3 h-3 border border-warn border-t-transparent rounded-full animate-spin" />
           <span>waiting…</span>
@@ -167,16 +207,79 @@ function ChatBubble({
   )
 }
 
+// ── Tool calls ─────────────────────────────────────────────────────────────────
+// Renders the tool/function calls a model requested on a turn (agent flow). Such a
+// turn legitimately has empty assistant content — the model is invoking a tool, not
+// replying — so this block stands in for the "Assistant" bubble on those rows.
+
+interface ParsedToolCall { id: string; name: string; args: string }
+
+function parseToolCalls(raw: string | null | undefined): ParsedToolCall[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw) as { id?: string; function?: { name?: string; arguments?: string } }[]
+    if (!Array.isArray(arr)) return []
+    return arr.map((c, i) => ({
+      id: c.id ?? String(i),
+      name: c.function?.name ?? 'tool',
+      args: c.function?.arguments ?? '',
+    }))
+  } catch {
+    return []
+  }
+}
+
+function ToolCallCard({ call }: { call: ParsedToolCall }) {
+  const { formatted } = tryFormatJSON(call.args)
+  const hasArgs = call.args && call.args.trim() && call.args.trim() !== '{}'
+  return (
+    <div className="rounded-xl border border-accent2/30 bg-surface-elevated overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/50">
+        <svg className="w-3.5 h-3.5 text-accent2" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" />
+        </svg>
+        <span className="text-xs font-semibold text-accent2 font-mono">{call.name}</span>
+        <span className="ml-auto text-[10px] uppercase tracking-widest text-muted/60">tool call</span>
+      </div>
+      {hasArgs && (
+        <pre className="px-4 py-3 text-xs whitespace-pre-wrap break-words font-mono leading-relaxed text-foreground/90">
+          {formatted}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function ToolCallsBlock({ calls }: { calls: ParsedToolCall[] }) {
+  return (
+    <div className="space-y-2">
+      <span className="text-xs font-semibold uppercase tracking-widest text-accent2">
+        Tool calls · {calls.length}
+      </span>
+      {calls.map(c => <ToolCallCard key={c.id} call={c} />)}
+    </div>
+  )
+}
+
 // ── Running detail panel ──────────────────────────────────────────────────────
 
 function RunningCallDetail({ call }: { call: LLMCall }) {
-  const [elapsed, setElapsed] = useState(0)
-  const startRef = useRef(new Date(call.created_at.includes('T') ? call.created_at : call.created_at + 'Z').getTime())
+  const isQueued = call.status === 'queued'
+  // While queued, count from enqueue (queue wait). Once in flight, count from
+  // running_at so the live number reflects inference latency only — matching the
+  // final duration_ms — instead of including the time spent waiting in line.
+  const anchorMs = (!isQueued && call.running_at) ? parseTs(call.running_at) : parseTs(call.created_at)
+  const queueMs = (!isQueued && call.running_at)
+    ? Math.max(0, parseTs(call.running_at) - parseTs(call.created_at))
+    : 0
+  const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    const id = setInterval(() => setElapsed(Date.now() - startRef.current), 250)
+    const id = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(id)
   }, [])
+
+  const elapsed = Math.max(0, now - anchorMs)
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -188,10 +291,17 @@ function RunningCallDetail({ call }: { call: LLMCall }) {
               {call.coin.replace('/USDC', '')}
             </span>
           )}
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-warn bg-warn/10 px-2 py-0.5 rounded-lg">
-            <span className="w-1.5 h-1.5 rounded-full bg-warn animate-pulse" />
-            RUNNING
-          </span>
+          {isQueued ? (
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-accent2 bg-accent2/10 px-2 py-0.5 rounded-lg">
+              <ClockIcon className="w-3 h-3" />
+              QUEUED
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-warn bg-warn/10 px-2 py-0.5 rounded-lg">
+              <span className="w-1.5 h-1.5 rounded-full bg-warn animate-pulse" />
+              RUNNING
+            </span>
+          )}
           <span className="text-xs text-muted font-mono ml-auto">{formatTime(call.created_at)}</span>
         </div>
         <div className="flex items-center gap-4 text-xs text-muted">
@@ -202,15 +312,30 @@ function RunningCallDetail({ call }: { call: LLMCall }) {
               <span className="font-mono text-muted/70 truncate max-w-[260px]" title={call.base_url}>{call.base_url}</span>
             </>
           )}
+          {queueMs > 0 && (
+            <>
+              <span>·</span>
+              <span className="text-accent2">queued {formatDuration(queueMs)}</span>
+            </>
+          )}
           <span>·</span>
-          <span className="font-semibold text-warn">{formatDuration(elapsed)}</span>
+          <span className={cn('font-semibold', isQueued ? 'text-accent2' : 'text-warn')}>
+            {isQueued ? 'queued ' : ''}{formatDuration(elapsed)}
+          </span>
         </div>
       </div>
       <div className="flex-1 flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4 text-muted">
-          <div className="w-8 h-8 border-2 border-warn border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm">Waiting for LLM response…</p>
-        </div>
+        {isQueued ? (
+          <div className="flex flex-col items-center gap-4 text-muted">
+            <ClockIcon className="w-8 h-8 text-accent2" />
+            <p className="text-sm">Queued — waiting for an open slot on this endpoint…</p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-4 text-muted">
+            <div className="w-8 h-8 border-2 border-warn border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm">Waiting for LLM response…</p>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -244,6 +369,7 @@ function CallDetail({ callId }: { callId: number }) {
   }
 
   const totalTokens = (detail.prompt_tokens ?? 0) + (detail.completion_tokens ?? 0)
+  const toolCalls = parseToolCalls(detail.tool_calls)
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -272,8 +398,16 @@ function CallDetail({ callId }: { callId: number }) {
               </span>
             </>
           )}
+          {(detail.queue_ms ?? 0) > 0 && (
+            <>
+              <span>·</span>
+              <span className="text-accent2" title="Time spent waiting in the per-URL queue before this call ran">
+                queued {formatDuration(detail.queue_ms!)}
+              </span>
+            </>
+          )}
           <span>·</span>
-          <span className="font-semibold text-foreground">{formatDuration(detail.duration_ms)}</span>
+          <span className="font-semibold text-foreground" title="LLM inference latency (excludes queue wait)">{formatDuration(detail.duration_ms)}</span>
           {totalTokens > 0 && (
             <>
               <span>·</span>
@@ -327,20 +461,26 @@ function CallDetail({ callId }: { callId: number }) {
           />
         )}
 
-        {detail.error ? (
+        {detail.error && (
           <ChatBubble
             role="assistant"
             content={detail.error}
             label="Error"
             isError
           />
-        ) : detail.response ? (
+        )}
+
+        {toolCalls.length > 0 && <ToolCallsBlock calls={toolCalls} />}
+
+        {detail.response && (
           <ChatBubble
             role="assistant"
             content={detail.response}
             label={`Assistant · ${moduleMeta(detail.module).label}`}
           />
-        ) : (
+        )}
+
+        {!detail.error && !detail.response && toolCalls.length === 0 && (
           <div className="rounded-xl border border-border bg-surface-elevated px-4 py-3 text-sm text-muted">
             No response recorded.
           </div>
@@ -352,7 +492,7 @@ function CallDetail({ callId }: { callId: number }) {
 
 // ── Filter chips ─────────────────────────────────────────────────────────────
 
-const ALL_MODULES = ['extractor', 'analyst', 'discoverer', 'monitor'] as const
+const ALL_MODULES = ['extractor', 'analyst', 'discoverer', 'monitor', 'summary', 'agent'] as const
 
 function FilterChips({
   active,
@@ -438,7 +578,7 @@ export default function LLMDebug() {
           ? running.filter(c => c.module === module)
           : running
         const merged: LLMCall[] = [
-          ...filteredRunning.map(c => ({ ...c, id: --_runningCounter, status: 'running' as const, response: null, reasoning_content: null, error: null, prompt_tokens: null, completion_tokens: null, thinking_tokens: null, duration_ms: 0 })),
+          ...filteredRunning.map(c => ({ ...c, id: --_runningCounter, status: c.status === 'queued' ? ('queued' as const) : ('running' as const), response: null, reasoning_content: null, error: null, prompt_tokens: null, completion_tokens: null, thinking_tokens: null, duration_ms: 0 })),
           ...done,
         ]
         callsRef.current = merged
@@ -469,6 +609,7 @@ export default function LLMDebug() {
         coin: raw.coin,
         cycle_id: raw.cycle_id,
         created_at: raw.created_at,
+        running_at: raw.running_at ?? null,
         response: null,
         reasoning_content: null,
         error: null,
@@ -476,11 +617,26 @@ export default function LLMDebug() {
         completion_tokens: null,
         thinking_tokens: null,
         duration_ms: 0,
-        status: 'running',
+        queue_ms: null,
+        status: raw.status === 'queued' ? 'queued' : 'running',
       }
       callsRef.current = [runningCall, ...callsRef.current]
       setCalls(callsRef.current)
       setSelectedId(prev => prev === null ? tempNumId : prev)
+      return
+    }
+
+    if (event === 'llm_call_status') {
+      // A queued call reached the front of its per-URL line and is now in flight.
+      // running_at lets the live timer switch from queue-wait to inference-latency.
+      const { temp_id, status, running_at } = data as { temp_id?: string; status?: 'queued' | 'running'; running_at?: string }
+      if (!temp_id || !status) return
+      const idx = callsRef.current.findIndex(c => c.temp_id === temp_id)
+      if (idx === -1) return
+      const arr = [...callsRef.current]
+      arr[idx] = { ...arr[idx], status, running_at: running_at ?? arr[idx].running_at }
+      callsRef.current = arr
+      setCalls(arr)
       return
     }
 
@@ -576,7 +732,7 @@ export default function LLMDebug() {
           </div>
         ) : (() => {
           const selectedCall = calls.find(c => c.id === selectedId)
-          if (selectedCall?.status === 'running') {
+          if (selectedCall?.status === 'running' || selectedCall?.status === 'queued') {
             return <RunningCallDetail key={selectedId} call={selectedCall} />
           }
           return <CallDetail key={selectedId} callId={selectedId} />

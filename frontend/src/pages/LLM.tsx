@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, Fragment } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo, Fragment } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { PipelineEvent } from '../types'
 import { Badge, actionBadge } from '../components/ui/Badge'
@@ -480,6 +480,210 @@ function SimulateModal({ onClose, onSimulated }: SimulateModalProps) {
   )
 }
 
+/* ============================================================
+   Real-time pipeline stage tracker
+   ============================================================ */
+
+function tsOf(iso: string) {
+  return new Date(iso.includes('T') ? iso : iso + 'Z').getTime()
+}
+
+function fmtElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const s = ms / 1000
+  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`
+  const m = Math.floor(s / 60)
+  return `${m}m ${Math.round(s % 60)}s`
+}
+
+type PhaseStatus = 'pending' | 'active' | 'done' | 'error' | 'skipped'
+
+interface PhaseDef {
+  key: string
+  label: string
+  start: string
+  end: string[]
+  icon: (cls: string) => React.ReactNode
+}
+
+const PHASES: PhaseDef[] = [
+  { key: 'research', label: 'Research', start: 'research_started',   end: ['research_completed'],   icon: SearchIcon },
+  { key: 'extract',  label: 'Extract',  start: 'extraction_started', end: ['extraction_completed'], icon: DocIcon },
+  { key: 'select',   label: 'Select',   start: 'selection_started',  end: ['selection_completed'],  icon: FilterIcon },
+  { key: 'analyze',  label: 'Analyze',  start: 'analysis_started',   end: ['signal_generated'],     icon: SparkIcon },
+  { key: 'trade',    label: 'Trade',    start: 'signal_generated',   end: ['trade_executed', 'trade_skipped'], icon: BoltIcon },
+]
+
+interface PhaseState {
+  def: PhaseDef
+  status: PhaseStatus
+  startAt?: number
+  endAt?: number
+}
+
+function computePhases(cycle: Cycle): PhaseState[] {
+  const stageTime = new Map<string, number>()
+  for (const e of cycle.events) {
+    if (!stageTime.has(e.stage)) stageTime.set(e.stage, tsOf(e.created_at))
+  }
+  const tradeSkipped = stageTime.has('trade_skipped')
+
+  const phases: PhaseState[] = PHASES.map(def => {
+    const startAt = stageTime.get(def.start)
+    let endAt: number | undefined
+    for (const e of def.end) {
+      const t = stageTime.get(e)
+      if (t != null) { endAt = t; break }
+    }
+    let status: PhaseStatus
+    if (endAt != null) status = def.key === 'trade' && tradeSkipped ? 'skipped' : 'done'
+    else if (startAt != null) status = 'active'
+    else status = 'pending'
+    // A HOLD ends at signal_generated and never trades — don't spin the Trade node forever.
+    if (def.key === 'trade' && status === 'active' && cycle.finalAction === 'HOLD') status = 'skipped'
+    return { def, status, startAt, endAt }
+  })
+
+  // Surface terminal failures / cancellation on the first unfinished phase.
+  if (cycle.error || cycle.cancelled) {
+    const target = phases.find(p => p.status === 'active') ?? phases.find(p => p.status === 'pending')
+    if (target) target.status = 'error'
+  }
+
+  return phases
+}
+
+function StageNode({ phase, now }: { phase: PhaseState; now: number }) {
+  const { status, def } = phase
+  const dur =
+    phase.startAt != null && phase.endAt != null ? phase.endAt - phase.startAt :
+    status === 'active' && phase.startAt != null ? now - phase.startAt :
+    null
+
+  const ring =
+    status === 'done'    ? 'bg-buy/15 text-buy ring-buy/30' :
+    status === 'active'  ? 'bg-accent/15 text-accent ring-accent/40' :
+    status === 'error'   ? 'bg-sell/15 text-sell ring-sell/30' :
+    status === 'skipped' ? 'bg-surface-elevated text-muted ring-border' :
+                           'bg-surface-elevated text-muted/50 ring-border'
+
+  return (
+    <div className="flex flex-col items-center gap-1.5 min-w-0">
+      <div className="relative">
+        {status === 'active' && (
+          <span className="absolute -inset-1.5 rounded-2xl bg-accent/30 blur-md animate-glow-pulse" aria-hidden />
+        )}
+        <div className={cn(
+          'relative w-11 h-11 rounded-2xl ring-1 flex items-center justify-center transition-colors duration-300',
+          ring,
+        )}>
+          {status === 'done' ? <CheckIcon className="w-5 h-5" />
+            : status === 'error' ? <XIcon className="w-5 h-5" />
+            : status === 'skipped' ? <DashIcon className="w-5 h-5" />
+            : def.icon(cn('w-5 h-5', status === 'active' && 'animate-pulse'))}
+        </div>
+      </div>
+      <span className={cn(
+        'text-[11px] font-semibold tracking-tight transition-colors',
+        status === 'pending' ? 'text-muted/60' : status === 'active' ? 'text-accent' : 'text-foreground',
+      )}>
+        {def.label}
+      </span>
+      <span className="text-[10px] font-mono text-muted/70 h-3 leading-3 tabular-nums">
+        {dur != null ? fmtElapsed(dur) : ''}
+      </span>
+    </div>
+  )
+}
+
+function FlowConnector({ from, to }: { from: PhaseState; to: PhaseState }) {
+  const filled = from.status === 'done' || from.status === 'skipped'
+  const flowing = filled && to.status === 'active'
+  return (
+    <div className="flex-1 h-11 flex items-center min-w-[16px] -mx-1">
+      <div className="relative w-full h-1 rounded-full bg-border/60 overflow-hidden">
+        {flowing ? (
+          <div
+            className="absolute inset-0 rounded-full animate-flow-line"
+            style={{
+              backgroundImage: 'linear-gradient(90deg, rgb(var(--accent-rgb)/0.15) 0%, rgb(var(--accent-rgb)) 50%, rgb(var(--accent-rgb)/0.15) 100%)',
+              backgroundSize: '200% 100%',
+            }}
+          />
+        ) : (
+          <div className={cn(
+            'absolute inset-y-0 left-0 rounded-full transition-all duration-500',
+            filled ? 'w-full bg-gradient-to-r from-buy/70 to-accent/70' : 'w-0',
+          )} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StageTracker({ cycle, now }: { cycle: Cycle; now: number }) {
+  const phases = computePhases(cycle)
+  return (
+    <div className="flex items-start px-1 py-1">
+      {phases.map((p, i) => (
+        <Fragment key={p.def.key}>
+          <StageNode phase={p} now={now} />
+          {i < phases.length - 1 && <FlowConnector from={p} to={phases[i + 1]} />}
+        </Fragment>
+      ))}
+    </div>
+  )
+}
+
+/** Compact mini stage dots for the cycle list rail. */
+function MiniStages({ cycle }: { cycle: Cycle }) {
+  const phases = computePhases(cycle)
+  return (
+    <div className="flex items-center gap-1">
+      {phases.map(p => (
+        <span
+          key={p.def.key}
+          title={p.def.label}
+          className={cn(
+            'h-1.5 flex-1 rounded-full transition-colors duration-300',
+            p.status === 'done' ? 'bg-buy/70' :
+            p.status === 'active' ? 'bg-accent animate-pulse' :
+            p.status === 'error' ? 'bg-sell/70' :
+            p.status === 'skipped' ? 'bg-muted/40' :
+            'bg-border',
+          )}
+        />
+      ))}
+    </div>
+  )
+}
+
+/* ============================================================
+   Stats strip
+   ============================================================ */
+
+function MetricChip({ label, value, tone, dot }: {
+  label: string
+  value: React.ReactNode
+  tone?: 'accent' | 'buy' | 'sell' | 'warn' | 'muted'
+  dot?: boolean
+}) {
+  const toneCls =
+    tone === 'buy'  ? 'text-buy' :
+    tone === 'sell' ? 'text-sell' :
+    tone === 'warn' ? 'text-warn' :
+    tone === 'accent' ? 'text-accent' : 'text-foreground'
+  return (
+    <div className="flex flex-col gap-0.5 px-3.5 py-2 rounded-xl bg-surface-elevated/60 border border-border min-w-[84px]">
+      <span className="text-[10px] font-semibold text-muted uppercase tracking-wider flex items-center gap-1">
+        {dot && <span className={cn('w-1.5 h-1.5 rounded-full bg-current animate-pulse', toneCls)} />}
+        {label}
+      </span>
+      <span className={cn('text-lg font-bold tabular-nums leading-none tracking-tight', toneCls)}>{value}</span>
+    </div>
+  )
+}
+
 export default function LLM() {
   const [cycles, setCycles] = useState<Cycle[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -491,6 +695,7 @@ export default function LLM() {
   const [cancelling, setCancelling] = useState<Set<string>>(new Set())
   const [rerunning, setRerunning] = useState<Set<string>>(new Set())
   const [showSimulate, setShowSimulate] = useState(false)
+  const [now, setNow] = useState(Date.now())
   const bottomRef = useRef<HTMLDivElement>(null)
   const pendingCycleRef = useRef<string | null>(null)
 
@@ -624,6 +829,29 @@ export default function LLM() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [selectedId, cycles])
 
+  const liveCount = useMemo(
+    () => cycles.filter(c => !c.completed && !c.error && !c.cancelled).length,
+    [cycles],
+  )
+
+  // Tick the clock only while something is running, to drive live stage timers.
+  useEffect(() => {
+    if (liveCount === 0) return
+    const t = setInterval(() => setNow(Date.now()), 500)
+    return () => clearInterval(t)
+  }, [liveCount])
+
+  const stats = useMemo(() => {
+    let buy = 0, sell = 0, hold = 0, confSum = 0, confN = 0
+    for (const c of cycles) {
+      if (c.finalAction === 'BUY') buy++
+      else if (c.finalAction === 'SELL') sell++
+      else if (c.finalAction === 'HOLD') hold++
+      if (c.finalConfidence != null) { confSum += c.finalConfidence; confN++ }
+    }
+    return { buy, sell, hold, avgConf: confN > 0 ? Math.round((confSum / confN) * 100) : null }
+  }, [cycles])
+
   const selected = cycles.find(c => c.cycle_id === selectedId)
 
   function handleSimulated(cycleId: string) {
@@ -639,194 +867,310 @@ export default function LLM() {
         onSimulated={handleSimulated}
       />
     )}
-    <div className="flex gap-4 h-[calc(100vh-9rem)] animate-fade-in">
-      {/* Sidebar */}
-      <div className="w-52 shrink-0 bg-surface-card border border-border rounded-2xl flex flex-col overflow-hidden neon-border">
-        <div className="px-3 py-3 border-b border-border shrink-0 space-y-2">
-          <div className="flex items-center justify-between px-1">
-            <p className="text-xs font-semibold text-muted uppercase tracking-wider">Run Pipeline</p>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={handleRunAll}
-                disabled={runningAll}
-                title="Run full watchlist pipeline (same as cron)"
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium text-accent/80 hover:text-accent hover:bg-accent/10 transition-colors border border-accent/20 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {runningAll
-                  ? <span className="w-2.5 h-2.5 border border-accent border-t-transparent rounded-full animate-spin inline-block" />
-                  : <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
-                    </svg>
-                }
-                All
-              </button>
-              <button
-                onClick={() => setShowSimulate(true)}
-                title="Simulate a BUY / SELL signal"
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium text-muted hover:text-foreground hover:bg-surface-elevated transition-colors border border-border"
-              >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
-                </svg>
-                Sim
-              </button>
-            </div>
+    <div className="flex flex-col gap-4 h-[calc(100vh-7rem)] animate-fade-in">
+
+      {/* Toolbar: live stats + run controls */}
+      <div className="relative overflow-hidden bg-surface-card border border-border rounded-2xl neon-border shadow-soft px-4 py-3 shrink-0">
+        {liveCount > 0 && (
+          <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <MetricChip label="Cycles" value={cycles.length} tone="muted" />
+            <MetricChip label="Live" value={liveCount} tone={liveCount > 0 ? 'accent' : 'muted'} dot={liveCount > 0} />
+            <MetricChip label="Buy" value={stats.buy} tone="buy" />
+            <MetricChip label="Sell" value={stats.sell} tone="sell" />
+            <MetricChip label="Hold" value={stats.hold} tone="warn" />
+            <MetricChip label="Avg conf" value={stats.avgConf != null ? `${stats.avgConf}%` : '—'} tone="accent" />
           </div>
-          <div className="flex gap-1.5">
-            <input
-              type="text"
-              value={coinInput}
-              onChange={e => { setCoinInput(e.target.value.toUpperCase()); setRunError(null) }}
-              onKeyDown={e => e.key === 'Enter' && !running && handleRun()}
-              placeholder="BTC"
-              className="flex-1 min-w-0 px-2.5 py-1.5 text-sm bg-surface-elevated border border-border rounded-lg text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent/50"
-            />
-            <button
-              onClick={handleRun}
-              disabled={running || !coinInput.trim()}
-              className={cn(
-                'shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                running || !coinInput.trim()
-                  ? 'bg-surface-elevated text-muted cursor-not-allowed'
-                  : 'bg-accent text-white hover:bg-accent/80',
-              )}
-            >
-              {running
-                ? <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin inline-block" />
-                : 'Run'
-              }
-            </button>
-          </div>
-          {runError && <p className="text-[11px] text-sell px-1">{runError}</p>}
-        </div>
-        <div className="px-3 py-2 border-b border-border shrink-0">
-          <p className="text-xs font-semibold text-muted uppercase tracking-wider">Cycles</p>
-        </div>
-        <div className="flex-1 overflow-y-auto py-2 px-2 space-y-1">
-          {loading && (
-            <div className="flex items-center justify-center h-16">
-              <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            </div>
-          )}
-          {!loading && cycles.length === 0 && (
-            <p className="text-xs text-muted text-center px-3 py-4">No cycles yet. Wait for the bot to run.</p>
-          )}
-          {cycles.map(cycle => {
-            const isActive = selectedId === cycle.cycle_id
-            const inProgress = !cycle.completed && !cycle.error && !cycle.cancelled
-            return (
+
+          <div className="flex items-center gap-2 ml-auto">
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                value={coinInput}
+                onChange={e => { setCoinInput(e.target.value.toUpperCase()); setRunError(null) }}
+                onKeyDown={e => e.key === 'Enter' && !running && handleRun()}
+                placeholder="Run coin…"
+                className="w-28 px-3 py-1.5 text-sm bg-surface-elevated border border-border rounded-xl text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent/50 font-mono"
+              />
               <button
-                key={cycle.cycle_id}
-                onClick={() => setSelectedId(cycle.cycle_id)}
+                onClick={handleRun}
+                disabled={running || !coinInput.trim()}
                 className={cn(
-                  'w-full text-left px-3 py-2.5 rounded-xl transition-colors duration-100',
-                  isActive ? 'bg-accent/10 text-accent' : 'text-muted hover:text-foreground hover:bg-surface-elevated',
-                  inProgress && 'ring-1 ring-accent/20',
+                  'shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all active:scale-[0.98]',
+                  running || !coinInput.trim()
+                    ? 'bg-surface-elevated text-muted cursor-not-allowed'
+                    : 'bg-gradient-to-r from-accent to-accent2 text-surface-base hover:brightness-110 hover:shadow-glow',
                 )}
               >
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="text-sm font-medium">{cycle.coin.replace('/USDC', '')}</span>
-                  {cycle.finalAction && actionBadge(cycle.finalAction)}
-                  {cycle.error && <Badge variant="sell" className="text-[10px] px-1.5">ERR</Badge>}
-                  {cycle.cancelled && <Badge variant="neutral" className="text-[10px] px-1.5">STOP</Badge>}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-mono text-muted/70">{formatTime(cycle.startTime)}</span>
-                  {cycle.finalConfidence !== undefined && (
-                    <span className="text-xs text-muted/70">{Math.round(cycle.finalConfidence * 100)}%</span>
-                  )}
-                  {inProgress && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-buy animate-pulse ml-auto" />
-                  )}
-                </div>
+                {running
+                  ? <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                  : 'Run'
+                }
               </button>
-            )
-          })}
+            </div>
+            <span className="w-px h-6 bg-border" />
+            <button
+              onClick={handleRunAll}
+              disabled={runningAll}
+              title="Run full watchlist pipeline (same as cron)"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-accent bg-accent/10 border border-accent/20 hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {runningAll
+                ? <span className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin inline-block" />
+                : <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+                  </svg>
+              }
+              Run all
+            </button>
+            <button
+              onClick={() => setShowSimulate(true)}
+              title="Simulate a BUY / SELL signal"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-muted hover:text-foreground bg-surface-elevated border border-border hover:border-accent/20 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
+              </svg>
+              Simulate
+            </button>
+          </div>
         </div>
+        {runError && <p className="text-[11px] text-sell mt-2">{runError}</p>}
       </div>
 
-      {/* Detail panel */}
-      <div className="flex-1 bg-surface-card border border-border rounded-2xl overflow-y-auto p-5 neon-border">
-        {!selected ? (
-          <div className="flex items-center justify-center h-full text-sm text-muted">
-            {loading ? 'Loading…' : 'Select a pipeline cycle'}
+      {/* Main: cycle rail + detail */}
+      <div className="flex gap-4 flex-1 min-h-0">
+
+        {/* Cycle rail */}
+        <div className="w-60 shrink-0 bg-surface-card border border-border rounded-2xl flex flex-col overflow-hidden neon-border shadow-soft">
+          <div className="px-4 py-3 border-b border-border shrink-0 flex items-center justify-between">
+            <p className="text-xs font-semibold text-muted uppercase tracking-wider">Cycles</p>
+            <span className="text-[11px] text-muted/70 tabular-nums">{cycles.length}</span>
           </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex items-center gap-3 pb-4 border-b border-border">
-              <h2 className="text-lg font-semibold text-foreground">{selected.coin.replace('/USDC', '')}</h2>
-              {selected.finalAction && actionBadge(selected.finalAction)}
-              {selected.error && <Badge variant="sell">Error</Badge>}
-              {selected.cancelled && <Badge variant="neutral">Cancelled</Badge>}
-              {!selected.completed && <Badge variant="accent" dot>Processing</Badge>}
-              <span className="text-xs text-muted font-mono ml-auto">{formatTime(selected.startTime)}</span>
-              {!selected.completed && !selected.cancelled && (
-                <button
-                  onClick={() => handleCancel(selected.cycle_id)}
-                  disabled={cancelling.has(selected.cycle_id)}
-                  title="Cancel pipeline"
-                  className={cn(
-                    'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors',
-                    cancelling.has(selected.cycle_id)
-                      ? 'bg-surface-elevated text-muted cursor-not-allowed'
-                      : 'bg-sell/10 text-sell hover:bg-sell/20',
-                  )}
-                >
-                  {cancelling.has(selected.cycle_id) ? (
-                    <span className="w-3 h-3 border border-sell border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  )}
-                  Cancel
-                </button>
-              )}
-              {selected.completed && (
-                <button
-                  onClick={() => handleRerun(selected.cycle_id)}
-                  disabled={rerunning.has(selected.cycle_id)}
-                  title="Rerun pipeline for this coin"
-                  className={cn(
-                    'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors',
-                    rerunning.has(selected.cycle_id)
-                      ? 'bg-surface-elevated text-muted cursor-not-allowed'
-                      : 'bg-accent/10 text-accent hover:bg-accent/20',
-                  )}
-                >
-                  {rerunning.has(selected.cycle_id) ? (
-                    <span className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-                    </svg>
-                  )}
-                  Rerun
-                </button>
-              )}
-            </div>
-
-            <div className="space-y-3">
-              {[...selected.events]
-                .sort((a, b) =>
-                  new Date(a.created_at.includes('T') ? a.created_at : a.created_at + 'Z').getTime() -
-                  new Date(b.created_at.includes('T') ? b.created_at : b.created_at + 'Z').getTime()
-                )
-                .map(event => <StageMessage key={event.id} event={event} />)
-              }
-            </div>
-
-            {!selected.completed && (
-              <div className="flex items-center gap-2 text-sm text-accent">
-                <span className="w-2 h-2 bg-accent rounded-full animate-pulse" />
-                Waiting for next event…
+          <div className="flex-1 overflow-y-auto py-2 px-2 space-y-1">
+            {loading && (
+              <div className="flex items-center justify-center h-16">
+                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
               </div>
             )}
-            <div ref={bottomRef} />
+            {!loading && cycles.length === 0 && (
+              <p className="text-xs text-muted text-center px-3 py-6">No cycles yet. Run the pipeline or wait for the bot.</p>
+            )}
+            {cycles.map(cycle => {
+              const isActive = selectedId === cycle.cycle_id
+              const inProgress = !cycle.completed && !cycle.error && !cycle.cancelled
+              return (
+                <button
+                  key={cycle.cycle_id}
+                  onClick={() => setSelectedId(cycle.cycle_id)}
+                  className={cn(
+                    'w-full text-left px-3 py-2.5 rounded-xl border transition-all duration-100',
+                    isActive
+                      ? 'bg-accent/10 border-accent/30'
+                      : 'border-transparent hover:bg-surface-elevated hover:border-border',
+                  )}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className={cn('text-sm font-semibold', isActive ? 'text-accent' : 'text-foreground')}>
+                      {cycle.coin.replace('/USDC', '')}
+                    </span>
+                    {inProgress && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />}
+                    <div className="ml-auto flex items-center gap-1.5">
+                      {cycle.finalAction && actionBadge(cycle.finalAction)}
+                      {cycle.error && <Badge variant="sell" className="text-[10px] px-1.5">ERR</Badge>}
+                      {cycle.cancelled && <Badge variant="neutral" className="text-[10px] px-1.5">STOP</Badge>}
+                    </div>
+                  </div>
+                  <MiniStages cycle={cycle} />
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <span className="text-[11px] font-mono text-muted/70">{formatTime(cycle.startTime)}</span>
+                    {cycle.finalConfidence !== undefined && (
+                      <span className="text-[11px] text-muted/70 tabular-nums ml-auto">{Math.round(cycle.finalConfidence * 100)}%</span>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
           </div>
-        )}
+        </div>
+
+        {/* Detail panel */}
+        <div className="flex-1 bg-surface-card border border-border rounded-2xl flex flex-col overflow-hidden neon-border shadow-soft min-w-0">
+          {!selected ? (
+            <div className="flex items-center justify-center h-full text-sm text-muted">
+              {loading ? 'Loading…' : 'Select a pipeline cycle'}
+            </div>
+          ) : (
+            <Fragment>
+              {/* Header */}
+              <div className="flex items-center gap-3 px-5 py-4 border-b border-border shrink-0">
+                <CoinAvatar coin={selected.coin} />
+                <div className="min-w-0">
+                  <h2 className="text-lg font-semibold text-foreground leading-none">{selected.coin.replace('/USDC', '')}</h2>
+                  <span className="text-[11px] text-muted font-mono">{formatTime(selected.startTime)}</span>
+                </div>
+                <div className="flex items-center gap-2 ml-2">
+                  {selected.finalAction && actionBadge(selected.finalAction)}
+                  {selected.error && <Badge variant="sell">Error</Badge>}
+                  {selected.cancelled && <Badge variant="neutral">Cancelled</Badge>}
+                  {!selected.completed && !selected.error && !selected.cancelled && <Badge variant="accent" dot>Processing</Badge>}
+                </div>
+                <div className="ml-auto">
+                  {!selected.completed && !selected.cancelled && (
+                    <button
+                      onClick={() => handleCancel(selected.cycle_id)}
+                      disabled={cancelling.has(selected.cycle_id)}
+                      title="Cancel pipeline"
+                      className={cn(
+                        'flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-colors',
+                        cancelling.has(selected.cycle_id)
+                          ? 'bg-surface-elevated text-muted cursor-not-allowed'
+                          : 'bg-sell/10 text-sell hover:bg-sell/20',
+                      )}
+                    >
+                      {cancelling.has(selected.cycle_id) ? (
+                        <span className="w-3 h-3 border border-sell border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      )}
+                      Cancel
+                    </button>
+                  )}
+                  {selected.completed && (
+                    <button
+                      onClick={() => handleRerun(selected.cycle_id)}
+                      disabled={rerunning.has(selected.cycle_id)}
+                      title="Rerun pipeline for this coin"
+                      className={cn(
+                        'flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition-colors',
+                        rerunning.has(selected.cycle_id)
+                          ? 'bg-surface-elevated text-muted cursor-not-allowed'
+                          : 'bg-accent/10 text-accent hover:bg-accent/20',
+                      )}
+                    >
+                      {rerunning.has(selected.cycle_id) ? (
+                        <span className="w-3 h-3 border border-accent border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                        </svg>
+                      )}
+                      Rerun
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Live stage tracker */}
+              <div className="px-5 py-4 border-b border-border shrink-0 bg-surface-elevated/30">
+                <StageTracker cycle={selected} now={now} />
+              </div>
+
+              {/* Event stream */}
+              <div className="flex-1 overflow-y-auto p-5">
+                <div className="space-y-3">
+                  {[...selected.events]
+                    .sort((a, b) =>
+                      new Date(a.created_at.includes('T') ? a.created_at : a.created_at + 'Z').getTime() -
+                      new Date(b.created_at.includes('T') ? b.created_at : b.created_at + 'Z').getTime()
+                    )
+                    .map(event => <StageMessage key={event.id} event={event} />)
+                  }
+                </div>
+
+                {!selected.completed && !selected.error && !selected.cancelled && (
+                  <div className="flex items-center gap-2 text-sm text-accent mt-4">
+                    <span className="w-2 h-2 bg-accent rounded-full animate-pulse" />
+                    Waiting for next event…
+                  </div>
+                )}
+                <div ref={bottomRef} />
+              </div>
+            </Fragment>
+          )}
+        </div>
       </div>
     </div>
     </Fragment>
+  )
+}
+
+/* ============================================================
+   Icons
+   ============================================================ */
+
+function CoinAvatar({ coin }: { coin: string }) {
+  return (
+    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent/20 to-accent2/10 ring-1 ring-accent/15 flex items-center justify-center shrink-0">
+      <span className="text-xs font-bold text-accent">{coin.replace('/USDC', '').slice(0, 3)}</span>
+    </div>
+  )
+}
+
+function SearchIcon(cls: string) {
+  return (
+    <svg className={cls} fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+    </svg>
+  )
+}
+
+function DocIcon(cls: string) {
+  return (
+    <svg className={cls} fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+    </svg>
+  )
+}
+
+function FilterIcon(cls: string) {
+  return (
+    <svg className={cls} fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 01-.659 1.591l-5.432 5.432a2.25 2.25 0 00-.659 1.591v2.927a2.25 2.25 0 01-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 00-.659-1.591L3.659 7.409A2.25 2.25 0 013 5.818V4.774c0-.54.384-1.006.917-1.096A48.32 48.32 0 0112 3z" />
+    </svg>
+  )
+}
+
+function SparkIcon(cls: string) {
+  return (
+    <svg className={cls} fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
+    </svg>
+  )
+}
+
+function BoltIcon(cls: string) {
+  return (
+    <svg className={cls} fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+    </svg>
+  )
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+    </svg>
+  )
+}
+
+function XIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  )
+}
+
+function DashIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+    </svg>
   )
 }

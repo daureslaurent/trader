@@ -1,7 +1,8 @@
 import OpenAI from 'openai'
-import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
+import type { LLMTarget } from '../core/llm.js'
+import { resolveLLM } from '../config/llm.js'
 import { queryOne, runSQL } from '../db/index.js'
 import { ResearchResult, ArticleContent } from '../researcher/index.js'
 import { buildChallengePrompt, buildSingleArticlePrompt, buildSelectionPrompt } from './prompts.js'
@@ -12,13 +13,14 @@ export interface ExtractorLLMConfig {
   model: string
   maxTokens: number
   baseURL: string
+  /** Optional failover target, passed through to `llmChat`. */
+  fallback?: LLMTarget
 }
 
-const defaultExtractorConfig: ExtractorLLMConfig = {
-  client: new OpenAI({ baseURL: config.extractor.baseURL, apiKey: 'ollama' }),
-  model: config.extractor.model,
-  maxTokens: config.extractor.maxTokens,
-  baseURL: config.extractor.baseURL,
+// Resolved fresh per call so per-module Settings overrides apply without a restart.
+function getDefaultExtractorConfig(): ExtractorLLMConfig {
+  const { client, model, maxTokens, baseURL, fallback } = resolveLLM('extractor')
+  return { client, model, maxTokens, baseURL, fallback }
 }
 
 // ── Blocked-content detection ────────────────────────────────────────────────
@@ -140,7 +142,7 @@ async function challengeArticle(
       temperature: 0.0,
       max_tokens: llm.maxTokens,
       response_format: { type: 'json_object' },
-    }, { module: 'extractor-challenge', coin: baseCoin, base_url: llm.baseURL })
+    }, { module: 'extractor-challenge', coin: baseCoin, base_url: llm.baseURL }, llm.fallback)
 
     const raw = resp.choices[0]?.message?.content ?? ''
     const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
@@ -170,7 +172,7 @@ async function challengeArticle(
 async function extractSingleArticle(
   coin: string,
   article: ArticleContent,
-  llm: ExtractorLLMConfig = defaultExtractorConfig,
+  llm: ExtractorLLMConfig,
 ): Promise<ExtractedArticle | null> {
   const cached = getCached(article.url)
   if (cached) {
@@ -206,7 +208,7 @@ async function extractSingleArticle(
         temperature: 0.2,
         max_tokens: llm.maxTokens,
         response_format: { type: 'json_object' },
-      }, { module: 'extractor', coin, base_url: llm.baseURL })
+      }, { module: 'extractor', coin, base_url: llm.baseURL }, llm.fallback)
 
       const content = resp.choices[0]?.message?.content ?? ''
       if (resp.choices[0]?.finish_reason === 'length') {
@@ -250,8 +252,9 @@ export async function extractResearch(
     articleCount: result.articles.length,
   })
 
+  const cfg = llm ?? getDefaultExtractorConfig()
   const settled = await Promise.allSettled(
-    result.articles.map(a => extractSingleArticle(result.coin, a, llm))
+    result.articles.map(a => extractSingleArticle(result.coin, a, cfg))
   )
 
   const articles: ExtractedArticle[] = []
@@ -308,7 +311,7 @@ export async function selectArticles(
   if (articles.length <= 2) return articles
 
   const { system, user } = buildSelectionPrompt(coin, articles)
-  const cfg = llm ?? defaultExtractorConfig
+  const cfg = llm ?? getDefaultExtractorConfig()
 
   try {
     const resp = await llmChat(cfg.client, {
@@ -318,9 +321,14 @@ export async function selectArticles(
         { role: 'user', content: user },
       ],
       temperature: 0.1,
-      max_tokens: 256,
+      // Selection only needs a tiny JSON, but reasoning models spend tokens on a
+      // hidden reasoning_content trace first — a fixed 256 budget gets fully
+      // consumed by reasoning, leaving empty content (finish_reason: length). Use
+      // the module's configured budget (with a small floor) so the model has room
+      // to think *and* emit the JSON.
+      max_tokens: Math.max(cfg.maxTokens, 512),
       response_format: { type: 'json_object' },
-    }, { module: 'extractor', coin, base_url: cfg.baseURL })
+    }, { module: 'extractor', coin, base_url: cfg.baseURL }, cfg.fallback)
 
     const content = resp.choices[0]?.message?.content ?? ''
     const parsed = JSON.parse(content) as { selected_urls?: string[] }

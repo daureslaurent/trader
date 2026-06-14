@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run dev      # tsx watch — hot-reload dev server on port 3000
 npm start        # tsx — production start
-npm run lint     # tsc --noEmit — type-check only (no test runner)
+npm run lint     # tsc --noEmit — type-check only (there is NO test runner)
 npm run build    # tsc — compile to dist/
 ```
 
@@ -16,55 +16,90 @@ npm run build    # tsc — compile to dist/
 ```bash
 npm run dev      # Vite dev server on port 5173
 npm run build    # tsc + vite build
+npm run preview  # serve the production build
 ```
 
 **Docker** (from repo root):
 ```bash
-docker-compose up   # backend on :3000, frontend on :5173
+docker-compose up   # backend on :3000, frontend on :5173 (data/ is bind-mounted)
 ```
 
-**CLI flags** passed to the backend process:
-- `--approval` — require human approval for every trade signal
+There are no unit tests; `npm run lint` (type-check) is the only automated gate. Verify behavior by running the app.
+
+**CLI flag** on the backend process: `--approval` forces human approval for every trade signal (same effect as the `approval_required` setting).
 
 ## Architecture
 
-### Overview
-Monorepo: `backend/` (Node.js + TypeScript ESM) and `frontend/` (React + Vite + Tailwind). No shared packages — they communicate via HTTP/WebSocket.
+Monorepo with two independent Node packages: `backend/` (Node.js + TypeScript ESM) and `frontend/` (React + Vite + Tailwind). No shared package — they talk over HTTP + a WebSocket at `ws://localhost:3000/ws`. The backend is a single long-running process orchestrated by `backend/src/index.ts` (~1400 lines — the trade-execution brain).
 
-### Backend data flow
-Each trading cycle (interval configurable in settings):
-1. **Researcher** (`researcher/`) — headless Puppeteer/DuckDuckGo web search for each coin
-2. **Extractor** (`extractor/`) — second LLM call to compress raw articles into structured sentiment
-3. **Analyst** (`analyst/`) — main LLM call using `portfolio/prompts.ts` to produce BUY/SELL/HOLD signal
-4. **Trade execution** (`trader/`) — via ccxt Binance, or stub in dev mode
-5. **Portfolio snapshot** — records total value + holdings to `portfolio_snapshots`
+### The cron-driven engines
 
-Pipeline progress is streamed to the frontend via WebSocket events (`broadcast()` in `api/ws.ts`) and persisted in the `pipeline_events` table.
+`index.ts` schedules several independent loops, each with its own cron expression stored in settings:
 
-### LLM integration
-Both the extractor and analyst use the OpenAI SDK pointed at a local OpenAI-compatible endpoint (e.g. Ollama). Configured via `LLAMA_BASE_URL` / `LLAMA_MODEL`. The extractor and analyst can be split across different endpoints with `EXTRACTOR_BASE_URL` / `ANALYST_BASE_URL` overrides.
+1. **Pipeline** (`pipeline_cron`) — the entry engine. For each watched/held coin runs: **Researcher** (Puppeteer/DuckDuckGo web search) → **Extractor** (LLM compresses articles to structured sentiment) → article **selection** (LLM) → **Analyst** (LLM produces BUY/SELL/HOLD + confidence + SL/TP %). A BUY passes a gauntlet of gates (max positions, already-held, pending-intent, min-USDC, position size, **fee-edge** gate) before executing or being handed to the entry-timing engine. Coins already held are **skipped** — they belong to the monitor.
+2. **Discoverer** (`discover_cron`, `discoverer/`) — LLM-scored search for new candidate coins; approved discoveries feed the watchlist.
+3. **Monitor** (`monitor_cron`, `monitor/`) — reviews **open positions** and proposes SL/TP adjustments, CLOSE, or REDUCE. This is the only engine that manages held coins.
+4. **Summary** (`summary_cron`, `summary/`) — when `summary_auto_run`, an LLM portfolio strategist that bundles the whole portfolio + per-coin live Binance market context (price, 24h, RSI, trend, regime), recent trades, and recently closed positions into a narrative + structured briefing (health, risk level, observations, suggestions). Read-only: it never trades. Rows persist to `portfolio_summaries` (pruned by `summary_retain_days`), broadcast to the Summary page, and pushed to Telegram via `portfolio_summary_created`.
+5. **Position check** — a 30s `setInterval` (not cron) reconciling open positions against live prices and exchange OCO fills.
 
-### Database
-SQLite via sql.js (in-memory, loaded from and saved to `data/cryptobot.db`). Schema is in `db/schema.ts`. The DB is saved on graceful shutdown via `saveDB()`. Key tables: `trades`, `decisions`, `positions`, `portfolio_entries`, `portfolio_snapshots`, `pipeline_events`, `settings`.
+When the frontend saves settings, `settings_updated` reschedules the affected crons live.
 
-Settings (watchlist, interval, risk params) are stored in the `settings` key-value table and accessed via `getSettings()` / `updateSetting()`.
+### Trade execution is event-bus driven
 
-### Portfolio tracking
-`portfolio_entries` is the local position ledger — separate from Binance's own records. USDT balance is synced from Binance on each cycle via `syncUsdtEntry()` and tracked as a virtual entry with `buy_price = 1.0`.
+`core/events.ts` exports a typed `bus` (EventEmitter). The engines never execute trades directly — they emit events that `index.ts` handlers act on. Key flows:
+- `entry_fire` → deferred BUY fires at a good price (re-checks all gates first).
+- `trade_approved` / `trade_rejected` → resolves a pending human approval.
+- `position_adjustment_proposed` / `adjustment_approved` → applies monitor SL/TP changes.
+- `monitor_close_requested` / `monitor_reduce_requested` → monitor exits.
 
-Positions with stop-loss/take-profit are tracked in `positions`. The portfolio module (`portfolio/service.ts`) checks open positions against current prices and emits `stop_loss_hit` / `take_profit_hit` bus events, which are handled in `index.ts`.
+**`submitTrade()` is the single choke point** for all real exchange orders. It guards concurrent exits with an in-memory `exitsInFlight` set (only one path may market-sell a given position at once), cancels the exchange OCO before selling, and does all DB writes (trade record + position + portfolio entries) inside one `withTransaction()`. SL/TP percentages from the analyst are applied at the **real fill price**, falling back to ATR sizing only when absent.
 
-### Conventions (from AGENTS.md)
-- Every module exports its public API via `index.ts` — never import internals directly
-- Side effects go through the event bus (`core/events.ts`): `bus.emit('event_name', data)` / `bus.on('event_name', handler)`
-- Structured logging: `logger.info/warn/error('msg', { data })`
-- DB helpers: `queryAll(sql, params?)`, `queryOne(sql, params?)`, `runSQL(sql, params?)`
-- Shared types in `src/types.ts`; module-local types in `module/types.ts`
+### Entry-timing engine (`entry/`)
+
+When `entry_timing_enabled`, a BUY signal is not filled at the cron tick. It's registered as an **intent** that watches the live price feed and fires only on a pullback / in-band fill, or is cancelled by invalidate-drop / chase-cap / TTL. The entry band is based on the **live** price at registration (not the analyzed price, which is minutes-stale by the time the slow LLM pipeline finishes for that coin). Position size and the fee-edge gate stay on the analyzed (decision-time) price.
+
+### LLM integration (`core/llm.ts` + per-module config)
+
+All LLM calls use the OpenAI SDK pointed at local OpenAI-compatible endpoints (Ollama / llama.cpp). Endpoints are managed as a **shared catalog** (`llm_endpoints` setting): each entry is a named `{ baseURL, model, maxTokens, parallel }` defined once in the Settings → LLM Models "Manage endpoints" modal. Each module then **selects** an endpoint from that catalog by id (`llm_<module>_endpoint`). Max-tokens follows a precedence chain (`resolveMaxTokens` in `config/llm.ts`): a positive per-module override (`llm_<module>_max_tokens`) > the endpoint's own `maxTokens` default > the env default. The env-var config in `config/index.ts` (from `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*`/`MONITOR_*_B`, `SUMMARY_*`, `AGENT_*`, all falling back to `LLAMA_BASE_URL` / `LLAMA_MODEL`) is the **fallback when no endpoint is selected** — a blank selection (or a deleted/incomplete endpoint) resolves to the module's env default. The monitor exposes its two slots (A/B), selected at runtime via the `monitor_model` setting; the agent should point at a tool-calling-capable model.
+
+Each module can also select an optional **fallback** endpoint from the same catalog (`llm_<module>_fb_endpoint` + `_fb_max_tokens`). `resolveLLM()` in `config/llm.ts` looks the selected ids up in the catalog and returns an `LLMTarget` fallback alongside the primary; modules pass it straight to `llmChat(...)` as the 4th arg. `llmChat` tries the primary and, only if that call **throws** (endpoint down, timeout, 5xx, unknown model), retries the same prompt once against the fallback — a fallback identical to the primary is treated as "no fallback". Each attempt is logged as its own `llm_calls` row under its real base_url/model, so a failover shows as a failed primary row followed by a fallback row. The catalog/selections are Settings-only (no env seeding) and empty-but-non-throwing responses do **not** trigger failover (that stays the module's own parse/retry concern).
+
+`core/llm.ts` gates calls with **per-key counting semaphores** (`_gates` + `runLimited`/`resolveGate`). By default each base URL is capped at one in-flight call (gate limit 1), so a local one-at-a-time server is serialized while calls to *different* URLs run in parallel. A catalog endpoint flagged **`parallel`** lifts that cap; if it also sets **`maxParallel` > 0**, its calls run under a gate keyed by endpoint (base URL + model) at that limit (excess calls queue), otherwise parallelism is unlimited. The global `llm_allow_parallel_same_url` lifts the limit-1 default for every URL (per-endpoint `maxParallel` caps still apply). A freed permit is handed straight to the next FIFO waiter, so capacity holds without races. Every call is recorded to `llm_calls` and live ones are broadcast to the frontend's LLM activity view.
+
+### Database (`db/`)
+
+SQLite via **sql.js** (in-memory; loaded from and persisted to `data/cryptobot.db`). Saved on graceful shutdown and via `scheduleSave()`. Schema is managed by **versioned migrations** (`db/migrations.ts`) that execute the namespaced `.sql` files in `db/sql/{settings,trading,pipeline,cache}/` — a broken migration crashes startup (fail-fast) rather than leaving a half-migrated DB. Access only via the helpers: `queryAll`, `queryOne`, `runSQL`, `withTransaction`. Key tables: `trades`, `decisions`, `positions`, `position_adjustments`, `position_reviews`, `portfolio_entries`, `portfolio_snapshots`, `portfolio_summaries`, `pipeline_events`, `coin_discoveries`, `llm_calls`, `settings`.
+
+Settings live in the `settings` key-value table via `getSettings()` / `updateSetting()`. Env vars seed the corresponding DB setting on every startup, so `.env` stays authoritative for things like crons.
+
+### Portfolio & base currency
+
+**The quote/base currency is USDC, not USDT** (despite some function names like `getUsdtEntry` / `syncUsdtEntry`). Binance pairs are `<COIN>USDC`. `portfolio_entries` is the local position ledger (separate from Binance's records); the USDC balance is tracked as a virtual entry with `buy_price = 1.0` and synced from Binance each cycle. `detectExternalWithdrawal()` reconciles manual balance changes.
+
+### Other backend modules
+
+- `market/` — live price cache (WebSocket-backed `getPrice`/`subscribe`) **and** OHLCV/candle fetching for indicators.
+- `trader/` — ccxt Binance wrapper (`fetchMarketData`, `executeTrade`, `getTopPairs`). **No stub mode** — Binance keys are required.
+- `portfolio/` — position sizing, ATR-based SL/TP, OCO placement (`placeProtection`/`replaceProtection`/`cancelProtection`), fee-aware realized PnL (`netRealizedPnl`), the `hasSufficientEdge` fee-edge gate.
+- `scraper/` — Puppeteer-extra (stealth) browser + DuckDuckGo search engine used by the researcher.
+- `telegram/` — Telegraf bot for trade approvals and a menu UI; `notifier.ts` pushes events. Disabled if `TELEGRAM_BOT_TOKEN` is unset.
+- `agent/` — request-driven (not cron) conversational assistant behind the **Agent** page. A native **tool-calling loop** (`service.ts`) runs the `AGENT_*` model via `llmChat`; the model calls tools from `tools.ts` to read app data (portfolio, positions, trades, watchlist, live market/indicators, signals, discoveries, summary, reviews, settings) and to take **safe, non-trading actions** (add/remove watchlist coins; trigger the pipeline/discovery/summary/monitor engines via existing bus events). There are **no** trade/settings-mutation tools. Conversations + full transcripts (incl. assistant `tool_calls` and tool results) persist to `agent_conversations`/`agent_messages`; live turn progress streams to the frontend as `agent_step` WS events.
+- `api/` — Express routes (`routes.ts`) + WebSocket broadcast (`ws.ts`).
+
+### Conventions
+
+- **Every module exposes its public API via `index.ts`** — never import a module's internal files directly.
+- Cross-module side effects go through the event bus (`bus.emit` / `bus.on`), with the event map typed in `core/events.ts`. Add new events to that map.
+- Structured logging only: `logger.info/warn/error('msg', { data })`.
+- Shared types in `backend/src/types.ts`; module-local types in `module/types.ts`.
+- Frontend → backend live updates flow through `broadcast(event, payload)` in `api/ws.ts`, consumed by the `useWebSocket` hook.
 
 ### Frontend
-Single-page app with tab-based navigation managed by `useState` in `App.tsx` (no router library). Real-time updates via `useWebSocket` hook connecting to `ws://localhost:3000/ws`. Trade approval UI is in `components/TradeApproval.tsx` and `components/TradeHistory.tsx`.
+
+Single-page app, **no router library** — page switching is `useState<Page>` in `App.tsx` with a `Sidebar` (`components/layout/`). Pages live in `pages/` (Dashboard, Agent, Portfolio, Trade, Monitor, EntryDesk, Discover, Charts, LLM/LLMStats/LLMDebug, CacheView, TradingState, Settings, Logs). Theming via `contexts/ThemeContext` (4 themes); data via typed hooks in `hooks/` (`useApi`, `useWebSocket`, `usePrices`, `useLLMActivity`); charts via recharts (`CandleChart`).
 
 ## Environment variables
-Required: `LLAMA_BASE_URL`, `LLAMA_MODEL`  
-Optional (bypassed in `--stub` mode): `BINANCE_API_KEY`, `BINANCE_SECRET`  
-Optional: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `EXTRACTOR_BASE_URL`, `EXTRACTOR_MODEL`, `ANALYST_BASE_URL`, `ANALYST_MODEL`, `PORT`, `APPROVAL_TIMEOUT_MINUTES`
+
+Required: `BINANCE_API_KEY`, `BINANCE_SECRET`, `LLAMA_BASE_URL`, `LLAMA_MODEL`.
+Optional per-module LLM overrides (default to the `LLAMA_*` values): `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` / `MONITOR_*_B`, `SUMMARY_*`, `AGENT_*` (each `_BASE_URL`, `_MODEL`, `_MAX_TOKENS`).
+Optional other: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PORT` (3000), `APPROVAL_TIMEOUT_MINUTES` (5), `PIPELINE_CRON`.

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import { Signal, ApprovalRequest, TradeRecord, BotSettings, SlTpAdjustmentProposal, PositionRecord } from '../types.js'
+import { Signal, ApprovalRequest, TradeRecord, BotSettings, SlTpAdjustmentProposal, PositionRecord, PortfolioSummary } from '../types.js'
 
 interface EventMap {
   signal_generated: [Signal]
@@ -17,6 +17,8 @@ interface EventMap {
   trade_signal_simulated: [{ symbol: string; action: 'BUY' | 'SELL'; confidence: number; reason: string; cycle_id: string }]
   discovery_run_requested: [{ cycle_id: string }]
   monitor_run_requested: [{ cycle_id: string }]
+  summary_run_requested: [{ cycle_id: string }]
+  portfolio_summary_created: [PortfolioSummary]
   position_adjustment_proposed: [SlTpAdjustmentProposal]
   adjustment_approved: [number]
   adjustment_rejected: [number]

@@ -1,6 +1,6 @@
-import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
+import { resolveLLM } from '../config/llm.js'
 import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { getTopPairs, fetchMarketData } from '../trader/index.js'
@@ -10,20 +10,14 @@ import { broadcast } from '../api/ws.js'
 import { DiscoveryResult } from '../types.js'
 import { buildDiscoveryPrompt } from './prompts.js'
 import { LLMError } from '../core/errors.js'
-import { config } from '../config/index.js'
 import { isTradeable } from '../core/tradeable.js'
 import { researchCoin } from '../researcher/index.js'
 import { extractResearch, selectArticles, ExtractorLLMConfig } from '../extractor/index.js'
 
-function makeClient(baseURL: string): OpenAI {
-  return new OpenAI({ baseURL, apiKey: 'ollama' })
-}
-
-const discovererExtractorConfig: ExtractorLLMConfig = {
-  client: makeClient(config.discovererExtractor.baseURL),
-  model: config.discovererExtractor.model,
-  maxTokens: config.discovererExtractor.maxTokens,
-  baseURL: config.discovererExtractor.baseURL,
+// Resolved fresh per call so per-module Settings overrides apply without a restart.
+function getDiscovererExtractorConfig(): ExtractorLLMConfig {
+  const { client, model, maxTokens, baseURL, fallback } = resolveLLM('discovererExtractor')
+  return { client, model, maxTokens, baseURL, fallback }
 }
 
 let running = false
@@ -75,8 +69,9 @@ async function evaluateCandidate(
       symbol,
       articleCount: rawResearch.articles.length,
     })
-    const extractedResearch = await extractResearch(rawResearch, discovererExtractorConfig)
-    const selectedArticles = await selectArticles(symbol, extractedResearch.articles, discovererExtractorConfig)
+    const dExtractorConfig = getDiscovererExtractorConfig()
+    const extractedResearch = await extractResearch(rawResearch, dExtractorConfig)
+    const selectedArticles = await selectArticles(symbol, extractedResearch.articles, dExtractorConfig)
     logDiscoveryEvent('discovery_extracted', symbol, cycleId, {
       symbol,
       articleCount: selectedArticles.length,
@@ -91,18 +86,18 @@ async function evaluateCandidate(
 
     const { system, user } = buildDiscoveryPrompt(symbol, marketCtx, research)
 
-    const scorerClient = makeClient(config.discoverer.baseURL)
-    logger.info('Request LLM', { module: 'discoverer', coin: symbol, model: config.discoverer.model })
-    const resp = await llmChat(scorerClient, {
-      model: config.discoverer.model,
+    const scorer = resolveLLM('discoverer')
+    logger.info('Request LLM', { module: 'discoverer', coin: symbol, model: scorer.model })
+    const resp = await llmChat(scorer.client, {
+      model: scorer.model,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
       temperature: 0.2,
-      max_tokens: config.discoverer.maxTokens,
+      max_tokens: scorer.maxTokens,
       response_format: { type: 'json_object' },
-    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId, base_url: config.discoverer.baseURL })
+    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId, base_url: scorer.baseURL }, scorer.fallback)
 
     const content = resp.choices[0]?.message?.content ?? ''
     if (!content.trim()) throw new LLMError('Empty response')

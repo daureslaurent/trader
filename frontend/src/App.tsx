@@ -2,6 +2,8 @@ import { useState, useCallback, useRef } from 'react'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { Sidebar } from './components/layout/Sidebar'
 import { ThemeSelector } from './components/layout/ThemeSelector'
+import { LLMActivityBadge } from './components/layout/LLMActivityBadge'
+import { EndpointStatusBadge } from './components/layout/EndpointStatusBadge'
 import { Page, Toast, ApprovalRequest } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
@@ -9,6 +11,7 @@ import Dashboard from './pages/Dashboard'
 import TradingState from './pages/TradingState'
 import Portfolio from './pages/Portfolio'
 import Monitor from './pages/Monitor'
+import Summary from './pages/Summary'
 import Trade from './pages/Trade'
 import EntryDesk from './pages/EntryDesk'
 import Logs from './pages/Logs'
@@ -19,12 +22,14 @@ import LLMDebug from './pages/LLMDebug'
 import CacheView from './pages/CacheView'
 import Discover from './pages/Discover'
 import LLMStats from './pages/LLMStats'
+import Agent from './pages/Agent'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
   'trading-state': 'Trading State',
   portfolio: 'Portfolio',
   monitor: 'Position Monitor',
+  summary: 'Portfolio Summary',
   trade: 'Trade',
   entry: 'Entry Desk',
   pipeline: 'Pipeline',
@@ -35,6 +40,7 @@ const PAGE_TITLES: Record<Page, string> = {
   discover: 'Discover Coins',
   'llm-debug': 'LLM Debug',
   'llm-stats': 'LLM Stats',
+  agent: 'Agent',
 }
 
 let toastId = 0
@@ -162,7 +168,7 @@ function AppInner() {
       />
 
       {/* Main content area */}
-      <div className="flex-1 flex flex-col min-w-0 ml-[220px]">
+      <div className="flex-1 flex flex-col min-w-0 ml-[230px]">
         {/* Header */}
         <header className="flex items-center justify-between px-8 h-16 border-b border-border glass shrink-0 sticky top-0 z-20">
           <h1 className="text-[15px] font-semibold text-foreground tracking-tight">{PAGE_TITLES[page]}</h1>
@@ -174,16 +180,20 @@ function AppInner() {
               <span className={cn('w-1.5 h-1.5 rounded-full bg-current', wsConnected && 'animate-pulse')} />
               {wsConnected ? 'Live' : 'Offline'}
             </span>
+            <LLMActivityBadge />
+            <EndpointStatusBadge />
             <ThemeSelector />
           </div>
         </header>
 
         {/* Page */}
         <main className="flex-1 overflow-y-auto p-8">
+          {page === 'agent' && <Agent />}
           {page === 'dashboard' && <Dashboard onApprovalAction={clearPending} />}
           {page === 'trading-state' && <TradingState />}
           {page === 'portfolio' && <Portfolio />}
           {page === 'monitor' && <Monitor />}
+          {page === 'summary' && <Summary />}
           {page === 'trade' && <Trade />}
           {page === 'entry' && <EntryDesk />}
           {page === 'pipeline' && <LLM />}

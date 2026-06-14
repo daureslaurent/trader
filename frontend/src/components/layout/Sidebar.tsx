@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Page } from '../../types'
 import { cn } from '../../lib/utils'
 import { useTheme } from '../../contexts/ThemeContext'
@@ -21,6 +22,11 @@ const ITEMS: Record<Page, NavItem> = {
     label: 'Dashboard',
     path: 'M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z',
   },
+  agent: {
+    key: 'agent',
+    label: 'Agent',
+    path: 'M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 01-.825-.242m9.345-8.334a2.126 2.126 0 00-.476-.095 48.64 48.64 0 00-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0011.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155',
+  },
   'trading-state': {
     key: 'trading-state',
     label: 'Trading State',
@@ -35,6 +41,11 @@ const ITEMS: Record<Page, NavItem> = {
     key: 'monitor',
     label: 'Monitor',
     path: 'M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
+  },
+  summary: {
+    key: 'summary',
+    label: 'Summary',
+    path: 'M9 17v-6h13M9 11V5h13M3 5h.01M3 11h.01M3 17h.01',
   },
   trade: {
     key: 'trade',
@@ -88,17 +99,112 @@ const ITEMS: Record<Page, NavItem> = {
   },
 }
 
-const GROUPS: { label?: string; keys: Page[] }[] = [
-  { keys: ['dashboard', 'trading-state', 'portfolio', 'monitor', 'trade', 'entry'] },
-  { label: 'Engine', keys: ['pipeline', 'charts', 'discover'] },
-  { label: 'Intelligence', keys: ['llm-debug', 'llm-stats', 'cache'] },
-  { label: 'System', keys: ['logs', 'settings'] },
+// Section header icons (heroicons outline)
+const SECTION_ICONS = {
+  trading: 'M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941',
+  engine: 'M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25',
+  intelligence: 'M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z',
+  system: 'M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0H16.5',
+} as const
+
+// Pinned, always-visible primary item(s)
+const PINNED: Page[] = ['dashboard', 'agent']
+
+interface NavGroup {
+  id: string
+  label: string
+  icon: string
+  keys: Page[]
+}
+
+const GROUPS: NavGroup[] = [
+  { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'summary', 'entry', 'trade', 'trading-state'] },
+  { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['pipeline', 'charts', 'discover'] },
+  { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['llm-debug', 'llm-stats', 'cache'] },
+  { id: 'system', label: 'System', icon: SECTION_ICONS.system, keys: ['logs', 'settings'] },
 ]
+
+const STORAGE_KEY = 'cb-sidebar-collapsed'
+
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) return new Set(JSON.parse(raw) as string[])
+  } catch {
+    /* ignore */
+  }
+  return new Set()
+}
+
+function NavLink({
+  item,
+  isActive,
+  onNavigate,
+  badge,
+}: {
+  item: NavItem
+  isActive: boolean
+  onNavigate: (page: Page) => void
+  badge?: number
+}) {
+  return (
+    <button
+      onClick={() => onNavigate(item.key)}
+      className={cn(
+        'group relative w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-medium transition-all duration-150',
+        isActive
+          ? 'bg-gradient-to-r from-accent/15 to-transparent text-accent'
+          : 'text-muted hover:text-foreground hover:bg-surface-elevated',
+      )}
+    >
+      {isActive && (
+        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full bg-accent" />
+      )}
+      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={isActive ? 2 : 1.5} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d={item.path} />
+      </svg>
+      <span className="truncate">{item.label}</span>
+      {badge != null && badge > 0 && (
+        <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-warn/15 text-warn text-xs font-semibold flex items-center justify-center">
+          {badge}
+        </span>
+      )}
+    </button>
+  )
+}
 
 export function Sidebar({ active, onNavigate, wsConnected, pendingCount }: SidebarProps) {
   const { theme } = useTheme()
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed)
+
+  // Persist collapsed state
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...collapsed]))
+  }, [collapsed])
+
+  // Auto-expand the group that contains the active page (e.g. when navigated externally)
+  useEffect(() => {
+    const owner = GROUPS.find(g => g.keys.includes(active))
+    if (owner && collapsed.has(owner.id)) {
+      setCollapsed(prev => {
+        const next = new Set(prev)
+        next.delete(owner.id)
+        return next
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active])
+
+  function toggle(id: string) {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 w-[220px] flex flex-col bg-surface-card border-r border-border">
+    <aside className="fixed inset-y-0 left-0 z-30 w-[230px] flex flex-col bg-surface-card border-r border-border">
       {/* Brand */}
       <div className="flex items-center gap-3 px-5 h-16 border-b border-border shrink-0">
         <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-gradient-to-br from-accent to-accent2 shadow-glow">
@@ -114,46 +220,74 @@ export function Sidebar({ active, onNavigate, wsConnected, pendingCount }: Sideb
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto py-4 px-3">
-        {GROUPS.map((group, gi) => (
-          <div key={gi} className={cn(gi > 0 && 'mt-5')}>
-            {group.label && (
-              <p className="px-3 mb-1.5 text-[10px] font-semibold text-muted/70 uppercase tracking-[0.14em]">
-                {group.label}
-              </p>
-            )}
-            <div className="space-y-0.5">
-              {group.keys.map(key => {
-                const item = ITEMS[key]
-                const isActive = active === key
-                return (
-                  <button
-                    key={key}
-                    onClick={() => onNavigate(key)}
-                    className={cn(
-                      'relative w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-medium transition-all duration-150',
-                      isActive
-                        ? 'bg-gradient-to-r from-accent/15 to-transparent text-accent'
-                        : 'text-muted hover:text-foreground hover:bg-surface-elevated',
-                    )}
-                  >
-                    {isActive && (
-                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full bg-accent" />
-                    )}
-                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={isActive ? 2 : 1.5} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d={item.path} />
-                    </svg>
-                    <span>{item.label}</span>
-                    {key === 'dashboard' && pendingCount > 0 && (
-                      <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-warn/15 text-warn text-xs font-semibold flex items-center justify-center">
-                        {pendingCount}
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
+        {/* Pinned primary items */}
+        <div className="space-y-0.5">
+          {PINNED.map(key => (
+            <NavLink
+              key={key}
+              item={ITEMS[key]}
+              isActive={active === key}
+              onNavigate={onNavigate}
+              badge={key === 'dashboard' ? pendingCount : undefined}
+            />
+          ))}
+        </div>
+
+        {/* Collapsible groups */}
+        {GROUPS.map(group => {
+          const isOpen = !collapsed.has(group.id)
+          const containsActive = group.keys.includes(active)
+          return (
+            <div key={group.id} className="mt-5">
+              <button
+                onClick={() => toggle(group.id)}
+                className="group w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-muted/70 hover:text-foreground hover:bg-surface-elevated/60 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5 shrink-0 opacity-70" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d={group.icon} />
+                </svg>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">{group.label}</span>
+                {/* active-in-collapsed indicator */}
+                {!isOpen && containsActive && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+                )}
+                <svg
+                  className={cn(
+                    'ml-auto w-3.5 h-3.5 shrink-0 transition-transform duration-200',
+                    isOpen ? 'rotate-0' : '-rotate-90',
+                  )}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+
+              {/* Smooth collapse via grid-rows trick */}
+              <div
+                className={cn(
+                  'grid transition-[grid-template-rows] duration-200 ease-out',
+                  isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+                )}
+              >
+                <div className="overflow-hidden">
+                  <div className="space-y-0.5 pt-1 pl-2">
+                    {group.keys.map(key => (
+                      <NavLink
+                        key={key}
+                        item={ITEMS[key]}
+                        isActive={active === key}
+                        onNavigate={onNavigate}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </nav>
 
       {/* Connection status */}

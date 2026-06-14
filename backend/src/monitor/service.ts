@@ -1,7 +1,8 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
-import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
+import type { LLMTarget } from '../core/llm.js'
+import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { validateSlTpAdjustment, minStopGapPct } from '../portfolio/risk.js'
 import * as priceCache from '../market/index.js'
@@ -11,11 +12,53 @@ import { bus } from '../core/events.js'
 import { PositionReview } from '../types.js'
 import { buildMonitorPrompt, fmtOffsetLabel, PositionContext, HorizonConfigs, MonitorNotes } from './prompts.js'
 import { LLMError } from '../core/errors.js'
-import { config } from '../config/index.js'
-
-const client = new OpenAI({ baseURL: config.monitor.baseURL, apiKey: 'ollama' })
+import { resolveLLM } from '../config/llm.js'
 
 let running = false
+
+interface MonitorSlot { slot: 'a' | 'b'; model: string; baseURL: string; maxTokens: number; fallback?: LLMTarget }
+
+// Resolves a monitor slot through the shared Settings-aware LLM resolver, so the
+// model / endpoint / max-tokens overrides from the Settings page take effect.
+function resolveSlot(slot: 'a' | 'b'): MonitorSlot {
+  const { model, baseURL, maxTokens, fallback } = resolveLLM(slot === 'b' ? 'monitorB' : 'monitorA')
+  return { slot, model, baseURL, maxTokens, fallback }
+}
+
+// In 'alternate' mode the slot flips each cycle. `monitor_alternate_last` records
+// the slot used by the previous cycle; the next slot is its opposite (default 'a').
+function alternateNextSlot(): 'a' | 'b' {
+  const last = queryOne("SELECT value FROM settings WHERE key = 'monitor_alternate_last'") as { value: string } | null
+  return last?.value === 'a' ? 'b' : 'a'
+}
+
+// Resolves the monitor LLM slot the user selected in settings into its concrete
+// model + endpoint. Exported so the API can surface the active model. This is a
+// pure peek — in 'alternate' mode it returns the slot the NEXT cycle will use
+// without advancing the rotation (use advanceMonitorModel for that).
+export function getActiveMonitorModel(): MonitorSlot {
+  const mode = getSettings().monitor_model
+  const slot = mode === 'alternate' ? alternateNextSlot() : (mode === 'b' ? 'b' : 'a')
+  return resolveSlot(slot)
+}
+
+// Picks the slot for a cycle about to run, advancing the alternate rotation as a
+// side effect so the next cycle gets the other model. Non-alternate modes are fixed.
+export function advanceMonitorModel(): MonitorSlot {
+  const mode = getSettings().monitor_model
+  if (mode !== 'alternate') return resolveSlot(mode === 'b' ? 'b' : 'a')
+  const slot = alternateNextSlot()
+  updateSetting('monitor_alternate_last', slot)
+  return resolveSlot(slot)
+}
+
+interface MonitorLLM {
+  client: OpenAI
+  model: string
+  baseURL: string
+  maxTokens: number
+  fallback?: LLMTarget
+}
 
 interface RawReview {
   action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
@@ -89,6 +132,7 @@ function pruneMonitorHistory(maxCycles = 20): void {
 async function monitorCoin(
   ctx: PositionContext,
   cycleId: string,
+  llm: MonitorLLM,
   adjustEnabled: boolean,
   trustLlm: boolean,
   useHorizon: boolean,
@@ -124,7 +168,7 @@ async function monitorCoin(
 
   const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf, reviewIntervalMin, storedNotes, breakevenPct)
 
-  logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, model: config.monitor.model })
+  logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, model: llm.model })
 
   let raw: RawReview | null = null
 
@@ -132,16 +176,16 @@ async function monitorCoin(
   for (let attempt = 0; attempt <= 1; attempt++) {
     let resp: Awaited<ReturnType<typeof llmChat>>
     try {
-      resp = await llmChat(client, {
-        model: config.monitor.model,
+      resp = await llmChat(llm.client, {
+        model: llm.model,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
         temperature: 0.2,
-        max_tokens: config.monitor.maxTokens,
+        max_tokens: llm.maxTokens,
         response_format: { type: 'json_object' },
-      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: config.monitor.baseURL })
+      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: llm.baseURL }, llm.fallback)
     } catch (apiErr) {
       if (attempt === 0) {
         logger.warn('Monitor LLM API error, retrying', { coin: ctx.coin, error: (apiErr as Error).message })
@@ -346,8 +390,8 @@ async function monitorCoin(
   }
 
   const { lastInsertRowid } = runSQL(
-    'INSERT INTO position_reviews (coin, action, confidence, reasoning, reduce_to_pct, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, market_data, cycle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [ctx.coin, raw.action, confidence, raw.reasoning, reduceToPct, ctx.stopLoss ?? null, ctx.takeProfit ?? null, newStopLoss, newTakeProfit, marketData, cycleId],
+    'INSERT INTO position_reviews (coin, action, confidence, reasoning, reduce_to_pct, old_stop_loss, old_take_profit, new_stop_loss, new_take_profit, market_data, model, cycle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [ctx.coin, raw.action, confidence, raw.reasoning, reduceToPct, ctx.stopLoss ?? null, ctx.takeProfit ?? null, newStopLoss, newTakeProfit, marketData, llm.model, cycleId],
   )
 
   const review: PositionReview = {
@@ -362,6 +406,7 @@ async function monitorCoin(
     new_stop_loss: newStopLoss,
     new_take_profit: newTakeProfit,
     market_data: marketData,
+    model: llm.model,
     cycle_id: cycleId,
     created_at: now,
   }
@@ -405,6 +450,7 @@ async function monitorCoin(
       newTakeProfit: proposalToEmit.newTp,
       reasoning: raw.reasoning,
       confidence,
+      model: llm.model,
       cycleId,
     })
   }
@@ -455,6 +501,15 @@ export async function runMonitor(cycleId: string): Promise<void> {
     const allPrices = priceCache.getAll()
 
     const s = getSettings()
+    const active = advanceMonitorModel()
+    const llm: MonitorLLM = {
+      client: new OpenAI({ baseURL: active.baseURL, apiKey: 'ollama' }),
+      model: active.model,
+      baseURL: active.baseURL,
+      maxTokens: active.maxTokens,
+      fallback: active.fallback,
+    }
+    logger.info('Monitor using model', { cycleId, slot: active.slot, mode: s.monitor_model, model: active.model, baseURL: active.baseURL })
     const adjustEnabled = s.monitor_adjust_sltp
     const trustLlm = s.monitor_trust_llm_sltp
     const useHorizon = s.monitor_use_horizon
@@ -552,7 +607,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
       // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
       try {
         const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
-        const review = await monitorCoin(ctx, cycleId, adjustEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
+        const review = await monitorCoin(ctx, cycleId, llm, adjustEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
         if (review) reviews.push(review)
       } catch (err) {
         logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })

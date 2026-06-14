@@ -1,5 +1,29 @@
 import { queryAll, runSQL } from './helpers.js'
-import { BotSettings } from '../types.js'
+import { BotSettings, LLMEndpoint } from '../types.js'
+
+// Parse the persisted endpoint catalog, defensively skipping malformed entries so
+// a corrupt row can never crash settings reads (which run on every LLM call).
+function parseEndpoints(raw: string | undefined): LLMEndpoint[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter((e): e is Record<string, unknown> => !!e && typeof e === 'object')
+      .map(e => ({
+        id: String(e.id ?? ''),
+        name: String(e.name ?? ''),
+        baseURL: String(e.baseURL ?? ''),
+        model: String(e.model ?? ''),
+        maxTokens: Number.isFinite(Number(e.maxTokens)) ? Math.max(0, Math.floor(Number(e.maxTokens))) : 0,
+        parallel: e.parallel === true,
+        maxParallel: Number.isFinite(Number(e.maxParallel)) ? Math.max(0, Math.floor(Number(e.maxParallel))) : 0,
+      }))
+      .filter(e => e.id)
+  } catch {
+    return []
+  }
+}
 
 export function getSettings(): BotSettings {
   const rows = queryAll('SELECT key, value FROM settings')
@@ -8,7 +32,7 @@ export function getSettings(): BotSettings {
   return {
     watchlist: JSON.parse(map.watchlist || '[]'),
     pipeline_cron: map.pipeline_cron || '0 * * * *',
-    default_horizon: (['auto', 'short', 'medium', 'long'].includes(map.default_horizon) ? map.default_horizon : 'auto') as 'auto' | 'short' | 'medium' | 'long',
+    default_horizon: (['auto', 'llm', 'short', 'medium', 'long'].includes(map.default_horizon) ? map.default_horizon : 'llm') as 'auto' | 'llm' | 'short' | 'medium' | 'long',
     min_confidence: parseFloat(map.min_confidence || '0.3'),
     max_position_size_usd: parseFloat(map.max_position_size_usd || '100'),
     approval_required: map.approval_required === 'true',
@@ -23,6 +47,7 @@ export function getSettings(): BotSettings {
     discover_auto_add: map.discover_auto_add === 'true',
     discover_min_volume_usd: parseFloat(map.discover_min_volume_usd || '5000000'),
     monitor_auto_run: map.monitor_auto_run === 'true',
+    monitor_model: (['a', 'b', 'alternate'].includes(map.monitor_model) ? map.monitor_model : 'a') as 'a' | 'b' | 'alternate',
     monitor_cron: map.monitor_cron || '0 */4 * * *',
     monitor_adjust_sltp: (map.monitor_adjust_sltp ?? 'true') === 'true',
     monitor_auto_approve: map.monitor_auto_approve === 'true',
@@ -45,6 +70,7 @@ export function getSettings(): BotSettings {
     utc_offset_hours: parseFloat(map.utc_offset_hours || '0'),
     llm_debug_fetch_limit: parseInt(map.llm_debug_fetch_limit || '200', 10),
     llm_retain_days: parseInt(map.llm_retain_days || '0', 10),
+    llm_allow_parallel_same_url: map.llm_allow_parallel_same_url === 'true',
     entry_timing_enabled: (map.entry_timing_enabled ?? 'true') === 'true',
     entry_pullback_pct: parseFloat(map.entry_pullback_pct || '0.5'),
     entry_invalidate_pct: parseFloat(map.entry_invalidate_pct || '3'),
@@ -52,6 +78,43 @@ export function getSettings(): BotSettings {
     entry_ttl_minutes: parseFloat(map.entry_ttl_minutes || '20'),
     entry_on_expiry: (map.entry_on_expiry === 'cancel' ? 'cancel' : 'market'),
     entry_poll_seconds: parseFloat(map.entry_poll_seconds || '3'),
+    llm_endpoints: parseEndpoints(map.llm_endpoints),
+    llm_analyst_endpoint: map.llm_analyst_endpoint || '',
+    llm_analyst_max_tokens: parseInt(map.llm_analyst_max_tokens || '0', 10),
+    llm_extractor_endpoint: map.llm_extractor_endpoint || '',
+    llm_extractor_max_tokens: parseInt(map.llm_extractor_max_tokens || '0', 10),
+    llm_discoverer_endpoint: map.llm_discoverer_endpoint || '',
+    llm_discoverer_max_tokens: parseInt(map.llm_discoverer_max_tokens || '0', 10),
+    llm_discoverer_extractor_endpoint: map.llm_discoverer_extractor_endpoint || '',
+    llm_discoverer_extractor_max_tokens: parseInt(map.llm_discoverer_extractor_max_tokens || '0', 10),
+    llm_monitor_a_endpoint: map.llm_monitor_a_endpoint || '',
+    llm_monitor_a_max_tokens: parseInt(map.llm_monitor_a_max_tokens || '0', 10),
+    llm_monitor_b_endpoint: map.llm_monitor_b_endpoint || '',
+    llm_monitor_b_max_tokens: parseInt(map.llm_monitor_b_max_tokens || '0', 10),
+    llm_summary_endpoint: map.llm_summary_endpoint || '',
+    llm_summary_max_tokens: parseInt(map.llm_summary_max_tokens || '0', 10),
+    llm_agent_endpoint: map.llm_agent_endpoint || '',
+    llm_agent_max_tokens: parseInt(map.llm_agent_max_tokens || '0', 10),
+    llm_analyst_fb_endpoint: map.llm_analyst_fb_endpoint || '',
+    llm_analyst_fb_max_tokens: parseInt(map.llm_analyst_fb_max_tokens || '0', 10),
+    llm_extractor_fb_endpoint: map.llm_extractor_fb_endpoint || '',
+    llm_extractor_fb_max_tokens: parseInt(map.llm_extractor_fb_max_tokens || '0', 10),
+    llm_discoverer_fb_endpoint: map.llm_discoverer_fb_endpoint || '',
+    llm_discoverer_fb_max_tokens: parseInt(map.llm_discoverer_fb_max_tokens || '0', 10),
+    llm_discoverer_extractor_fb_endpoint: map.llm_discoverer_extractor_fb_endpoint || '',
+    llm_discoverer_extractor_fb_max_tokens: parseInt(map.llm_discoverer_extractor_fb_max_tokens || '0', 10),
+    llm_monitor_a_fb_endpoint: map.llm_monitor_a_fb_endpoint || '',
+    llm_monitor_a_fb_max_tokens: parseInt(map.llm_monitor_a_fb_max_tokens || '0', 10),
+    llm_monitor_b_fb_endpoint: map.llm_monitor_b_fb_endpoint || '',
+    llm_monitor_b_fb_max_tokens: parseInt(map.llm_monitor_b_fb_max_tokens || '0', 10),
+    llm_summary_fb_endpoint: map.llm_summary_fb_endpoint || '',
+    llm_summary_fb_max_tokens: parseInt(map.llm_summary_fb_max_tokens || '0', 10),
+    llm_agent_fb_endpoint: map.llm_agent_fb_endpoint || '',
+    llm_agent_fb_max_tokens: parseInt(map.llm_agent_fb_max_tokens || '0', 10),
+    agent_title_context_messages: parseInt(map.agent_title_context_messages || '6', 10),
+    summary_auto_run: map.summary_auto_run === 'true',
+    summary_cron: map.summary_cron || '0 */6 * * *',
+    summary_retain_days: parseInt(map.summary_retain_days || '30', 10),
   }
 }
 

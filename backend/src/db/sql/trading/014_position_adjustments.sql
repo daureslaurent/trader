@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS position_adjustments (
   reasoning       TEXT,
   confidence      REAL,
   status          TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPLIED','REJECTED','EXPIRED')),
+  model           TEXT,
   cycle_id        TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS position_reviews (
   new_stop_loss   REAL,
   new_take_profit REAL,
   market_data     TEXT NOT NULL DEFAULT '{}',
+  model           TEXT,
   cycle_id        TEXT NOT NULL,
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

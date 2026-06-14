@@ -23,6 +23,7 @@ export function buildAnalysisPrompt(
   research: ExtractedResearch,
   coinCtx: CoinPortfolioContext,
   orderBook: OrderBookAnalysis | null = null,
+  chooseHorizon = false,
 ): { system: string; user: string } {
   const now = new Date().toISOString().split('T')[0]
 
@@ -83,9 +84,18 @@ CONFIDENCE — calibrate honestly; defaulting everything to MEDIUM makes the fie
 - LOW: weak or conflicting — prefer HOLD.
 Consistency rules: if regime and technicals disagree, confidence cannot be HIGH. If two or
 more of {regime, technicals, news} argue against the trade, it must be LOW.
-
+${chooseHorizon ? `
+HORIZON — on a BUY, classify the trade thesis by how long you expect it to play out. This sets
+how the position is sized and managed, so match it to the catalyst, not to your confidence:
+- "short" (days–weeks): momentum/event-driven — a listing, a pump, a near-term catalyst whose
+  effect fades fast. Tight stops, quick profit-taking. Use when the edge is a fleeting move.
+- "medium" (weeks–months): a swing within an established trend — a pullback entry in an uptrend,
+  a developing narrative. The default for most ordinary trend-following entries.
+- "long" (months+): a structural conviction thesis — durable adoption, a fundamental re-rating —
+  where short-term noise should not shake you out. Reserve for genuine long-horizon catalysts.
+` : ''}
 OUTPUT — JSON only, no markdown, no extra keys:
-{"action":"BUY|SELL|HOLD","confidence":"HIGH|MEDIUM|LOW","reason":"<1-2 sentences: regime → technicals → news → position fit → decision>"}`
+{"action":"BUY|SELL|HOLD","confidence":"HIGH|MEDIUM|LOW",${chooseHorizon ? '"horizon":"short|medium|long",' : ''}"reason":"<1-2 sentences: regime → technicals → news → position fit → decision>"}${chooseHorizon ? '\n("horizon" is required on BUY; omit or ignore it for SELL/HOLD.)' : ''}`
 
   // ── User prompt — compact fact sheet ────────────────────────────────────────
 

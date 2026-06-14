@@ -77,6 +77,20 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     try { db.run('ALTER TABLE llm_calls ADD COLUMN reasoning_content TEXT') } catch { /* already exists in fresh schema */ }
   })
 
+  migrate(cache, 'cache', 5, (db) => {
+    // queue_ms: time a call waited in the per-URL serialization line before going
+    // in flight. Kept separate from duration_ms (pure inference latency).
+    try { db.run('ALTER TABLE llm_calls ADD COLUMN queue_ms INTEGER NOT NULL DEFAULT 0') } catch { /* already exists in fresh schema */ }
+  })
+
+  migrate(cache, 'cache', 6, (db) => {
+    // tool_calls: JSON-encoded OpenAI tool_calls array for turns where the model
+    // requested a tool/function call. Such turns have empty `content` legitimately
+    // (the model is calling a tool, not replying) — recorded so the Agent/LLM Debug
+    // views can show what was called instead of flagging it as an empty-response error.
+    try { db.run('ALTER TABLE llm_calls ADD COLUMN tool_calls TEXT') } catch { /* already exists in fresh schema */ }
+  })
+
   // ── Trading DB ────────────────────────────────────────────────────────────
 
   migrate(trading, 'trading', 1, (db) => {
@@ -191,9 +205,22 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     }
   })
 
+  migrate(trading, 'trading', 8, (db) => {
+    // Record which monitor LLM produced each review / adjustment.
+    try { db.run('ALTER TABLE position_reviews ADD COLUMN model TEXT') } catch { /* already exists */ }
+    try { db.run('ALTER TABLE position_adjustments ADD COLUMN model TEXT') } catch { /* already exists */ }
+  })
+
+  migrate(trading, 'trading', 9, (db) => {
+    // Agent token accounting: cumulative tokens + the most recent turn's peak
+    // single-request tokens (the context-window usage to watch against the model limit).
+    try { db.run('ALTER TABLE agent_conversations ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists in fresh schema */ }
+    try { db.run('ALTER TABLE agent_conversations ADD COLUMN last_context_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists in fresh schema */ }
+  })
+
   // ── Settings seeds (idempotent — INSERT OR IGNORE) ────────────────────────
   const seeds = [
-    ['default_horizon', 'auto'],
+    ['default_horizon', 'llm'],
     ['discover_cron', '0 6 * * *'],
     ['discover_min_score', '0.65'],
     ['discover_top_n', '30'],
@@ -212,6 +239,9 @@ export function runMigrations(dbs: Record<string, SqlJsDatabase>): void {
     ['oco_sl_buffer_pct', '0.5'],
     ['llm_debug_fetch_limit', '200'],
     ['llm_retain_days', '0'],
+    ['summary_auto_run', 'false'],
+    ['summary_cron', '0 */6 * * *'],
+    ['summary_retain_days', '30'],
   ]
   for (const [key, value] of seeds) {
     settings.run('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', [key, value])

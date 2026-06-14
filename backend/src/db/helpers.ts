@@ -87,6 +87,13 @@ export function runSQL(sql: string, params?: (number | string | null)[]): { chan
     db.run(sql)
   }
 
+  // Read changes()/last_insert_rowid() BEFORE persisting: saveOne() exports the
+  // database, which resets the connection's last_insert_rowid() to 0 and would
+  // otherwise make this return a bogus id for critical-table inserts.
+  const result = db.exec('SELECT changes() AS changes, last_insert_rowid() AS lastInsertRowid')
+  const row = result[0]?.values?.[0]
+  const outcome = { changes: (row?.[0] as number) || 0, lastInsertRowid: (row?.[1] as number) || 0 }
+
   const tableName = resolveTableName(sql)
   if (!isInTransaction() && CRITICAL_TABLES.has(tableName)) {
     // Sync-persist critical tables immediately — don't wait for the debounce.
@@ -95,7 +102,5 @@ export function runSQL(sql: string, params?: (number | string | null)[]): { chan
     scheduleSave()
   }
 
-  const result = db.exec('SELECT changes() AS changes, last_insert_rowid() AS lastInsertRowid')
-  const row = result[0]?.values?.[0]
-  return { changes: (row?.[0] as number) || 0, lastInsertRowid: (row?.[1] as number) || 0 }
+  return outcome
 }
