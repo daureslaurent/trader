@@ -151,6 +151,41 @@ export interface BotSettings {
   llm_summary_base_url: string
   llm_summary_model: string
   llm_summary_max_tokens: number
+  /** Conversational agent (Agent page). Needs a tool-calling-capable model. */
+  llm_agent_base_url: string
+  llm_agent_model: string
+  llm_agent_max_tokens: number
+  /** Per-module failover endpoint/model/max-tokens. Blank URL & model = no
+   *  fallback; a blank fb URL or model inherits the primary's value. Max-tokens
+   *  0 = reuse the primary's effective max-tokens. Tried only if the primary
+   *  LLM call throws (endpoint down, timeout, 5xx, unknown model). */
+  llm_analyst_fb_base_url: string
+  llm_analyst_fb_model: string
+  llm_analyst_fb_max_tokens: number
+  llm_extractor_fb_base_url: string
+  llm_extractor_fb_model: string
+  llm_extractor_fb_max_tokens: number
+  llm_discoverer_fb_base_url: string
+  llm_discoverer_fb_model: string
+  llm_discoverer_fb_max_tokens: number
+  llm_discoverer_extractor_fb_base_url: string
+  llm_discoverer_extractor_fb_model: string
+  llm_discoverer_extractor_fb_max_tokens: number
+  llm_monitor_a_fb_base_url: string
+  llm_monitor_a_fb_model: string
+  llm_monitor_a_fb_max_tokens: number
+  llm_monitor_b_fb_base_url: string
+  llm_monitor_b_fb_model: string
+  llm_monitor_b_fb_max_tokens: number
+  llm_summary_fb_base_url: string
+  llm_summary_fb_model: string
+  llm_summary_fb_max_tokens: number
+  llm_agent_fb_base_url: string
+  llm_agent_fb_model: string
+  llm_agent_fb_max_tokens: number
+  /** When auto-naming an Agent conversation, the title LLM summarizes only this many
+   *  of the most recent (non-tool) messages — bounds the tokens spent per title. */
+  agent_title_context_messages: number
   /** When true, the portfolio-summary engine runs on its own cron. */
   summary_auto_run: boolean
   /** Cron expression for the portfolio-summary engine. */
@@ -179,6 +214,39 @@ export interface PortfolioSummary {
   snapshot: string
   model: string | null
   cycle_id: string
+  created_at: string
+}
+
+/** One Agent chat thread. Messages live in `agent_messages`. */
+export interface AgentConversation {
+  id: number
+  title: string
+  /** Cumulative tokens (prompt + completion) across every model call in the thread. */
+  total_tokens: number
+  /** Peak single-request tokens of the most recent turn — the context-window usage to
+   *  watch against the model's limit (grows as the conversation gets longer). */
+  last_context_tokens: number
+  created_at: string
+  updated_at: string
+}
+
+/** A single message in an Agent conversation. Mirrors the OpenAI chat roles so the
+ *  thread can be replayed straight back into the model:
+ *  - 'user'      → the human's message (content set)
+ *  - 'assistant' → the model's reply; `content` may be null when it only emitted
+ *                  `tool_calls` (a JSON array of the requested tool calls)
+ *  - 'tool'      → the result of one tool call, keyed by `tool_call_id` + `name` */
+export interface AgentMessage {
+  id: number
+  conversation_id: number
+  role: 'user' | 'assistant' | 'tool'
+  content: string | null
+  /** JSON-encoded OpenAI tool_calls array (assistant messages that called tools). */
+  tool_calls: string | null
+  /** Links a 'tool' result message back to the assistant tool_call it answers. */
+  tool_call_id: string | null
+  /** Tool name for 'tool' messages. */
+  name: string | null
   created_at: string
 }
 

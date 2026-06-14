@@ -16,6 +16,7 @@ router.get('/llm/defaults', (_req: Request, res: Response) => {
     monitorA: { baseURL: config.monitor.baseURL, model: config.monitor.model, maxTokens: config.monitor.maxTokens },
     monitorB: { baseURL: config.monitor.baseURLB, model: config.monitor.modelB, maxTokens: config.monitor.maxTokens },
     summary: { baseURL: config.summary.baseURL, model: config.summary.model, maxTokens: config.summary.maxTokens },
+    agent: { baseURL: config.agent.baseURL, model: config.agent.model, maxTokens: config.agent.maxTokens },
   })
 })
 

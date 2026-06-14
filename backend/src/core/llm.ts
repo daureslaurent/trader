@@ -86,13 +86,88 @@ function extractText(content: unknown): string {
   return String(content)
 }
 
+/**
+ * A concrete endpoint+model the chat can run against. The primary is derived from
+ * the `client`/`params` passed to `llmChat`; an optional `fallback` of this shape
+ * is tried only if the primary call throws (connection refused, timeout, 5xx,
+ * unknown model, …). `maxTokens` overrides the request's `max_tokens` for the
+ * fallback attempt only — leave undefined to reuse the primary request's value.
+ */
+export interface LLMTarget {
+  client: OpenAI
+  model: string
+  baseURL: string
+  maxTokens?: number
+}
+
+function clientBaseURL(client: OpenAI): string {
+  return (client as unknown as { baseURL: string }).baseURL ?? ''
+}
+
+/**
+ * Run a chat completion with automatic failover. The primary target is the
+ * `client` + `params.model` pair; if `fallback` is supplied and the primary call
+ * *throws*, the same prompt is retried once against the fallback endpoint/model.
+ *
+ * Each attempt is recorded as its own `llm_calls` row (under its real base_url /
+ * model), so a failover shows up as a failed primary row followed by a fallback
+ * row — fully visible in the LLM activity views. An empty-but-non-throwing
+ * response is NOT treated as a primary failure: that contract is unchanged and
+ * left for each module's own parse/retry logic.
+ */
 export async function llmChat(
   client: OpenAI,
   params: OpenAI.ChatCompletionCreateParams,
   meta: LLMCallMeta,
+  fallback?: LLMTarget,
 ): Promise<OpenAI.ChatCompletion> {
+  const primary: LLMTarget = {
+    client,
+    model: params.model,
+    baseURL: meta.base_url ?? clientBaseURL(client),
+  }
+  const targets: LLMTarget[] = fallback ? [primary, fallback] : [primary]
+
+  let lastErr: unknown
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i]
+    const isFallback = i > 0
+    // Swap in the fallback's model (and optional max-tokens) for its attempt; the
+    // primary attempt reuses the caller's params untouched.
+    const attemptParams: OpenAI.ChatCompletionCreateParams = isFallback
+      ? { ...params, model: target.model, ...(target.maxTokens ? { max_tokens: target.maxTokens } : {}) }
+      : params
+    try {
+      return await runChat(target, attemptParams, meta)
+    } catch (err) {
+      lastErr = err
+      if (!isFallback && fallback) {
+        logger.warn('LLM primary failed — failing over to fallback', {
+          module: meta.module,
+          coin: meta.coin ?? null,
+          primary: `${primary.model} @ ${primary.baseURL}`,
+          fallback: `${fallback.model} @ ${fallback.baseURL}`,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        continue
+      }
+      throw err
+    }
+  }
+  throw lastErr
+}
+
+// Single attempt against one endpoint/model. Records the running call, serializes
+// per base URL, performs the request and logs the result to `llm_calls`. Throws
+// on transport/API errors so the caller (llmChat) can decide whether to fail over.
+async function runChat(
+  target: LLMTarget,
+  params: OpenAI.ChatCompletionCreateParams,
+  meta: LLMCallMeta,
+): Promise<OpenAI.ChatCompletion> {
+  const client = target.client
   const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-  const baseUrl: string = meta.base_url ?? (client as unknown as { baseURL: string }).baseURL ?? ''
+  const baseUrl: string = target.baseURL
 
   // Serialize per URL unless the user has opted into parallel same-URL calls. A
   // call that arrives while its endpoint is busy starts "queued" and flips to
@@ -149,16 +224,24 @@ export async function llmChat(
       const responseText = resp?.choices[0]?.message?.content ?? null
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const reasoningContent: string | null = (resp?.choices[0]?.message as any)?.reasoning_content ?? null
+      // Tool/function calls the model requested this turn. A response that carries
+      // tool_calls legitimately has empty `content` (the model is calling a tool, not
+      // talking), so we record the calls and must NOT treat the empty content as an error.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const toolCallsArr = (resp?.choices[0]?.message as any)?.tool_calls
+      const toolCallsJson: string | null =
+        Array.isArray(toolCallsArr) && toolCallsArr.length ? JSON.stringify(toolCallsArr) : null
       // Method A: explicit field from newer llama.cpp. Method B: estimate from reasoning_content length (~4 chars/token).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const thinkingTokens: number | null =
         (resp?.usage as any)?.completion_tokens_details?.reasoning_tokens ??
         (reasoningContent ? Math.ceil(reasoningContent.length / 4) : null)
 
-      // If the API returned without throwing but the content is empty, synthesize an
-      // error so the call is flagged and the raw response is visible in the UI.
+      // If the API returned without throwing but produced neither content nor a tool
+      // call, synthesize an error so the call is flagged and the raw response is visible
+      // in the UI. A tool-call turn (content empty, tool_calls present) is NOT an error.
       let effectiveError = errMsg
-      if (!effectiveError && resp && !responseText) {
+      if (!effectiveError && resp && !responseText && !toolCallsJson) {
         const finish = resp.choices[0]?.finish_reason ?? 'unknown'
         effectiveError = `Empty content (finish_reason: ${finish})\n\nRaw response:\n${JSON.stringify(resp, null, 2)}`
       }
@@ -170,8 +253,8 @@ export async function llmChat(
       try {
         const { lastInsertRowid } = runSQL(
           `INSERT INTO llm_calls
-            (module, model, base_url, system_prompt, user_prompt, response, reasoning_content, error, prompt_tokens, completion_tokens, thinking_tokens, duration_ms, queue_ms, coin, cycle_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (module, model, base_url, system_prompt, user_prompt, response, reasoning_content, error, prompt_tokens, completion_tokens, thinking_tokens, duration_ms, queue_ms, coin, cycle_id, tool_calls)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             meta.module,
             params.model,
@@ -188,6 +271,7 @@ export async function llmChat(
             queueMs,
             meta.coin ?? null,
             meta.cycle_id ?? null,
+            toolCallsJson,
           ],
         )
 
@@ -199,6 +283,7 @@ export async function llmChat(
           base_url: baseUrl,
           response: responseText,
           reasoning_content: reasoningContent,
+          tool_calls: toolCallsJson,
           error: effectiveError,
           prompt_tokens: resp?.usage?.prompt_tokens ?? null,
           completion_tokens: resp?.usage?.completion_tokens ?? null,

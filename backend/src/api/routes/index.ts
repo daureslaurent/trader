@@ -9,6 +9,7 @@ import { router as discoverRoutes } from './discover.routes.js'
 import { router as monitorRoutes } from './monitor.routes.js'
 import { router as summaryRoutes } from './summary.routes.js'
 import { router as llmRoutes } from './llm.routes.js'
+import { router as agentRoutes } from './agent.routes.js'
 import { router as settingsRoutes } from './settings.routes.js'
 
 // Single API router composed of per-domain sub-routers. All sub-routers declare
@@ -27,4 +28,5 @@ router.use(discoverRoutes)
 router.use(monitorRoutes)
 router.use(summaryRoutes)
 router.use(llmRoutes)
+router.use(agentRoutes)
 router.use(settingsRoutes)

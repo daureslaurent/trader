@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
+import type { LLMTarget } from '../core/llm.js'
 import { queryAll, queryOne, runSQL, getSettings, updateSetting } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { validateSlTpAdjustment, minStopGapPct } from '../portfolio/risk.js'
@@ -15,13 +16,13 @@ import { resolveLLM } from '../config/llm.js'
 
 let running = false
 
-interface MonitorSlot { slot: 'a' | 'b'; model: string; baseURL: string; maxTokens: number }
+interface MonitorSlot { slot: 'a' | 'b'; model: string; baseURL: string; maxTokens: number; fallback?: LLMTarget }
 
 // Resolves a monitor slot through the shared Settings-aware LLM resolver, so the
 // model / endpoint / max-tokens overrides from the Settings page take effect.
 function resolveSlot(slot: 'a' | 'b'): MonitorSlot {
-  const { model, baseURL, maxTokens } = resolveLLM(slot === 'b' ? 'monitorB' : 'monitorA')
-  return { slot, model, baseURL, maxTokens }
+  const { model, baseURL, maxTokens, fallback } = resolveLLM(slot === 'b' ? 'monitorB' : 'monitorA')
+  return { slot, model, baseURL, maxTokens, fallback }
 }
 
 // In 'alternate' mode the slot flips each cycle. `monitor_alternate_last` records
@@ -56,6 +57,7 @@ interface MonitorLLM {
   model: string
   baseURL: string
   maxTokens: number
+  fallback?: LLMTarget
 }
 
 interface RawReview {
@@ -183,7 +185,7 @@ async function monitorCoin(
         temperature: 0.2,
         max_tokens: llm.maxTokens,
         response_format: { type: 'json_object' },
-      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: llm.baseURL })
+      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: llm.baseURL }, llm.fallback)
     } catch (apiErr) {
       if (attempt === 0) {
         logger.warn('Monitor LLM API error, retrying', { coin: ctx.coin, error: (apiErr as Error).message })
@@ -505,6 +507,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
       model: active.model,
       baseURL: active.baseURL,
       maxTokens: active.maxTokens,
+      fallback: active.fallback,
     }
     logger.info('Monitor using model', { cycleId, slot: active.slot, mode: s.monitor_model, model: active.model, baseURL: active.baseURL })
     const adjustEnabled = s.monitor_adjust_sltp

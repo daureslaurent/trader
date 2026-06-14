@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
+import type { LLMTarget } from '../core/llm.js'
 import { queryAll, queryOne, runSQL, getSettings } from '../db/index.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
@@ -20,9 +21,9 @@ export function isRunning(): boolean {
 
 // Resolves the summary engine's effective model/endpoint from Settings (falling
 // back to the SUMMARY_* env config). Exported so the API can badge the active model.
-export function getActiveSummaryModel(): { model: string; baseURL: string; maxTokens: number } {
-  const { model, baseURL, maxTokens } = resolveLLM('summary')
-  return { model, baseURL, maxTokens }
+export function getActiveSummaryModel(): { model: string; baseURL: string; maxTokens: number; fallback?: LLMTarget } {
+  const { model, baseURL, maxTokens, fallback } = resolveLLM('summary')
+  return { model, baseURL, maxTokens, fallback }
 }
 
 interface RawSummary {
@@ -294,7 +295,7 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
           temperature: 0.3,
           max_tokens: active.maxTokens,
           response_format: { type: 'json_object' },
-        }, { module: 'summary', cycle_id: cycleId, base_url: active.baseURL })
+        }, { module: 'summary', cycle_id: cycleId, base_url: active.baseURL }, active.fallback)
       } catch (apiErr) {
         if (attempt === 0) { logger.warn('Summary LLM API error, retrying', { error: (apiErr as Error).message }); continue }
         throw apiErr

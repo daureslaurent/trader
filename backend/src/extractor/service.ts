@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
 import { llmChat } from '../core/llm.js'
+import type { LLMTarget } from '../core/llm.js'
 import { resolveLLM } from '../config/llm.js'
 import { queryOne, runSQL } from '../db/index.js'
 import { ResearchResult, ArticleContent } from '../researcher/index.js'
@@ -12,12 +13,14 @@ export interface ExtractorLLMConfig {
   model: string
   maxTokens: number
   baseURL: string
+  /** Optional failover target, passed through to `llmChat`. */
+  fallback?: LLMTarget
 }
 
 // Resolved fresh per call so per-module Settings overrides apply without a restart.
 function getDefaultExtractorConfig(): ExtractorLLMConfig {
-  const { client, model, maxTokens, baseURL } = resolveLLM('extractor')
-  return { client, model, maxTokens, baseURL }
+  const { client, model, maxTokens, baseURL, fallback } = resolveLLM('extractor')
+  return { client, model, maxTokens, baseURL, fallback }
 }
 
 // ── Blocked-content detection ────────────────────────────────────────────────
@@ -139,7 +142,7 @@ async function challengeArticle(
       temperature: 0.0,
       max_tokens: llm.maxTokens,
       response_format: { type: 'json_object' },
-    }, { module: 'extractor-challenge', coin: baseCoin, base_url: llm.baseURL })
+    }, { module: 'extractor-challenge', coin: baseCoin, base_url: llm.baseURL }, llm.fallback)
 
     const raw = resp.choices[0]?.message?.content ?? ''
     const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
@@ -205,7 +208,7 @@ async function extractSingleArticle(
         temperature: 0.2,
         max_tokens: llm.maxTokens,
         response_format: { type: 'json_object' },
-      }, { module: 'extractor', coin, base_url: llm.baseURL })
+      }, { module: 'extractor', coin, base_url: llm.baseURL }, llm.fallback)
 
       const content = resp.choices[0]?.message?.content ?? ''
       if (resp.choices[0]?.finish_reason === 'length') {
@@ -320,7 +323,7 @@ export async function selectArticles(
       temperature: 0.1,
       max_tokens: 256,
       response_format: { type: 'json_object' },
-    }, { module: 'extractor', coin, base_url: cfg.baseURL })
+    }, { module: 'extractor', coin, base_url: cfg.baseURL }, cfg.fallback)
 
     const content = resp.choices[0]?.message?.content ?? ''
     const parsed = JSON.parse(content) as { selected_urls?: string[] }

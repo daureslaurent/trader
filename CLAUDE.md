@@ -60,7 +60,9 @@ When `entry_timing_enabled`, a BUY signal is not filled at the cron tick. It's r
 
 ### LLM integration (`core/llm.ts` + per-module config)
 
-All LLM calls use the OpenAI SDK pointed at local OpenAI-compatible endpoints (Ollama / llama.cpp). Each module has its **own** base URL + model + max-tokens, configured in `config/index.ts` from env vars that all fall back to `LLAMA_BASE_URL` / `LLAMA_MODEL`: `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` (with an A/B slot — `MONITOR_*` and `MONITOR_*_B` — selected at runtime via the `monitor_model` setting), `SUMMARY_*`.
+All LLM calls use the OpenAI SDK pointed at local OpenAI-compatible endpoints (Ollama / llama.cpp). Each module has its **own** base URL + model + max-tokens, configured in `config/index.ts` from env vars that all fall back to `LLAMA_BASE_URL` / `LLAMA_MODEL`: `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` (with an A/B slot — `MONITOR_*` and `MONITOR_*_B` — selected at runtime via the `monitor_model` setting), `SUMMARY_*`, `AGENT_*` (the conversational agent — should point at a tool-calling-capable model).
+
+Each module can also have an optional **fallback** endpoint/model (the `*_fb_*` settings, configured per module in the Settings → LLM Models UI). `resolveLLM()` in `config/llm.ts` returns an `LLMTarget` fallback alongside the primary; modules pass it straight to `llmChat(...)` as the 4th arg. `llmChat` tries the primary and, only if that call **throws** (endpoint down, timeout, 5xx, unknown model), retries the same prompt once against the fallback — a blank fallback URL or model inherits the primary's value, and a fallback identical to the primary is treated as "no fallback". Each attempt is logged as its own `llm_calls` row under its real base_url/model, so a failover shows as a failed primary row followed by a fallback row. Fallbacks are Settings-only (no env seeding) and empty-but-non-throwing responses do **not** trigger failover (that stays the module's own parse/retry concern).
 
 `core/llm.ts` **serializes calls per base URL** by default (`_urlChains`): a local server processes one request at a time, so calls to the same URL chain sequentially while calls to *different* URLs run in parallel. `llm_allow_parallel_same_url` disables this. Every call is recorded to `llm_calls` and live ones are broadcast to the frontend's LLM activity view.
 
@@ -81,6 +83,7 @@ Settings live in the `settings` key-value table via `getSettings()` / `updateSet
 - `portfolio/` — position sizing, ATR-based SL/TP, OCO placement (`placeProtection`/`replaceProtection`/`cancelProtection`), fee-aware realized PnL (`netRealizedPnl`), the `hasSufficientEdge` fee-edge gate.
 - `scraper/` — Puppeteer-extra (stealth) browser + DuckDuckGo search engine used by the researcher.
 - `telegram/` — Telegraf bot for trade approvals and a menu UI; `notifier.ts` pushes events. Disabled if `TELEGRAM_BOT_TOKEN` is unset.
+- `agent/` — request-driven (not cron) conversational assistant behind the **Agent** page. A native **tool-calling loop** (`service.ts`) runs the `AGENT_*` model via `llmChat`; the model calls tools from `tools.ts` to read app data (portfolio, positions, trades, watchlist, live market/indicators, signals, discoveries, summary, reviews, settings) and to take **safe, non-trading actions** (add/remove watchlist coins; trigger the pipeline/discovery/summary/monitor engines via existing bus events). There are **no** trade/settings-mutation tools. Conversations + full transcripts (incl. assistant `tool_calls` and tool results) persist to `agent_conversations`/`agent_messages`; live turn progress streams to the frontend as `agent_step` WS events.
 - `api/` — Express routes (`routes.ts`) + WebSocket broadcast (`ws.ts`).
 
 ### Conventions
@@ -93,10 +96,10 @@ Settings live in the `settings` key-value table via `getSettings()` / `updateSet
 
 ### Frontend
 
-Single-page app, **no router library** — page switching is `useState<Page>` in `App.tsx` with a `Sidebar` (`components/layout/`). Pages live in `pages/` (Dashboard, Portfolio, Trade, Monitor, EntryDesk, Discover, Charts, LLM/LLMStats/LLMDebug, CacheView, TradingState, Settings, Logs). Theming via `contexts/ThemeContext` (4 themes); data via typed hooks in `hooks/` (`useApi`, `useWebSocket`, `usePrices`, `useLLMActivity`); charts via recharts (`CandleChart`).
+Single-page app, **no router library** — page switching is `useState<Page>` in `App.tsx` with a `Sidebar` (`components/layout/`). Pages live in `pages/` (Dashboard, Agent, Portfolio, Trade, Monitor, EntryDesk, Discover, Charts, LLM/LLMStats/LLMDebug, CacheView, TradingState, Settings, Logs). Theming via `contexts/ThemeContext` (4 themes); data via typed hooks in `hooks/` (`useApi`, `useWebSocket`, `usePrices`, `useLLMActivity`); charts via recharts (`CandleChart`).
 
 ## Environment variables
 
 Required: `BINANCE_API_KEY`, `BINANCE_SECRET`, `LLAMA_BASE_URL`, `LLAMA_MODEL`.
-Optional per-module LLM overrides (default to the `LLAMA_*` values): `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` / `MONITOR_*_B`, `SUMMARY_*` (each `_BASE_URL`, `_MODEL`, `_MAX_TOKENS`).
+Optional per-module LLM overrides (default to the `LLAMA_*` values): `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*` / `MONITOR_*_B`, `SUMMARY_*`, `AGENT_*` (each `_BASE_URL`, `_MODEL`, `_MAX_TOKENS`).
 Optional other: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PORT` (3000), `APPROVAL_TIMEOUT_MINUTES` (5), `PIPELINE_CRON`.

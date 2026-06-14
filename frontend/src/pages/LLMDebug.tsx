@@ -10,6 +10,8 @@ const MODULE_META: Record<string, { label: string; color: string; bg: string }> 
   analyst:    { label: 'Analyst',    color: 'text-accent',     bg: 'bg-accent/15'     },
   discoverer: { label: 'Discoverer', color: 'text-buy',        bg: 'bg-buy/15'        },
   monitor:    { label: 'Monitor',    color: 'text-warn',       bg: 'bg-warn/15'       },
+  summary:    { label: 'Summary',    color: 'text-sky-400',    bg: 'bg-sky-500/15'    },
+  agent:      { label: 'Agent',      color: 'text-accent2',    bg: 'bg-accent2/15'    },
 }
 
 function moduleMeta(mod: string) {
@@ -80,6 +82,7 @@ function CallListItem({ call, selected, onClick }: { call: LLMCall; selected: bo
   const isQueued = call.status === 'queued'
   const isRunning = call.status === 'running'
   const hasError = !!call.error
+  const toolCount = parseToolCalls(call.tool_calls).length
   return (
     <button
       onClick={onClick}
@@ -104,6 +107,14 @@ function CallListItem({ call, selected, onClick }: { call: LLMCall; selected: bo
         )}
         {!isQueued && !isRunning && hasError && (
           <span className="text-[10px] font-semibold text-sell bg-sell/10 px-1.5 py-0.5 rounded">ERR</span>
+        )}
+        {!isQueued && !isRunning && !hasError && toolCount > 0 && (
+          <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">
+            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" />
+            </svg>
+            {toolCount}
+          </span>
         )}
       </div>
       <div className="flex items-center gap-1.5 text-xs flex-wrap">
@@ -192,6 +203,60 @@ function ChatBubble({
       )}>
         {displayContent}
       </pre>
+    </div>
+  )
+}
+
+// ── Tool calls ─────────────────────────────────────────────────────────────────
+// Renders the tool/function calls a model requested on a turn (agent flow). Such a
+// turn legitimately has empty assistant content — the model is invoking a tool, not
+// replying — so this block stands in for the "Assistant" bubble on those rows.
+
+interface ParsedToolCall { id: string; name: string; args: string }
+
+function parseToolCalls(raw: string | null | undefined): ParsedToolCall[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw) as { id?: string; function?: { name?: string; arguments?: string } }[]
+    if (!Array.isArray(arr)) return []
+    return arr.map((c, i) => ({
+      id: c.id ?? String(i),
+      name: c.function?.name ?? 'tool',
+      args: c.function?.arguments ?? '',
+    }))
+  } catch {
+    return []
+  }
+}
+
+function ToolCallCard({ call }: { call: ParsedToolCall }) {
+  const { formatted } = tryFormatJSON(call.args)
+  const hasArgs = call.args && call.args.trim() && call.args.trim() !== '{}'
+  return (
+    <div className="rounded-xl border border-accent2/30 bg-surface-elevated overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/50">
+        <svg className="w-3.5 h-3.5 text-accent2" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" />
+        </svg>
+        <span className="text-xs font-semibold text-accent2 font-mono">{call.name}</span>
+        <span className="ml-auto text-[10px] uppercase tracking-widest text-muted/60">tool call</span>
+      </div>
+      {hasArgs && (
+        <pre className="px-4 py-3 text-xs whitespace-pre-wrap break-words font-mono leading-relaxed text-foreground/90">
+          {formatted}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function ToolCallsBlock({ calls }: { calls: ParsedToolCall[] }) {
+  return (
+    <div className="space-y-2">
+      <span className="text-xs font-semibold uppercase tracking-widest text-accent2">
+        Tool calls · {calls.length}
+      </span>
+      {calls.map(c => <ToolCallCard key={c.id} call={c} />)}
     </div>
   )
 }
@@ -304,6 +369,7 @@ function CallDetail({ callId }: { callId: number }) {
   }
 
   const totalTokens = (detail.prompt_tokens ?? 0) + (detail.completion_tokens ?? 0)
+  const toolCalls = parseToolCalls(detail.tool_calls)
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -395,20 +461,26 @@ function CallDetail({ callId }: { callId: number }) {
           />
         )}
 
-        {detail.error ? (
+        {detail.error && (
           <ChatBubble
             role="assistant"
             content={detail.error}
             label="Error"
             isError
           />
-        ) : detail.response ? (
+        )}
+
+        {toolCalls.length > 0 && <ToolCallsBlock calls={toolCalls} />}
+
+        {detail.response && (
           <ChatBubble
             role="assistant"
             content={detail.response}
             label={`Assistant · ${moduleMeta(detail.module).label}`}
           />
-        ) : (
+        )}
+
+        {!detail.error && !detail.response && toolCalls.length === 0 && (
           <div className="rounded-xl border border-border bg-surface-elevated px-4 py-3 text-sm text-muted">
             No response recorded.
           </div>
@@ -420,7 +492,7 @@ function CallDetail({ callId }: { callId: number }) {
 
 // ── Filter chips ─────────────────────────────────────────────────────────────
 
-const ALL_MODULES = ['extractor', 'analyst', 'discoverer', 'monitor'] as const
+const ALL_MODULES = ['extractor', 'analyst', 'discoverer', 'monitor', 'summary', 'agent'] as const
 
 function FilterChips({
   active,

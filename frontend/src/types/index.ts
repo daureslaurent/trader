@@ -1,4 +1,34 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'agent'
+
+/** One message in an Agent conversation (GET /api/agent/conversations/:id). */
+export interface AgentMessage {
+  id: number
+  conversation_id: number
+  role: 'user' | 'assistant' | 'tool'
+  content: string | null
+  tool_calls: string | null
+  tool_call_id: string | null
+  name: string | null
+  created_at: string
+}
+
+export interface AgentConversation {
+  id: number
+  title: string
+  /** Cumulative tokens (prompt + completion) across every model call in the thread. */
+  total_tokens: number
+  /** Peak single-request tokens of the most recent turn — the context-window usage to
+   *  watch against the model's limit (grows as the conversation gets longer). */
+  last_context_tokens: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentToolInfo {
+  name: string
+  description: string
+  readOnly: boolean
+}
 
 /** One portfolio-summary run, from GET /api/summary. Mirrors the backend row. */
 export interface PortfolioSummary {
@@ -306,6 +336,7 @@ export type LLMModuleKey =
   | 'monitorA'
   | 'monitorB'
   | 'summary'
+  | 'agent'
 
 /** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */
 export interface LLMDefault {
@@ -337,6 +368,8 @@ export interface LLMCall {
   user_prompt?: string
   response: string | null
   reasoning_content: string | null
+  /** JSON-encoded OpenAI tool_calls array when the model requested tools this turn. */
+  tool_calls?: string | null
   error: string | null
   prompt_tokens: number | null
   completion_tokens: number | null

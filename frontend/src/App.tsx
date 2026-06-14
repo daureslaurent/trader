@@ -21,6 +21,7 @@ import LLMDebug from './pages/LLMDebug'
 import CacheView from './pages/CacheView'
 import Discover from './pages/Discover'
 import LLMStats from './pages/LLMStats'
+import Agent from './pages/Agent'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
@@ -38,6 +39,7 @@ const PAGE_TITLES: Record<Page, string> = {
   discover: 'Discover Coins',
   'llm-debug': 'LLM Debug',
   'llm-stats': 'LLM Stats',
+  agent: 'Agent',
 }
 
 let toastId = 0
@@ -184,6 +186,7 @@ function AppInner() {
 
         {/* Page */}
         <main className="flex-1 overflow-y-auto p-8">
+          {page === 'agent' && <Agent />}
           {page === 'dashboard' && <Dashboard onApprovalAction={clearPending} />}
           {page === 'trading-state' && <TradingState />}
           {page === 'portfolio' && <Portfolio />}

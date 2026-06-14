@@ -71,6 +71,15 @@ export const config = {
     model: opt('SUMMARY_MODEL', llamaModel),
     maxTokens: num('SUMMARY_MAX_TOKENS', 3072),
   },
+  agent: {
+    // Conversational agent (the Agent page). Drives a native tool-calling loop, so
+    // it should point at a model that supports OpenAI function/tool calling. A roomy
+    // token budget helps since each turn may carry tool results + chat history.
+    // Falls back to the llama defaults.
+    baseURL: opt('AGENT_BASE_URL', llamaBaseURL),
+    model: opt('AGENT_MODEL', llamaModel),
+    maxTokens: num('AGENT_MAX_TOKENS', 4096),
+  },
   telegram: {
     botToken: opt('TELEGRAM_BOT_TOKEN', ''),
     chatId: opt('TELEGRAM_CHAT_ID', ''),

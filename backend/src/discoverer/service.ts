@@ -16,8 +16,8 @@ import { extractResearch, selectArticles, ExtractorLLMConfig } from '../extracto
 
 // Resolved fresh per call so per-module Settings overrides apply without a restart.
 function getDiscovererExtractorConfig(): ExtractorLLMConfig {
-  const { client, model, maxTokens, baseURL } = resolveLLM('discovererExtractor')
-  return { client, model, maxTokens, baseURL }
+  const { client, model, maxTokens, baseURL, fallback } = resolveLLM('discovererExtractor')
+  return { client, model, maxTokens, baseURL, fallback }
 }
 
 let running = false
@@ -97,7 +97,7 @@ async function evaluateCandidate(
       temperature: 0.2,
       max_tokens: scorer.maxTokens,
       response_format: { type: 'json_object' },
-    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId, base_url: scorer.baseURL })
+    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId, base_url: scorer.baseURL }, scorer.fallback)
 
     const content = resp.choices[0]?.message?.content ?? ''
     if (!content.trim()) throw new LLMError('Empty response')

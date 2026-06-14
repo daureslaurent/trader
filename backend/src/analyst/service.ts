@@ -114,7 +114,7 @@ export async function analyzeSignal(
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
-      const resp = await llmChat(llm.client, params, { module: 'analyst', coin, base_url: llm.baseURL })
+      const resp = await llmChat(llm.client, params, { module: 'analyst', coin, base_url: llm.baseURL }, llm.fallback)
       const content = resp.choices[0]?.message?.content ?? ''
       logger.info('Response LLM', { module: 'analyst', coin, finish_reason: resp.choices[0]?.finish_reason })
       const signal = parseAnalystResponse(content, coin)
