@@ -92,6 +92,11 @@ const ITEMS: Record<Page, NavItem> = {
     label: 'Logs',
     path: 'M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z',
   },
+  host: {
+    key: 'host',
+    label: 'Host',
+    path: 'M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z',
+  },
   settings: {
     key: 'settings',
     label: 'Settings',
@@ -121,7 +126,7 @@ const GROUPS: NavGroup[] = [
   { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'summary', 'entry', 'trade', 'trading-state'] },
   { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['pipeline', 'charts', 'discover'] },
   { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['llm-debug', 'llm-stats', 'cache'] },
-  { id: 'system', label: 'System', icon: SECTION_ICONS.system, keys: ['logs', 'settings'] },
+  { id: 'system', label: 'System', icon: SECTION_ICONS.system, keys: ['host', 'logs', 'settings'] },
 ]
 
 const STORAGE_KEY = 'cb-sidebar-collapsed'

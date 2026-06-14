@@ -23,6 +23,7 @@ import CacheView from './pages/CacheView'
 import Discover from './pages/Discover'
 import LLMStats from './pages/LLMStats'
 import Agent from './pages/Agent'
+import Host from './pages/Host'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
@@ -41,6 +42,7 @@ const PAGE_TITLES: Record<Page, string> = {
   'llm-debug': 'LLM Debug',
   'llm-stats': 'LLM Stats',
   agent: 'Agent',
+  host: 'Host',
 }
 
 let toastId = 0
@@ -203,6 +205,7 @@ function AppInner() {
           {page === 'discover' && <Discover />}
           {page === 'llm-debug' && <LLMDebug />}
           {page === 'llm-stats' && <LLMStats />}
+          {page === 'host' && <Host />}
           {page === 'settings' && <Settings />}
         </main>
       </div>

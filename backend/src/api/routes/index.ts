@@ -11,6 +11,7 @@ import { router as summaryRoutes } from './summary.routes.js'
 import { router as llmRoutes } from './llm.routes.js'
 import { router as agentRoutes } from './agent.routes.js'
 import { router as settingsRoutes } from './settings.routes.js'
+import { router as hostRoutes } from './host.routes.js'
 
 // Single API router composed of per-domain sub-routers. All sub-routers declare
 // absolute paths and are mounted at the root, so the public URL surface is
@@ -30,3 +31,4 @@ router.use(summaryRoutes)
 router.use(llmRoutes)
 router.use(agentRoutes)
 router.use(settingsRoutes)
+router.use(hostRoutes)

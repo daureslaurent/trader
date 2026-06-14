@@ -1,4 +1,34 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'agent'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'agent' | 'host'
+
+export interface HostStats {
+  timestamp: number
+  system: {
+    hostname: string
+    platform: string
+    arch: string
+    release: string
+    uptimeSeconds: number
+    nodeVersion: string
+  }
+  cpu: {
+    model: string
+    cores: number
+    speedMhz: number
+    usage: number
+    perCore: { core: number; usage: number }[]
+    loadAvg: [number, number, number]
+  }
+  memory: {
+    totalBytes: number
+    freeBytes: number
+    usedBytes: number
+    usedPct: number
+  }
+  temperature: {
+    sensors: { label: string; celsius: number }[]
+    maxCelsius: number | null
+  }
+}
 
 /** One message in an Agent conversation (GET /api/agent/conversations/:id). */
 export interface AgentMessage {
