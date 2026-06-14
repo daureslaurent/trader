@@ -78,6 +78,10 @@ export interface BotSettings {
    *  - 'short'|'medium'|'long' → force this horizon on every trade (overrides the LLM's pick).
    *  The chosen horizon is stamped on the position and can still be edited afterward. */
   default_horizon: 'auto' | 'llm' | 'short' | 'medium' | 'long'
+  /** Candle timeframe for the price-history table shown in the analyst (decision) prompt (e.g. '1h'). */
+  analyst_candle_tf: string
+  /** Number of candles to include in the analyst prompt (1–100); 0 omits the table. */
+  analyst_candle_count: number
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean

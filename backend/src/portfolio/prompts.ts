@@ -3,6 +3,7 @@ import { ExtractedResearch } from '../extractor/index.js'
 import { CoinPortfolioContext } from './service.js'
 import { OrderBookAnalysis } from '../trader/types.js'
 import { MarketRegime } from './market.js'
+import { Candle, renderCandleTable } from '../market/index.js'
 
 /**
  * Build the decision prompt for the analyst LLM.
@@ -24,6 +25,8 @@ export function buildAnalysisPrompt(
   coinCtx: CoinPortfolioContext,
   orderBook: OrderBookAnalysis | null = null,
   chooseHorizon = false,
+  candles: Candle[] = [],
+  candleTf = '1h',
 ): { system: string; user: string } {
   const now = new Date().toISOString().split('T')[0]
 
@@ -64,6 +67,7 @@ The market regime, technical indicators, and risk levels are ALREADY computed an
 PROFIT DISCIPLINE
 - Every round trip costs ~0.2% in fees plus slippage. Only trade when the expected edge clearly exceeds that cost; HOLD is the correct call on most cycles. Overtrading erodes returns faster than missed moves.
 - Trade WITH the regime. The best long entries are pullbacks toward SMA7/SMA25 within an uptrend — not vertical green candles, not falling knives.
+- Read the recent price-history candles (when shown) to confirm the setup: where price sits relative to recent swing highs/lows, whether the move is extended or basing, and whether volume backs the move. Let the bars corroborate the indicators — don't buy into a vertical spike or sell into a clean higher-low structure.
 
 BUY only when ALL of these hold:
 - MEDIUM/HIGH confidence, a free slot, and regime + catalyst aligned in your favour.
@@ -109,11 +113,14 @@ OUTPUT — JSON only, no markdown, no extra keys:
   const volM = `$${(market.volume / 1_000_000).toFixed(1)}M`
   const stretchPct = market.sma7 > 0 ? ((market.price - market.sma7) / market.sma7 * 100) : 0
 
+  const candleTable = renderCandleTable(candles, candleTf)
+  const candleBlock = candleTable ? `\n\n${candleTable}` : ''
+
   const user = `COIN: ${coin.replace('/USDC', '')}
 
 REGIME (precomputed): ${regime.summary}
 Price $${market.price} | 24h ${ch24} | 7d ${p7} | 24h vol ${volM}
-SMA7 $${market.sma7} (price ${stretchPct >= 0 ? '+' : ''}${stretchPct.toFixed(2)}% vs SMA7) | SMA25 $${market.sma25}${market.sma99 ? ` | SMA99 $${market.sma99}` : ''} | ATR14 $${market.atr14}${orderBookLine}
+SMA7 $${market.sma7} (price ${stretchPct >= 0 ? '+' : ''}${stretchPct.toFixed(2)}% vs SMA7) | SMA25 $${market.sma25}${market.sma99 ? ` | SMA99 $${market.sma99}` : ''} | ATR14 $${market.atr14}${orderBookLine}${candleBlock}
 
 POSITION: ${coinPositionBlock}
 PORTFOLIO: ${portfolio.openPositionCount}/${portfolio.maxOpenPositions} slots used (${openSlots} free) | other holdings: ${otherPositionsList}

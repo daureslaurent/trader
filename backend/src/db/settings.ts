@@ -45,6 +45,8 @@ export function getSettings(): BotSettings {
     watchlist: JSON.parse(map.watchlist || '[]'),
     pipeline_cron: map.pipeline_cron || '0 * * * *',
     default_horizon: (['auto', 'llm', 'short', 'medium', 'long'].includes(map.default_horizon) ? map.default_horizon : 'llm') as 'auto' | 'llm' | 'short' | 'medium' | 'long',
+    analyst_candle_tf: map.analyst_candle_tf || '1h',
+    analyst_candle_count: parseInt(map.analyst_candle_count || '24', 10),
     min_confidence: parseFloat(map.min_confidence || '0.3'),
     max_position_size_usd: parseFloat(map.max_position_size_usd || '100'),
     approval_required: map.approval_required === 'true',

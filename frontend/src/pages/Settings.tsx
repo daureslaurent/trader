@@ -10,6 +10,8 @@ interface SettingsData {
   watchlist: string[]
   pipeline_cron: string
   default_horizon: 'auto' | 'llm' | 'short' | 'medium' | 'long'
+  analyst_candle_tf: string
+  analyst_candle_count: number
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
@@ -984,6 +986,31 @@ export default function Settings() {
 
           <Row stacked label="Pipeline schedule" hint="How often the research → analysis → trade pipeline runs.">
             <CronEditor value={settings.pipeline_cron} onChange={v => set('pipeline_cron', v)} />
+          </Row>
+
+          <Row label="Analyst price history" hint="Candle timeframe and count fed to the analyst (BUY/SELL/HOLD) prompt as price-action context alongside the indicators. Set count to 0 to omit the table.">
+            <div className="flex items-center gap-2">
+              <select
+                value={settings.analyst_candle_tf}
+                onChange={e => set('analyst_candle_tf', e.target.value)}
+                className="text-sm bg-surface-elevated border border-border rounded-xl px-2.5 py-2 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+              >
+                {['1m', '5m', '15m', '1h', '4h', '1d'].map(tf => (
+                  <option key={tf} value={tf}>{tf}</option>
+                ))}
+              </select>
+              <span className="text-xs text-muted">×</span>
+              <UnitInput
+                type="number"
+                step="1"
+                min="0"
+                max="100"
+                unit="candles"
+                value={settings.analyst_candle_count}
+                onChange={e => set('analyst_candle_count', parseInt(e.target.value) || 0)}
+                className="w-28"
+              />
+            </div>
           </Row>
 
           <Row

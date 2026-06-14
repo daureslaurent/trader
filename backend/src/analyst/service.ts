@@ -12,6 +12,7 @@ import { getSettings } from '../db/index.js'
 import { LLMError } from '../core/errors.js'
 import { fetchOrderBook, analyzeOrderBook } from '../trader/index.js'
 import { OrderBookAnalysis } from '../trader/types.js'
+import { getOHLCV, isTimeframe, Candle } from '../market/index.js'
 
 const CONFIDENCE_MAP: Record<string, number> = {
   HIGH: 0.9,
@@ -93,10 +94,24 @@ export async function analyzeSignal(
     logger.warn('Order book fetch failed, proceeding without it', { coin, error: (obErr as Error).message })
   }
 
+  // Recent candles give the decision LLM the actual price structure behind the
+  // summary indicators (swing highs/lows, extension, volume). Non-fatal on
+  // failure and skippable via count 0 — the prompt simply omits the table.
+  const tf = isTimeframe(settings.analyst_candle_tf) ? settings.analyst_candle_tf : '1h'
+  const count = Math.min(100, settings.analyst_candle_count)
+  let candles: Candle[] = []
+  if (count >= 1) {
+    try {
+      candles = await getOHLCV(coin, tf, count)
+    } catch (cErr) {
+      logger.warn('Failed to fetch candle history for analyst prompt', { coin, tf, error: (cErr as Error).message })
+    }
+  }
+
   // In 'llm' mode the analyst chooses the trade horizon as part of its judgement;
   // any other mode resolves the horizon deterministically (see resolveHorizon below).
   const chooseHorizon = settings.default_horizon === 'llm'
-  const { system, user } = buildAnalysisPrompt(coin, market, regime, portfolio, settings, research, coinCtx, orderBook, chooseHorizon)
+  const { system, user } = buildAnalysisPrompt(coin, market, regime, portfolio, settings, research, coinCtx, orderBook, chooseHorizon, candles, tf)
   const llm = resolveLLM('analyst')
   logger.info('Request LLM', { module: 'analyst', coin, regime: regime.summary, model: llm.model })
 
