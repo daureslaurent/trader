@@ -4,7 +4,7 @@ import { cn } from '../lib/utils'
 import { AgentConversation, AgentMessage, AgentToolInfo } from '../types'
 
 /* ----------------------------- tiny markdown ----------------------------- */
-// Lightweight inline + block renderer (bold, `code`, bullet lists, paragraphs).
+// Lightweight inline + block renderer (bold, `code`, bullet lists, headers, paragraphs).
 // Deliberately minimal — no external dep — since the agent emits short markdown.
 
 function inline(text: string): ReactNode[] {
@@ -34,6 +34,39 @@ function RichText({ text }: { text: string }) {
   }
   text.split('\n').forEach((line, i) => {
     const t = line.trim()
+    
+    // Check for headers (# Header, ## Header, etc.)
+    const headerMatch = t.match(/^(\#{1,6})\s+(.*)/)
+    if (headerMatch) {
+      const level = headerMatch[1].length
+      const content = headerMatch[2]
+      
+      // Determine appropriate styling for each header level
+      let headingClass = "font-bold text-foreground"
+      switch (level) {
+        case 1:
+          headingClass += " text-2xl mt-6 mb-4"
+          break
+        case 2:
+          headingClass += " text-xl mt-5 mb-3"
+          break
+        case 3:
+          headingClass += " text-lg mt-4 mb-2"
+          break
+        case 4:
+        case 5:
+        case 6:
+          headingClass += " text-base mt-3 mb-2"
+          break
+      }
+      
+      flush()
+      // Dynamically create the appropriate heading element
+      const HeadingTag = `h${level}` as keyof JSX.IntrinsicElements
+      out.push(<HeadingTag key={i} className={headingClass}>{inline(content)}</HeadingTag>)
+      return
+    }
+    
     const b = t.match(/^[-*•]\s+(.*)/)
     if (b) { bullets.push(<li key={i}>{inline(b[1])}</li>); return }
     flush()
