@@ -84,8 +84,8 @@ function BreakEvenBadge({ price, className }: { price?: number; className?: stri
   return (
     <span
       title={price != null
-        ? `Past break-even — closing now is net-profitable after fees (B/E ${fmtUSD(price)})`
-        : 'Past break-even — closing now is net-profitable after fees'}
+        ? `Live price has cleared the fee-adjusted break-even (B/E ${fmtUSD(price)}) — closing now is net-profitable after fees. This is about the current price, NOT the stop-loss: it does not mean the stop has been moved to break-even.`
+        : 'Live price has cleared the fee-adjusted break-even — closing now is net-profitable after fees. This is about the current price, NOT the stop-loss: it does not mean the stop has been moved to break-even.'}
       className={cn(
         'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold',
         'bg-buy/10 text-buy border border-buy/30',
