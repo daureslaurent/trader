@@ -17,6 +17,7 @@ export type LLMModule =
   | 'monitorA'
   | 'monitorB'
   | 'summary'
+  | 'entryPlanner'
   | 'agent'
 
 interface ModuleSpec {
@@ -83,6 +84,13 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     fbEndpointKey: 'llm_summary_fb_endpoint',
     fbMaxTokensKey: 'llm_summary_fb_max_tokens',
     fallback: config.summary,
+  },
+  entryPlanner: {
+    endpointKey: 'llm_entry_planner_endpoint',
+    maxTokensKey: 'llm_entry_planner_max_tokens',
+    fbEndpointKey: 'llm_entry_planner_fb_endpoint',
+    fbMaxTokensKey: 'llm_entry_planner_fb_max_tokens',
+    fallback: config.entryPlanner,
   },
   agent: {
     endpointKey: 'llm_agent_endpoint',

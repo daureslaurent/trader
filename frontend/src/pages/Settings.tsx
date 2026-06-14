@@ -49,6 +49,7 @@ interface SettingsData {
   entry_ttl_minutes: number
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
+  entry_planner_enabled: boolean
   llm_endpoints: LLMEndpoint[]
   llm_analyst_endpoint: string
   llm_analyst_max_tokens: number
@@ -64,6 +65,8 @@ interface SettingsData {
   llm_monitor_b_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
+  llm_entry_planner_endpoint: string
+  llm_entry_planner_max_tokens: number
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
   llm_analyst_fb_endpoint: string
@@ -80,6 +83,8 @@ interface SettingsData {
   llm_monitor_b_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
+  llm_entry_planner_fb_endpoint: string
+  llm_entry_planner_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
   agent_title_context_messages: number
@@ -377,6 +382,7 @@ const LLM_MODULES: {
   { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     endpointKey: 'llm_monitor_a_endpoint',           maxTokensKey: 'llm_monitor_a_max_tokens',           fbEndpointKey: 'llm_monitor_a_fb_endpoint',           fbMaxTokensKey: 'llm_monitor_a_fb_max_tokens' },
   { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — alternate model for the position monitor (used in B / Alternate mode).', endpointKey: 'llm_monitor_b_endpoint', maxTokensKey: 'llm_monitor_b_max_tokens', fbEndpointKey: 'llm_monitor_b_fb_endpoint', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens' },
   { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', endpointKey: 'llm_summary_endpoint', maxTokensKey: 'llm_summary_max_tokens', fbEndpointKey: 'llm_summary_fb_endpoint', fbMaxTokensKey: 'llm_summary_fb_max_tokens' },
+  { key: 'entryPlanner',        label: 'Entry Planner',        hint: 'Picks the per-coin entry band (pullback / invalidate / chase cap / TTL) for deferred BUYs. A small fast model is enough.', endpointKey: 'llm_entry_planner_endpoint', maxTokensKey: 'llm_entry_planner_max_tokens', fbEndpointKey: 'llm_entry_planner_fb_endpoint', fbMaxTokensKey: 'llm_entry_planner_fb_max_tokens' },
   { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
 ]
 
@@ -818,7 +824,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -964,16 +970,47 @@ export default function Settings() {
 
           {settings.entry_timing_enabled && (
             <>
-              <Row label="Pullback target" hint="Aim to buy this % below the signal price (the dip). Fires as soon as price reaches the target.">
+              <Row
+                label="LLM-decided entry levels"
+                hint="When on, the Entry Planner LLM picks the pullback, invalidate, chase-cap and lifetime per coin from live market data + the analyst's thesis — so the entry window fits each setup. The values below become the fallback used if the planner is off or its call fails. Configure its model under LLM Models → Entry Planner."
+              >
+                <Toggle label="LLM-decided entry levels" checked={settings.entry_planner_enabled} onChange={() => toggle('entry_planner_enabled')} />
+              </Row>
+
+              {settings.entry_planner_enabled && (
+                <div className="flex items-start gap-2.5 rounded-xl border border-accent/25 bg-accent/5 px-3.5 py-3 text-xs text-muted leading-relaxed">
+                  <svg className="h-4 w-4 shrink-0 mt-0.5 text-accent" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span>
+                    The <span className="font-medium text-foreground">Entry Planner</span> chooses these four levels per coin. The values below are used only as a
+                    <span className="font-medium text-foreground"> fallback</span> when the planner is disabled or unavailable. Each pick is logged to LLM Debug and shown on the Entry Desk.
+                  </span>
+                </div>
+              )}
+
+              <Row
+                label={settings.entry_planner_enabled ? 'Pullback target (fallback)' : 'Pullback target'}
+                hint="Aim to buy this % below the signal price (the dip). Fires as soon as price reaches the target."
+              >
                 <UnitInput type="number" step="0.1" min="0" max="10" unit="%" value={settings.entry_pullback_pct} onChange={e => set('entry_pullback_pct', parseFloat(e.target.value) || 0)} />
               </Row>
-              <Row label="Invalidate (falling knife)" hint="Abandon the intent if price drops this % below the signal price before filling — likely a breakdown, not a dip.">
+              <Row
+                label={settings.entry_planner_enabled ? 'Invalidate / falling knife (fallback)' : 'Invalidate (falling knife)'}
+                hint="Abandon the intent if price drops this % below the signal price before filling — likely a breakdown, not a dip."
+              >
                 <UnitInput type="number" step="0.5" min="0.5" max="50" unit="%" value={settings.entry_invalidate_pct} onChange={e => set('entry_invalidate_pct', parseFloat(e.target.value) || 0)} />
               </Row>
-              <Row label="Chase cap" hint="Abandon the intent if price runs this % above the signal price — the move got away; wait for the next cycle rather than chasing.">
+              <Row
+                label={settings.entry_planner_enabled ? 'Chase cap (fallback)' : 'Chase cap'}
+                hint="Abandon the intent if price runs this % above the signal price — the move got away; wait for the next cycle rather than chasing."
+              >
                 <UnitInput type="number" step="0.5" min="0.5" max="50" unit="%" value={settings.entry_max_chase_pct} onChange={e => set('entry_max_chase_pct', parseFloat(e.target.value) || 0)} />
               </Row>
-              <Row label="Intent lifetime" hint="How long to wait for a good entry before the intent expires.">
+              <Row
+                label={settings.entry_planner_enabled ? 'Intent lifetime (fallback)' : 'Intent lifetime'}
+                hint="How long to wait for a good entry before the intent expires."
+              >
                 <UnitInput type="number" step="1" min="1" max="240" unit="min" value={settings.entry_ttl_minutes} onChange={e => set('entry_ttl_minutes', parseFloat(e.target.value) || 0)} />
               </Row>
               <Row label="On expiry" hint="When the intent expires still in-band: fill at market so you don't keep missing valid setups, or cancel and wait for a fresh signal.">

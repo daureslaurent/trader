@@ -21,6 +21,9 @@ function rowToIntent(r: Record<string, unknown>): EntryIntent {
     chaseCapPrice: r.chase_cap_price as number,
     notionalUsdc: r.notional_usdc as number,
     atr: r.atr as number,
+    // Older persisted intents predate the planner — default to 'static'.
+    bandSource: (r.band_source === 'llm' ? 'llm' : 'static'),
+    planReason: (r.plan_reason as string) || undefined,
     createdAt: r.created_at as number,
     expiresAt: r.expires_at as number,
   }
@@ -50,6 +53,8 @@ export async function saveIntent(intent: EntryIntent): Promise<void> {
       chase_cap_price: intent.chaseCapPrice,
       notional_usdc: intent.notionalUsdc,
       atr: intent.atr,
+      band_source: intent.bandSource,
+      plan_reason: intent.planReason ?? null,
       created_at: intent.createdAt,
       expires_at: intent.expiresAt,
     })

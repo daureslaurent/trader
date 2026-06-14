@@ -5,9 +5,10 @@ import { broadcast } from '../api/ws.js'
 import { fetchMarketData, fetchBalance, getTopPairs } from '../trader/index.js'
 import * as priceCache from '../market/index.js'
 import * as entry from '../entry/index.js'
+import { planEntry, resolveEntryBand } from '../entryPlanner/index.js'
 import { getPortfolioState, getOpenEntries, detectExternalWithdrawal, checkOpenPositions } from '../portfolio/index.js'
 import { isTradeable } from '../core/tradeable.js'
-import { Signal } from '../types.js'
+import { Signal, MarketContext } from '../types.js'
 import { handleTradeSignal } from '../execution/index.js'
 import { analyzeCoin } from './analyze.js'
 import { prepareBuyOrder } from './buyEvaluation.js'
@@ -31,7 +32,7 @@ export function isPipelineRunning(): boolean { return pipelineRunning }
  */
 async function handleBuySignal(args: {
   data: { symbol: string; price: number }
-  marketCtx: { atr14: number }
+  marketCtx: MarketContext
   signal: Signal
   portfolioState: Awaited<ReturnType<typeof getPortfolioState>>
   settings: ReturnType<typeof getSettings>
@@ -61,13 +62,24 @@ async function handleBuySignal(args: {
     // tripping "ran away" / "pullback" instantly. Position size + fee-edge gate
     // stay on the analyzed (decision-time) price; only the band tracks live.
     const entryBasis = priceCache.getPrice(symbol)?.price ?? data.price
-    entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * data.price, atr: marketCtx.atr14, settings })
+
+    // When the Entry Planner is on, an LLM picks the per-coin band from live market
+    // context + the analyst thesis; otherwise (or on any LLM failure / invalid
+    // output) resolveEntryBand falls back to the static entry_* settings.
+    const plan = settings.entry_planner_enabled
+      ? await planEntry({ coin: symbol, price: data.price, market: marketCtx, signal: buySignal, settings })
+      : null
+    const band = resolveEntryBand(plan, settings)
+
+    entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * data.price, atr: marketCtx.atr14, band })
     logPipelineEvent('entry_intent_created', symbol, cycleId, {
       action: 'BUY', signal_price: entryBasis, analyzed_price: data.price, quantity: qty,
-      target_price: entryBasis * (1 - settings.entry_pullback_pct / 100),
-      invalidate_price: entryBasis * (1 - settings.entry_invalidate_pct / 100),
-      chase_cap_price: entryBasis * (1 + settings.entry_max_chase_pct / 100),
-      ttl_minutes: settings.entry_ttl_minutes,
+      target_price: entryBasis * (1 - band.pullbackPct / 100),
+      invalidate_price: entryBasis * (1 - band.invalidatePct / 100),
+      chase_cap_price: entryBasis * (1 + band.chaseCapPct / 100),
+      ttl_minutes: band.ttlMinutes,
+      band_source: band.source,
+      plan_reason: band.reason,
     })
     return true
   }

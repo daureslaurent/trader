@@ -149,13 +149,23 @@ export default function EntryDesk() {
         <Card noPad className="lg:col-span-2 overflow-hidden">
           {selectedIntent ? (
             <>
-              <div className="flex items-center justify-between px-5 pt-5 pb-1">
+              <div className="flex items-start justify-between px-5 pt-5 pb-1 gap-3">
                 <CardHeader
                   title={`${selectedIntent.coin.replace('/USDC', '')} — entry window`}
                   subtitle={`Signal ${fmtUSD(selectedIntent.signalPrice)} · expires in ${fmtCountdown(selectedIntent.expiresAt - now)}`}
                 />
-                <Badge variant="accent" dot>Waiting</Badge>
+                <div className="flex items-center gap-2 shrink-0">
+                  {selectedIntent.bandSource === 'llm' && (
+                    <Badge variant="accent" title={selectedIntent.planReason || 'Levels chosen by the Entry Planner'}>AI levels</Badge>
+                  )}
+                  <Badge variant="accent" dot>Waiting</Badge>
+                </div>
               </div>
+              {selectedIntent.bandSource === 'llm' && selectedIntent.planReason && (
+                <p className="px-5 pb-1 text-xs text-muted leading-relaxed">
+                  <span className="font-medium text-foreground">Entry Planner:</span> {selectedIntent.planReason}
+                </p>
+              )}
               <CandleChart symbol={selectedIntent.coin} levels={levels} zones={zones} hideSlTp />
             </>
           ) : (
@@ -287,9 +297,26 @@ function IntentCard({ intent, now, currentPrice, selected, onSelect }: {
       className={cn('!p-3.5 space-y-3', selected && 'border-accent/40 ring-1 ring-accent/20')}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-semibold text-foreground">{coin}</span>
-        <span className="text-[11px] text-muted tabular-nums">{fmtCountdown(intent.expiresAt - now)} left</span>
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="text-sm font-semibold text-foreground">{coin}</span>
+          {intent.bandSource === 'llm' && (
+            <span
+              title={intent.planReason || 'Levels chosen by the Entry Planner'}
+              className="inline-flex items-center gap-1 rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
+            >
+              <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.4 6.6L22 12l-6.6 2.4L13 21l-2.4-6.6L4 12l6.6-2.4L13 3z" />
+              </svg>
+              AI
+            </span>
+          )}
+        </span>
+        <span className="text-[11px] text-muted tabular-nums shrink-0">{fmtCountdown(intent.expiresAt - now)} left</span>
       </div>
+
+      {intent.bandSource === 'llm' && intent.planReason && (
+        <p className="text-[11px] text-muted leading-snug line-clamp-2">{intent.planReason}</p>
+      )}
 
       <div className="flex items-center justify-between text-xs tabular-nums">
         <span className="text-muted">Buy ≤ <span className="text-accent font-semibold">{fmtUSD(intent.targetPrice)}</span></span>

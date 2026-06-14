@@ -23,6 +23,10 @@ export interface EntryIntent {
   notionalUsdc: number
   /** ATR at analysis time — passed through so SL/TP are computed at the fill price. */
   atr: number
+  /** Whether the band levels were chosen by the Entry Planner LLM or the static settings. */
+  bandSource: 'llm' | 'static'
+  /** The LLM's one-line rationale for these levels (present only when bandSource === 'llm'). */
+  planReason?: string
   createdAt: number
   expiresAt: number
 }

@@ -180,6 +180,10 @@ export interface EntryIntent {
   invalidatePrice: number
   chaseCapPrice: number
   notionalUsdc: number
+  /** Whether the band levels were chosen by the Entry Planner LLM or static settings. */
+  bandSource?: 'llm' | 'static'
+  /** The LLM's one-line rationale for these levels (present only when bandSource === 'llm'). */
+  planReason?: string
   createdAt: number
   expiresAt: number
 }
@@ -352,6 +356,7 @@ export type LLMModuleKey =
   | 'monitorA'
   | 'monitorB'
   | 'summary'
+  | 'entryPlanner'
   | 'agent'
 
 /** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */

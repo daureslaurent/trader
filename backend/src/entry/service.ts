@@ -4,6 +4,7 @@ import { logger } from '../core/logger.js'
 import * as priceCache from '../market/index.js'
 import { getSettings } from '../db/index.js'
 import { Signal, BotSettings } from '../types.js'
+import { EntryBand } from '../entryPlanner/index.js'
 import { EntryIntent, EntryEvent, CancelReason, FillTrigger } from './types.js'
 import * as store from './store.js'
 
@@ -45,10 +46,11 @@ interface RegisterParams {
   signalPrice: number
   notionalUsdc: number
   atr: number
-  settings: BotSettings
+  /** The resolved entry band (LLM plan or static settings) — see resolveEntryBand. */
+  band: EntryBand
 }
 
-export function register({ signal, signalPrice, notionalUsdc, atr, settings }: RegisterParams): void {
+export function register({ signal, signalPrice, notionalUsdc, atr, band }: RegisterParams): void {
   const coin = signal.coin
   if (intents.has(coin)) {
     logger.debug('Entry intent already active, skipping register', { coin })
@@ -61,13 +63,15 @@ export function register({ signal, signalPrice, notionalUsdc, atr, settings }: R
     coin,
     signal,
     signalPrice,
-    targetPrice: signalPrice * (1 - settings.entry_pullback_pct / 100),
-    invalidatePrice: signalPrice * (1 - settings.entry_invalidate_pct / 100),
-    chaseCapPrice: signalPrice * (1 + settings.entry_max_chase_pct / 100),
+    targetPrice: signalPrice * (1 - band.pullbackPct / 100),
+    invalidatePrice: signalPrice * (1 - band.invalidatePct / 100),
+    chaseCapPrice: signalPrice * (1 + band.chaseCapPct / 100),
     notionalUsdc,
     atr,
+    bandSource: band.source,
+    planReason: band.reason,
     createdAt: now,
-    expiresAt: now + settings.entry_ttl_minutes * 60_000,
+    expiresAt: now + band.ttlMinutes * 60_000,
   }
 
   intents.set(coin, intent)
@@ -76,7 +80,7 @@ export function register({ signal, signalPrice, notionalUsdc, atr, settings }: R
   logger.info('Entry intent registered', {
     coin, signalPrice, target: intent.targetPrice,
     invalidate: intent.invalidatePrice, chaseCap: intent.chaseCapPrice,
-    expiresInMin: settings.entry_ttl_minutes,
+    expiresInMin: band.ttlMinutes, bandSource: band.source, planReason: band.reason,
   })
   recordEvent({ coin, type: 'registered', signalPrice, targetPrice: intent.targetPrice })
   broadcastIntents()

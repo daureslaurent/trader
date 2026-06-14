@@ -71,6 +71,14 @@ export const config = {
     model: opt('SUMMARY_MODEL', llamaModel),
     maxTokens: num('SUMMARY_MAX_TOKENS', 3072),
   },
+  entryPlanner: {
+    // Entry Planner — decides the per-coin entry-timing band (pullback / invalidate /
+    // chase cap / TTL) for a deferred BUY. A small, fast model is plenty; it returns
+    // a tiny JSON object. Falls back to the llama defaults.
+    baseURL: opt('ENTRY_PLANNER_BASE_URL', llamaBaseURL),
+    model: opt('ENTRY_PLANNER_MODEL', llamaModel),
+    maxTokens: num('ENTRY_PLANNER_MAX_TOKENS', 1024),
+  },
   agent: {
     // Conversational agent (the Agent page). Drives a native tool-calling loop, so
     // it should point at a model that supports OpenAI function/tool calling. A roomy

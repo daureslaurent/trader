@@ -147,6 +147,11 @@ export interface BotSettings {
   entry_on_expiry: 'market' | 'cancel'
   /** How often the entry engine evaluates intents against the live price, in seconds. */
   entry_poll_seconds: number
+  /** When true, the Entry Planner LLM decides the per-coin entry band (pullback /
+   *  invalidate / chase cap / TTL) for each deferred BUY. When off (or on LLM
+   *  failure/invalid output) the static entry_* values above are used. Only takes
+   *  effect when entry_timing_enabled is on. */
+  entry_planner_enabled: boolean
   /** Shared catalog of named LLM endpoints. Each module references one by id via
    *  `llm_<module>_endpoint`; a blank id falls back to the module's env-var config. */
   llm_endpoints: LLMEndpoint[]
@@ -167,6 +172,9 @@ export interface BotSettings {
   llm_monitor_b_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
+  /** Entry Planner — picks the per-coin entry band for deferred BUYs. */
+  llm_entry_planner_endpoint: string
+  llm_entry_planner_max_tokens: number
   /** Conversational agent (Agent page). Needs a tool-calling-capable model. */
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
@@ -187,6 +195,8 @@ export interface BotSettings {
   llm_monitor_b_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
+  llm_entry_planner_fb_endpoint: string
+  llm_entry_planner_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
