@@ -73,28 +73,40 @@ function RichText({ text }: { text: string }) {
       continue
     }
     
-    // Check for table (pipe syntax)
-    if (line.startsWith('|') && line.includes('|')) {
+    // Check for table (pipe or tab separated)
+    if ((line.startsWith('|') && line.includes('|')) || (line.includes('\t') && !line.startsWith('#'))) {
       const tableLines: string[] = []
       let j = i
-      // Collect all table lines
-      while (j < lines.length && (lines[j].startsWith('|') || lines[j].trim() === '')) {
+      
+      // Collect all table lines - either pipe-separated or tab-separated
+      while (j < lines.length && (lines[j].trim() === '' || 
+          lines[j].startsWith('|') || 
+          (lines[j].includes('\t') && !lines[j].startsWith('#')))) {
         tableLines.push(lines[j])
         j++
       }
       
-      // Process table if we have at least 2 lines (header + separator)
+      // Process table if we have at least 2 lines (header + separator for pipes, or just header + data for tabs)
       if (tableLines.length >= 2) {
         flush()
         
-        // Parse the table
-        const rows = tableLines.filter(l => l.trim() !== '').map(l => l.split('|').slice(1, -1).map(cell => cell.trim()))
+        // Check if it's pipe-separated or tab-separated
+        let isPipeSeparated = line.startsWith('|')
+        let rows: string[][] = []
+        
+        if (isPipeSeparated) {
+          // Parse pipe-separated table
+          rows = tableLines.filter(l => l.trim() !== '').map(l => l.split('|').slice(1, -1).map(cell => cell.trim()))
+        } else {
+          // Parse tab-separated table (like in the user's example)
+          rows = tableLines.filter(l => l.trim() !== '').map(l => l.split('\t').map(cell => cell.trim()))
+        }
+        
         if (rows.length >= 2) {
           const headers = rows[0]
-          const separator = rows[1]
           
           // Create table with proper styling
-          const tableRows = rows.slice(2).map((row, rowIndex) => (
+          const tableRows = rows.slice(1).map((row, rowIndex) => (
             <tr key={`table-row-${rowIndex}`} className={rowIndex % 2 === 0 ? 'bg-surface-card' : ''}>
               {row.map((cell, cellIndex) => (
                 <td key={`table-cell-${rowIndex}-${cellIndex}`} className="px-3 py-2 border border-border text-sm">
