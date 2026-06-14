@@ -4,6 +4,8 @@ import { usePrices } from '../hooks/usePrices'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { CandleChart, type ChartLevel, type ChartZone } from '../components/CandleChart'
+import { CancelEntryModal } from '../components/CancelEntryModal'
+import { Button } from '../components/ui/Button'
 import { EntryIntent, EntryEvent } from '../types'
 import { fmtUSD, fmtPct, cn } from '../lib/utils'
 
@@ -49,6 +51,7 @@ export default function EntryDesk() {
   const [intents, setIntents] = useState<EntryIntent[]>([])
   const [events, setEvents] = useState<EntryEvent[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<EntryIntent | null>(null)
   const [now, setNow] = useState(Date.now())
   const prices = usePrices()
 
@@ -159,6 +162,17 @@ export default function EntryDesk() {
                     <Badge variant="accent" title={selectedIntent.planReason || 'Levels chosen by the Entry Planner'}>AI levels</Badge>
                   )}
                   <Badge variant="accent" dot>Waiting</Badge>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => setCancelTarget(selectedIntent)}
+                    title="Cancel this deferred entry"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    Cancel
+                  </Button>
                 </div>
               </div>
               {selectedIntent.bandSource === 'llm' && selectedIntent.planReason && (
@@ -200,6 +214,7 @@ export default function EntryDesk() {
                 currentPrice={prices.get(i.coin)?.price}
                 selected={selectedIntent?.coin === i.coin}
                 onSelect={() => setSelected(i.coin)}
+                onCancel={() => setCancelTarget(i)}
               />
             ))
           )}
@@ -249,6 +264,13 @@ export default function EntryDesk() {
           </div>
         )}
       </Card>
+
+      {/* Cancel confirmation */}
+      <CancelEntryModal
+        intent={cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        onCancelled={(coin) => { if (selected === coin) setSelected(null) }}
+      />
     </div>
   )
 }
@@ -276,12 +298,13 @@ function StatCard({ label, value, hint, tone, accent }: {
   )
 }
 
-function IntentCard({ intent, now, currentPrice, selected, onSelect }: {
+function IntentCard({ intent, now, currentPrice, selected, onSelect, onCancel }: {
   intent: EntryIntent
   now: number
   currentPrice?: number
   selected: boolean
   onSelect: () => void
+  onCancel: () => void
 }) {
   const coin = intent.coin.replace('/USDC', '')
   const lo = intent.invalidatePrice
@@ -311,7 +334,20 @@ function IntentCard({ intent, now, currentPrice, selected, onSelect }: {
             </span>
           )}
         </span>
-        <span className="text-[11px] text-muted tabular-nums shrink-0">{fmtCountdown(intent.expiresAt - now)} left</span>
+        <span className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[11px] text-muted tabular-nums">{fmtCountdown(intent.expiresAt - now)} left</span>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onCancel() }}
+            title="Cancel this entry"
+            aria-label={`Cancel entry for ${coin}`}
+            className="flex h-6 w-6 items-center justify-center rounded-lg text-muted hover:text-sell hover:bg-sell/10 transition-colors duration-150"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </span>
       </div>
 
       {intent.bandSource === 'llm' && intent.planReason && (

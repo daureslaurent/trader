@@ -4,7 +4,7 @@ import { bus } from '../../core/events.js'
 import { logger } from '../../core/logger.js'
 import { Signal, PortfolioEntry } from '../../types.js'
 import { getPendingApprovals } from '../../execution/index.js'
-import { getActiveIntents, getRecentEvents } from '../../entry/index.js'
+import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent } from '../../entry/index.js'
 import { executeTrade, executeCoinTrade, fetchBalance } from '../../trader/index.js'
 import {
   getOpenEntries, getUsdcEntry, updatePortfolioForTrade,
@@ -43,6 +43,22 @@ router.get('/entry-intents', (_req: Request, res: Response) => {
 
 router.get('/entry-events', (_req: Request, res: Response) => {
   res.json(getRecentEvents())
+})
+
+// Manually cancel a pending entry intent (deferred BUY) from the Entry Desk.
+// The coin carries a slash (e.g. BTC/USDC), so it's passed in the body rather
+// than the path. Discards the watch — it does NOT place a trade.
+router.post('/entry-intents/cancel', (req: Request, res: Response) => {
+  const { coin } = req.body
+  if (!coin || typeof coin !== 'string') {
+    return res.status(400).json({ error: 'coin required' })
+  }
+  if (!hasActiveIntent(coin)) {
+    return res.status(404).json({ error: 'No active entry intent for this coin' })
+  }
+  logger.info('Entry intent cancelled by user', { coin })
+  cancelEntryIntent(coin, 'manual')
+  res.json({ ok: true })
 })
 
 router.post('/trade/approve/:id', async (req: Request, res: Response) => {
