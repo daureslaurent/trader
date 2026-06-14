@@ -1,17 +1,18 @@
-import { MarketContext, Signal, BotSettings } from '../types.js'
+import { MarketContext, Signal } from '../types.js'
 
 /**
  * Build the Entry Planner prompt. The model is handed the live market context and
- * the analyst's BUY thesis, and decides the four entry-band levels. The static
- * `entry_*` settings are passed as a baseline so the model anchors around the
- * operator's defaults rather than inventing levels from scratch.
+ * the analyst's BUY thesis, and decides the four entry-band levels purely from the
+ * setup. The static `entry_*` settings are deliberately NOT shown: passing them as
+ * a baseline anchored the model onto the operator's one-size-fits-all defaults,
+ * defeating the point of a per-coin plan. The qualitative guidance in the system
+ * prompt is what keeps the chosen levels grounded.
  */
 export function buildEntryPlannerPrompt(
   coin: string,
   price: number,
   market: MarketContext,
   signal: Signal,
-  settings: BotSettings,
 ): { system: string; user: string } {
   const system = [
     'You are the Entry Planner for a crypto trading bot.',
@@ -56,12 +57,6 @@ export function buildEntryPlannerPrompt(
     signal.stop_loss_pct != null ? `- Planned stop-loss: ${signal.stop_loss_pct}% below entry` : '',
     signal.take_profit_pct != null ? `- Planned take-profit: ${signal.take_profit_pct}% above entry` : '',
     `- Reasoning: ${signal.reason}`,
-    '',
-    'Operator baseline defaults (anchor around these, adjust for the setup above):',
-    `- pullback_pct: ${settings.entry_pullback_pct}`,
-    `- invalidate_pct: ${settings.entry_invalidate_pct}`,
-    `- chase_cap_pct: ${settings.entry_max_chase_pct}`,
-    `- ttl_minutes: ${settings.entry_ttl_minutes}`,
     '',
     'Respond with the JSON object only.',
   ].filter(Boolean).join('\n')

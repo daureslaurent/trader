@@ -12,7 +12,6 @@ interface PlanArgs {
   price: number
   market: MarketContext
   signal: Signal
-  settings: BotSettings
 }
 
 /**
@@ -61,8 +60,8 @@ function parsePlan(content: string): EntryPlan | null {
  * back cleanly to the static `entry_*` settings.
  */
 export async function planEntry(args: PlanArgs): Promise<EntryPlan | null> {
-  const { coin, price, market, signal, settings } = args
-  const { system, user } = buildEntryPlannerPrompt(coin, price, market, signal, settings)
+  const { coin, price, market, signal } = args
+  const { system, user } = buildEntryPlannerPrompt(coin, price, market, signal)
   const llm = resolveLLM('entryPlanner')
   logger.info('Request LLM', { module: 'entryPlanner', coin, model: llm.model })
 

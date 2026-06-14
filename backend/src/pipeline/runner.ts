@@ -67,7 +67,7 @@ async function handleBuySignal(args: {
     // context + the analyst thesis; otherwise (or on any LLM failure / invalid
     // output) resolveEntryBand falls back to the static entry_* settings.
     const plan = settings.entry_planner_enabled
-      ? await planEntry({ coin: symbol, price: data.price, market: marketCtx, signal: buySignal, settings })
+      ? await planEntry({ coin: symbol, price: data.price, market: marketCtx, signal: buySignal })
       : null
     const band = resolveEntryBand(plan, settings)
 
