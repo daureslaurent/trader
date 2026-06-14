@@ -297,6 +297,93 @@ function ReviewCard({ review, holdings, closingCoin, onClose, note }: {
   )
 }
 
+// ── Review carousel ─────────────────────────────────────────────────────────
+// Hero presentation: one review at a time, flanked by prev/next controls with
+// dot indicators below. Keeps the monitor scannable when many coins are held.
+
+const NavArrowIcon = ({ dir }: { dir: 'left' | 'right' }) => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2.25} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d={dir === 'left' ? 'M15.75 19.5L8.25 12l7.5-7.5' : 'M8.25 4.5l7.5 7.5-7.5 7.5'} />
+  </svg>
+)
+
+function ReviewCarousel({ reviews, holdings, closingCoin, onClose, notesByCoin }: {
+  reviews: PositionReview[]
+  holdings: PortfolioEntry[]
+  closingCoin: string | null
+  onClose: (coin: string) => void
+  notesByCoin: Map<string, MonitorNote>
+}) {
+  const [idx, setIdx] = useState(0)
+  const count = reviews.length
+
+  // Clamp the index whenever the review set changes (e.g. a new monitor run).
+  useEffect(() => { setIdx(i => Math.min(i, Math.max(0, count - 1))) }, [count])
+
+  if (count === 0) return null
+
+  const safeIdx = Math.min(idx, count - 1)
+  const review = reviews[safeIdx]
+  const go = (delta: number) => setIdx(i => (i + delta + count) % count)
+
+  const NavButton = ({ dir }: { dir: 'left' | 'right' }) => (
+    <button
+      type="button"
+      aria-label={dir === 'left' ? 'Previous position' : 'Next position'}
+      onClick={() => go(dir === 'left' ? -1 : 1)}
+      disabled={count <= 1}
+      className={cn(
+        'shrink-0 grid place-items-center w-10 h-10 rounded-full border border-border bg-surface-card text-muted',
+        'transition-colors hover:text-foreground hover:border-accent/40 hover:bg-surface-hover',
+        'disabled:opacity-30 disabled:pointer-events-none',
+      )}
+    >
+      <NavArrowIcon dir={dir} />
+    </button>
+  )
+
+  return (
+    <div className="px-4 pb-5">
+      <div className="flex items-stretch gap-3">
+        <div className="flex items-center"><NavButton dir="left" /></div>
+
+        <div className="flex-1 min-w-0">
+          <ReviewCard
+            key={review.id}
+            review={review}
+            holdings={holdings}
+            closingCoin={closingCoin}
+            onClose={onClose}
+            note={notesByCoin.get(review.coin) ?? null}
+          />
+        </div>
+
+        <div className="flex items-center"><NavButton dir="right" /></div>
+      </div>
+
+      {count > 1 && (
+        <div className="mt-4 flex items-center justify-center gap-3">
+          <div className="flex items-center gap-1.5">
+            {reviews.map((r, i) => (
+              <button
+                key={r.id}
+                type="button"
+                aria-label={`Go to position ${i + 1}`}
+                onClick={() => setIdx(i)}
+                className={cn(
+                  'h-2 rounded-full transition-all',
+                  i === safeIdx ? 'w-6 bg-accent' : 'w-2 bg-border hover:bg-muted',
+                )}
+              />
+            ))}
+          </div>
+          <span className="text-xs text-muted tabular-nums">{safeIdx + 1} / {count}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Position Detail Modal ──────────────────────────────────────────────────
 
 function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClosed, onClose, onClosePosition, onMarkAlreadyClosed, onHorizonChange }: {
@@ -1040,11 +1127,13 @@ export default function Portfolio() {
         )}
 
         {latestReviews.length > 0 && (
-          <div className="px-4 pb-4 space-y-2">
-            {latestReviews.map(review => (
-              <ReviewCard key={review.id} review={review} holdings={holdings} closingCoin={closingCoin} onClose={handleClosePosition} note={notesByCoin.get(review.coin) ?? null} />
-            ))}
-          </div>
+          <ReviewCarousel
+            reviews={latestReviews}
+            holdings={holdings}
+            closingCoin={closingCoin}
+            onClose={handleClosePosition}
+            notesByCoin={notesByCoin}
+          />
         )}
       </Card>
 
