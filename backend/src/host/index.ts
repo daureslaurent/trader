@@ -5,6 +5,10 @@
 import os from 'node:os'
 import fs from 'node:fs/promises'
 
+// Host self-update bridge (trigger-file → host systemd watcher).
+export { requestUpdate, getUpdateReadiness } from './update.js'
+export type { UpdateReadiness } from './update.js'
+
 export interface CpuCoreLoad {
   core: number
   usage: number // 0..100

@@ -247,6 +247,10 @@ export interface BotSettings {
   telegram_notify_trade_failed: boolean
   /** System/runtime errors surfaced to Telegram. */
   telegram_notify_errors: boolean
+  /** Master switch for the in-app host self-update action ("Update app"). Off by
+   *  default — when on, the Settings page exposes a button that signals the host
+   *  watcher to pull latest main and rebuild/restart the stack. */
+  update_enabled: boolean
 }
 
 /** One run of the portfolio-summary engine: an LLM narrative + structured read of

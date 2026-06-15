@@ -147,6 +147,7 @@ export function getSettings(): BotSettings {
     telegram_notify_discovery: (map.telegram_notify_discovery ?? 'true') === 'true',
     telegram_notify_trade_failed: (map.telegram_notify_trade_failed ?? 'true') === 'true',
     telegram_notify_errors: (map.telegram_notify_errors ?? 'true') === 'true',
+    update_enabled: map.update_enabled === 'true',
   }
 }
 

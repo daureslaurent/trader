@@ -35,6 +35,11 @@ services:
       # discovery while still permitting transactions against the rs0 primary.
       MONGO_URL: mongodb://mongo:27017/?directConnection=true
       MONGO_DB: cryptobot
+    volumes:
+      # Host self-update bridge: the "Update app" button drops a trigger file
+      # here; a host systemd watcher (tools/updater) sees it and runs
+      # update_run.sh. Bind-mounted so the trigger reaches the host.
+      - ./.update:/app/.update
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

@@ -106,6 +106,7 @@ interface SettingsData {
   telegram_notify_discovery: boolean
   telegram_notify_trade_failed: boolean
   telegram_notify_errors: boolean
+  update_enabled: boolean
 }
 
 // Telegram per-event notification toggles, rendered as one row each.
@@ -159,6 +160,7 @@ const SECTIONS = [
   { id: 'appearance', label: 'Appearance',       icon: 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z' },
   { id: 'llm',        label: 'LLM Data',         icon: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5' },
   { id: 'telegram',   label: 'Telegram',         icon: 'M21.5 4.5L2.5 12l6 2m13-9.5l-3 15-7-5.5m10-9.5L8.5 16m0 0v4.5l3.5-3.5' },
+  { id: 'system',     label: 'System',           icon: 'M4 7v10a2 2 0 002 2h12a2 2 0 002-2V7M4 7l8-4 8 4M4 7l8 4 8-4M12 11v8' },
 ] as const
 
 type SectionId = typeof SECTIONS[number]['id']
@@ -832,6 +834,178 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
   )
 }
 
+/* ------------------------------ App self-update ------------------------------ */
+
+interface UpdateReadiness { enabled: boolean; ready: boolean; reason?: string }
+
+// Full-screen takeover shown while the host rebuilds and restarts the stack. The
+// backend (and frontend container) go down mid-update, so we can't be told when
+// it's done — instead we poll the API: once we've seen it go *down* and then come
+// back *up*, the new build is live and we reload to pick it up.
+function UpdatingOverlay() {
+  const [elapsed, setElapsed] = useState(0)
+  const sawDown = useRef(false)
+
+  useEffect(() => {
+    const start = Date.now()
+    const tick = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch('/api/settings', { cache: 'no-store' })
+        if (!res.ok) throw new Error('down')
+        // Reachable again — but only reload once it has actually gone down first,
+        // otherwise we'd reload before the restart even begins.
+        if (sawDown.current) window.location.reload()
+      } catch {
+        sawDown.current = true
+      }
+    }, 2500)
+    return () => { clearInterval(tick); clearInterval(poll) }
+  }, [])
+
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0')
+  const ss = String(elapsed % 60).padStart(2, '0')
+
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-6 bg-surface-base/95 backdrop-blur-md animate-fade-in">
+      <div className="relative flex h-20 w-20 items-center justify-center">
+        <span className="absolute inset-0 rounded-full border-2 border-accent/20" />
+        <span className="absolute inset-0 rounded-full border-2 border-accent border-t-transparent animate-spin" />
+        <svg className="h-8 w-8 text-accent" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v6h6M20 20v-6h-6" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M20 9A8 8 0 006.34 5.34L4 8m0 8a8 8 0 0013.66 3.66L20 16" />
+        </svg>
+      </div>
+      <div className="text-center">
+        <h2 className="text-lg font-semibold text-foreground">Updating CryptoBot…</h2>
+        <p className="mt-1.5 max-w-sm text-sm text-muted">
+          Pulling the latest version and rebuilding the stack. This page will reload automatically once it’s back online.
+        </p>
+        <p className="mt-3 font-mono text-xs text-muted/70">elapsed {mm}:{ss}</p>
+      </div>
+      <Button type="button" variant="ghost" size="sm" onClick={() => window.location.reload()}>
+        Reload now
+      </Button>
+    </div>
+  )
+}
+
+// The "Update app" button + confirmation modal. Gated by the update_enabled
+// toggle and by whether the host bridge (./.update bind mount + watcher) is wired
+// up — both are reported by GET /api/host/update.
+function AppUpdate({ enabled }: { enabled: boolean }) {
+  const [readiness, setReadiness] = useState<UpdateReadiness | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [phase, setPhase] = useState<'idle' | 'triggering' | 'updating'>('idle')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch('/api/host/update')
+      .then(r => r.json())
+      .then((d: UpdateReadiness) => setReadiness(d))
+      .catch(() => setReadiness(null))
+  }, [enabled])
+
+  const bridgeReady = readiness?.ready ?? false
+
+  async function trigger() {
+    setError(null)
+    setPhase('triggering')
+    try {
+      const res = await fetch('/api/host/update', { method: 'POST' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error((body as { error?: string }).error || `Request failed (${res.status})`)
+      }
+      setConfirmOpen(false)
+      setPhase('updating')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start update')
+      setPhase('idle')
+    }
+  }
+
+  useEffect(() => {
+    if (!confirmOpen) return
+    const handler = (e: globalThis.KeyboardEvent) => { if (e.key === 'Escape') setConfirmOpen(false) }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [confirmOpen])
+
+  return (
+    <>
+      <Row
+        label="Update app"
+        hint="Pull the latest main and rebuild + restart the whole stack on the host. The app will be briefly unavailable while it restarts."
+      >
+        <Button
+          type="button"
+          variant="primary"
+          size="md"
+          disabled={!enabled || !bridgeReady}
+          onClick={() => { setError(null); setConfirmOpen(true) }}
+        >
+          Update app
+        </Button>
+      </Row>
+
+      {enabled && !bridgeReady && (
+        <div className="flex items-start gap-2 pb-4 text-[11px] text-warn">
+          <svg className="mt-px h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <span>
+            Host update bridge not detected{readiness?.reason ? ` (${readiness.reason})` : ''}. Install the watcher on the host with{' '}
+            <code className="font-mono text-warn/90">sudo tools/updater/install-updater.sh</code>.
+          </span>
+        </div>
+      )}
+
+      {/* Confirmation modal */}
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setConfirmOpen(false)} />
+          <div className="relative z-10 mx-4 w-full max-w-md rounded-2xl border border-border bg-surface-card p-6 shadow-2xl animate-fade-in">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent">
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v6h6M20 20v-6h-6" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M20 9A8 8 0 006.34 5.34L4 8m0 8a8 8 0 0013.66 3.66L20 16" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-foreground">Update the app?</h2>
+                <p className="mt-0.5 text-xs text-muted">This restarts everything.</p>
+              </div>
+            </div>
+
+            <ul className="mt-4 space-y-2 text-sm text-muted">
+              <li className="flex gap-2"><span className="text-accent">•</span> Pulls the latest <code className="font-mono text-foreground">main</code> (discards local changes on the server)</li>
+              <li className="flex gap-2"><span className="text-accent">•</span> Rebuilds and restarts all containers</li>
+              <li className="flex gap-2"><span className="text-accent">•</span> The app is briefly offline; this page reloads when it’s back</li>
+            </ul>
+
+            {error && (
+              <div className="mt-4 rounded-lg bg-sell/10 px-3 py-2 text-xs text-sell">{error}</div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button type="button" variant="ghost" size="md" onClick={() => setConfirmOpen(false)} disabled={phase === 'triggering'}>
+                Cancel
+              </Button>
+              <Button type="button" variant="primary" size="md" loading={phase === 'triggering'} onClick={trigger}>
+                Update now
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {phase === 'updating' && <UpdatingOverlay />}
+    </>
+  )
+}
+
 /* ------------------------------------- Page ------------------------------------- */
 
 export default function Settings() {
@@ -899,7 +1073,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'update_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1577,6 +1751,20 @@ export default function Settings() {
               />
             </Row>
           ))}
+        </Section>
+
+        <Section id="system" title="System" subtitle="Maintenance and app lifecycle" icon={SECTIONS[10].icon}>
+          <Row
+            label="Enable app updates"
+            hint="Turn on the in-app updater. Requires the host watcher to be installed (tools/updater/install-updater.sh). Off by default so the rebuild can't be triggered by accident."
+          >
+            <Toggle
+              label="Enable app updates"
+              checked={settings.update_enabled}
+              onChange={() => toggle('update_enabled')}
+            />
+          </Row>
+          <AppUpdate enabled={settings.update_enabled} />
         </Section>
 
         {/* Floating save bar */}

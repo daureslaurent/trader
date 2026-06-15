@@ -216,6 +216,22 @@ See [AGENTS.md](./AGENTS.md) and [tools/README.md](./tools/README.md) for the fu
 
 ---
 
+## 🔄 One-click updates
+
+**Settings → System → Update app** pulls the latest `main` and rebuilds + restarts the whole stack from the dashboard — no SSH needed.
+
+Since the backend runs in a container that the update tears down, it can't update itself directly. Instead the button drops a trigger file into a bind-mounted folder; a host-side **systemd watcher** sees it and runs [`update_run.sh`](./update_run.sh), so the rebuild survives `docker compose down`. No Docker socket is exposed to the app. The page shows an "Updating…" overlay and reloads once the new build is online.
+
+Install the watcher once on the host, then enable the toggle in Settings:
+
+```bash
+sudo tools/updater/install-updater.sh
+```
+
+See [tools/updater/README.md](./tools/updater/README.md) for details.
+
+---
+
 ## 🖥️ The dashboard
 
 A single-page React app (no router — pages switch via `useState`) with **4 themes** and live data over WebSocket:
