@@ -104,7 +104,20 @@ export default function ControlRoom() {
 
   useWebSocket(onMessage)
 
-  const jobList = Object.values(jobs).sort((a, b) => b.updatedAt - a.updatedAt)
+  // Render from BOTH sources: live WS events (which carry model + running/done
+  // transitions) and the polled snapshot's authoritative `waiting[]` queue. The
+  // snapshot is what makes already-enqueued jobs visible when the page is opened
+  // mid-cycle — without it, a freshly-submitted monitor batch shows only as a
+  // queueDepth number because its enqueue events arrived before we subscribed.
+  // WS state wins on conflict (a running job is no longer in `waiting`, so there
+  // is none); queued-only jobs come from the snapshot.
+  const waitingExtra: JobView[] = (snap?.waiting ?? [])
+    .filter(w => !jobs[w.id])
+    .map(w => ({
+      id: w.id, module: w.module, lane: w.lane === 'analyse' ? 'analyse' : 'parallel',
+      coin: w.coin, model: '', state: 'queued', updatedAt: Date.now() - w.waitedMs,
+    }))
+  const jobList = [...Object.values(jobs), ...waitingExtra].sort((a, b) => b.updatedAt - a.updatedAt)
   const analyseJobs = jobList.filter(j => j.lane === 'analyse')
   const parallelJobs = jobList.filter(j => j.lane === 'parallel')
   const swapCount = swaps.length
