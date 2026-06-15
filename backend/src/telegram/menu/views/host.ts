@@ -24,10 +24,20 @@ export async function render(_ctx: any) {
     `  ${formatBytes(h.memory.usedBytes)} / ${formatBytes(h.memory.totalBytes)} used`,
   ]
 
-  if (h.temperature.maxCelsius != null) {
+  const tempEmoji = (t: number) => (t >= 80 ? '🔥' : t >= 60 ? '🌡️' : '❄️')
+  if (h.temperature.sensors.length > 0) {
+    lines.push('', `<b>Temperature</b>`)
+    for (const s of h.temperature.sensors) {
+      lines.push(`  ${tempEmoji(s.celsius)} ${esc(s.label)}  <b>${s.celsius.toFixed(1)}°C</b>`)
+    }
+    if (h.temperature.maxCelsius != null) {
+      lines.push(`  <i>max ${h.temperature.maxCelsius.toFixed(1)}°C</i>`)
+    }
+  } else if (h.temperature.maxCelsius != null) {
     const t = h.temperature.maxCelsius
-    const emoji = t >= 80 ? '🔥' : t >= 60 ? '🌡️' : '❄️'
-    lines.push('', `${emoji} Temp <b>${t.toFixed(1)}°C</b> (max)`)
+    lines.push('', `${tempEmoji(t)} Temp <b>${t.toFixed(1)}°C</b> (max)`)
+  } else {
+    lines.push('', '<i>🌡️ No temperature sensors available.</i>')
   }
 
   return {
