@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useApi } from '../hooks/useApi'
 import { Card, CardHeader } from '../components/ui/Card'
@@ -267,12 +267,11 @@ export default function ControlRoom() {
 }
 
 // ── Endpoint timeline row ───────────────────────────────────────────────────────
-interface Band { model: string; widthPct: number; start: number; end: number; count: number; coins: string[] }
+interface Band { model: string; widthPct: number; start: number; end: number; count: number; coins: string[]; gapPct: number }
 
-// Collapse a URL's dispatch points into contiguous same-model bands across the window.
-// A band runs from the model's first dispatch until the next different model's first
-// dispatch (the swap moment), the last extending to now. Idle time before the first
-// dispatch becomes a leading gap so every bar shares one time axis.
+// Collapse consecutive same-model dispatch points into bands. Each band spans only its
+// own dispatch range (first to last event within the contiguous run). Gaps between bands
+// and idle time before the first dispatch remain transparent, so empty space stays empty.
 function buildBands(events: { model: string; coin: string | null; agoMs: number }[], now: number, windowMs: number): { leadPct: number; bands: Band[] } {
   const windowStart = now - windowMs
   if (!events.length) return { leadPct: 100, bands: [] }
@@ -288,15 +287,18 @@ function buildBands(events: { model: string; coin: string | null; agoMs: number 
       segs.push({ model: e.model, start: at, end: at, count: 1, coins: new Set(e.coin ? [e.coin.replace('/USDC', '')] : []) })
     }
   }
-  for (let i = 0; i < segs.length; i++) {
-    if (i < segs.length - 1) segs[i].end = segs[i + 1].start
-  }
 
   const firstStart = Math.max(segs[0].start, windowStart)
   const leadPct = Math.max(0, ((firstStart - windowStart) / windowMs) * 100)
-  const bands: Band[] = segs.map(s => {
+  const bands: Band[] = segs.map((s, i) => {
     const start = Math.max(s.start, windowStart)
-    return { model: s.model, start, end: s.end, count: s.count, coins: [...s.coins], widthPct: Math.max(0, ((s.end - start) / windowMs) * 100) }
+    const end = Math.max(s.end, start)
+    let gapPct = 0
+    if (i > 0) {
+      const prevEnd = Math.max(segs[i - 1].end, segs[i - 1].start, windowStart)
+      gapPct = Math.max(0, ((start - prevEnd) / windowMs) * 100)
+    }
+    return { model: s.model, start, end, count: s.count, coins: [...s.coins], gapPct, widthPct: Math.max(0, ((end - start) / windowMs) * 100) }
   })
   return { leadPct, bands }
 }
@@ -318,12 +320,14 @@ function EndpointRow({ ep, now, windowMs }: { ep: EndpointTimeline; now: number;
       <div className="flex-1 flex h-8 rounded-lg overflow-hidden border border-border bg-surface-elevated/40">
         {leadPct > 0.5 && <div style={{ width: `${leadPct}%` }} className="shrink-0" />}
         {bands.map((b, i) => (
-          <div
-            key={i}
-            className={cn('shrink-0 min-w-[2px] relative transition-[width]', i > 0 && 'border-l-2 border-sell')}
-            style={{ width: `${b.widthPct}%`, background: modelColor(b.model) }}
-            title={`${b.model}\n${b.count} dispatch${b.count === 1 ? '' : 'es'}${b.coins.length ? `\n${b.coins.join(', ')}` : ''}\n${new Date(b.start).toLocaleTimeString()} – ${new Date(b.end).toLocaleTimeString()}`}
-          />
+          <Fragment key={i}>
+            {b.gapPct > 0.5 && <div style={{ width: `${b.gapPct}%` }} className="shrink-0" />}
+            <div
+              className={cn('shrink-0 min-w-[2px] relative transition-[width]', i > 0 && 'border-l-2 border-sell')}
+              style={{ width: `${b.widthPct}%`, background: modelColor(b.model) }}
+              title={`${b.model}\n${b.count} dispatch${b.count === 1 ? '' : 'es'}${b.coins.length ? `\n${b.coins.join(', ')}` : ''}\n${new Date(b.start).toLocaleTimeString()} – ${new Date(b.end).toLocaleTimeString()}`}
+            />
+          </Fragment>
         ))}
       </div>
     </div>
