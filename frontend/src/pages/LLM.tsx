@@ -234,7 +234,7 @@ function StageMessage({ event }: { event: PipelineEvent }) {
             <span className="text-xs text-muted">{confPct}%</span>
           </div>
         </div>
-        {data.reason && (
+        {!!data.reason && (
           <p className="text-sm text-muted leading-relaxed border-l-2 border-border pl-3">
             {String(data.reason)}
           </p>
