@@ -282,12 +282,15 @@ function buildBands(events: { model: string; coin: string | null; agoMs: number 
     const last = segs[segs.length - 1]
     if (last && last.model === e.model) {
       last.count++
+      last.end = at
       if (e.coin) last.coins.add(e.coin.replace('/USDC', ''))
     } else {
-      segs.push({ model: e.model, start: at, end: now, count: 1, coins: new Set(e.coin ? [e.coin.replace('/USDC', '')] : []) })
+      segs.push({ model: e.model, start: at, end: at, count: 1, coins: new Set(e.coin ? [e.coin.replace('/USDC', '')] : []) })
     }
   }
-  for (let i = 0; i < segs.length; i++) segs[i].end = i < segs.length - 1 ? segs[i + 1].start : now
+  for (let i = 0; i < segs.length; i++) {
+    if (i < segs.length - 1) segs[i].end = segs[i + 1].start
+  }
 
   const firstStart = Math.max(segs[0].start, windowStart)
   const leadPct = Math.max(0, ((firstStart - windowStart) / windowMs) * 100)
