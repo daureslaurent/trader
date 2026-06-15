@@ -183,10 +183,142 @@ async function pruneMonitorHistory(maxCycles = 20): Promise<void> {
   await positionReviews.deleteMany({ cycle_id: { $nin: keep } })
 }
 
-// Runs a single monitor model against a prepared prompt and returns its parsed
-// verdict. Retries once on both LLM API/network errors and parse failures (#2d).
-async function askModel(llm: MonitorLLM, system: string, user: string, ctx: PositionContext, cycleId: string): Promise<RawReview> {
-  logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, slot: llm.label, model: llm.model })
+// One OPEN portfolio entry, aggregated across multiple fills (see runMonitor).
+interface MonitorEntry { coin: string; quantity: number; avg_buy_price: number; avg_date_ms: number }
+
+// Per-cycle knobs resolved once from settings in runMonitor and shared by every
+// coin's review. These are configuration, not market data, so they don't go stale.
+interface CycleParams {
+  ensemble: MonitorEnsemble
+  adjustEnabled: boolean
+  reduceEnabled: boolean
+  trustLlm: boolean
+  useHorizon: boolean
+  utcOffsetHours: number
+  horizonConfigs: HorizonConfigs
+  historyTf: string
+  historyCount: number
+  minConfidence: number
+  reviewIntervalMin: number | null
+  breakevenPct: number
+  feeRate: number
+  adjustCooldownMin: number
+}
+
+// Everything a coin's review acts on: the fresh position context, the prompt built
+// from it, the recent-review history (for anti-flip-flop), and the horizon-resolved
+// guidance flag. Produced JIT by buildReviewContext, then reused by the merge/validate
+// stage so the prompt and the post-LLM logic always see the SAME market snapshot.
+interface ReviewContext {
+  ctx: PositionContext
+  system: string
+  user: string
+  history: PositionReview[]
+  effectiveUseHorizon: boolean
+}
+
+// JIT context binding: gathers the live price, market indicators, fresh position
+// SL/TP, candles, review history and notes for a coin, then builds its prompt — all
+// at the moment the scheduler dispatches the call, never at cycle start. A monitor
+// run can queue many coins behind a serialized endpoint; building here keeps the
+// prompt's market/position values current rather than minutes-stale from the queue.
+async function buildReviewContext(coin: string, entry: MonitorEntry, p: CycleParams): Promise<ReviewContext> {
+  const snap = priceCache.getPrice(coin)
+  const currentPrice = snap?.price ?? entry.avg_buy_price
+
+  const tf = isTimeframe(p.historyTf) ? p.historyTf : '1h'
+  const count = Math.max(1, Math.min(100, p.historyCount))
+
+  const [marketCtx, position, history, storedNotes, candles] = await Promise.all([
+    getMarketContext(coin, currentPrice),
+    positionsRepo.findOne(
+      { coin, status: 'OPEN' },
+      { projection: { id: 1, stop_loss: 1, take_profit: 1, horizon: 1 } },
+    ) as Promise<{ id: number; stop_loss: number | null; take_profit: number | null; horizon: string | null } | null>,
+    positionReviews.find(
+      { coin },
+      { sort: { created_at: -1 }, limit: 3 },
+    ) as unknown as Promise<PositionReview[]>,
+    monitorNotes.findOne(
+      { _id: coin },
+      { projection: { notes: 1, updated_at: 1 } },
+    ) as Promise<MonitorNotes | null>,
+    getOHLCV(coin, tf, count).catch((err): Awaited<ReturnType<typeof getOHLCV>> => {
+      logger.warn('Failed to fetch candle history for monitor prompt', { coin, tf, error: (err as Error).message })
+      return []
+    }),
+  ])
+
+  const pnlUsd = (currentPrice - entry.avg_buy_price) * entry.quantity
+  const pnlPct = entry.avg_buy_price > 0
+    ? ((currentPrice - entry.avg_buy_price) / entry.avg_buy_price) * 100
+    : 0
+
+  const stopLoss = position?.stop_loss ?? null
+  const takeProfit = position?.take_profit ?? null
+  const distanceToSlPct = stopLoss != null && currentPrice > 0
+    ? ((currentPrice - stopLoss) / currentPrice) * 100
+    : null
+  const distanceToTpPct = takeProfit != null && currentPrice > 0
+    ? ((takeProfit - currentPrice) / currentPrice) * 100
+    : null
+
+  // Weighted-average entry timestamp (epoch ms) from the runMonitor aggregation.
+  const msFromJd = entry.avg_date_ms
+  const ageHours = (Date.now() - msFromJd) / (1000 * 60 * 60)
+  const entryDate = new Date(msFromJd + p.utcOffsetHours * 3600000)
+    .toISOString().replace('T', ' ').slice(0, 19) + ' ' + fmtOffsetLabel(p.utcOffsetHours)
+
+  const rawHorizon = position?.horizon ?? 'medium'
+  const horizon = (['short', 'medium', 'long', 'disabled', 'llm'].includes(rawHorizon)
+    ? rawHorizon : 'medium') as PositionContext['horizon']
+
+  const ctx: PositionContext = {
+    positionId: position?.id ?? null,
+    coin,
+    quantity: entry.quantity,
+    entryPrice: entry.avg_buy_price,
+    currentPrice,
+    pnlUsd,
+    pnlPct,
+    stopLoss,
+    takeProfit,
+    distanceToSlPct,
+    distanceToTpPct,
+    entryDate,
+    ageHours,
+    horizon,
+    rsi14: marketCtx.rsi14,
+    trend: marketCtx.trend,
+    volatility: marketCtx.volatility,
+    atr14: marketCtx.atr14,
+    sma7: marketCtx.sma7,
+    sma25: marketCtx.sma25,
+    change24h: marketCtx.change24h,
+    perf7d: marketCtx.perf7d,
+  }
+
+  // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
+  const effectiveUseHorizon = horizon === 'llm' ? false : p.useHorizon
+  const { system, user } = buildMonitorPrompt(
+    ctx, history, p.horizonConfigs, effectiveUseHorizon, p.utcOffsetHours,
+    candles, tf, p.reviewIntervalMin, storedNotes, p.breakevenPct, p.reduceEnabled,
+  )
+
+  return { ctx, system, user, history, effectiveUseHorizon }
+}
+
+// Runs a single monitor model and returns its parsed verdict. The prompt is not
+// passed in — `promptFor` is invoked inside the scheduler's build thunk so the
+// request is materialized JIT at dispatch. Retries once on both LLM API/network
+// errors and parse failures (#2d).
+async function askModel(
+  llm: MonitorLLM,
+  promptFor: () => Promise<{ system: string; user: string }>,
+  coin: string,
+  cycleId: string,
+): Promise<RawReview> {
+  logger.info('Request LLM', { module: 'monitor', coin, slot: llm.label, model: llm.model })
 
   let raw: RawReview | null = null
   for (let attempt = 0; attempt <= 1; attempt++) {
@@ -196,22 +328,27 @@ async function askModel(llm: MonitorLLM, system: string, user: string, ctx: Posi
       // concurrently, while the per-endpoint gate still serializes calls hitting the
       // same one-at-a-time server. Voters with distinct endpoints run in true parallel.
       resp = await scheduleChat({
-        module: 'monitor', lane: 'parallel', coin: ctx.coin, cycleId,
+        module: 'monitor', lane: 'parallel', coin, cycleId,
         route: () => ({ client: llm.client, model: llm.model, baseURL: llm.baseURL, maxTokens: llm.maxTokens, fallback: llm.fallback }),
-        build: async (route) => ({
-          model: route.model,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-          temperature: 0.2,
-          max_tokens: route.maxTokens,
-          response_format: { type: 'json_object' },
-        }),
+        // JIT: the prompt is generated here, at dispatch, against the current market +
+        // position snapshot — a job that waited in the queue is never sent stale context.
+        build: async (route) => {
+          const { system, user } = await promptFor()
+          return {
+            model: route.model,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+            temperature: 0.2,
+            max_tokens: route.maxTokens,
+            response_format: { type: 'json_object' },
+          }
+        },
       })
     } catch (apiErr) {
       if (attempt === 0) {
-        logger.warn('Monitor LLM API error, retrying', { coin: ctx.coin, slot: llm.label, error: (apiErr as Error).message })
+        logger.warn('Monitor LLM API error, retrying', { coin, slot: llm.label, error: (apiErr as Error).message })
         continue
       }
       throw apiErr
@@ -220,17 +357,17 @@ async function askModel(llm: MonitorLLM, system: string, user: string, ctx: Posi
     const finish = resp.choices[0]?.finish_reason
     const content = resp.choices[0]?.message?.content ?? ''
 
-    logger.info('Monitor LLM response', { coin: ctx.coin, slot: llm.label, attempt, finish_reason: finish, length: content.length })
+    logger.info('Monitor LLM response', { coin, slot: llm.label, attempt, finish_reason: finish, length: content.length })
 
     if (!content.trim()) {
-      if (attempt === 0) { logger.warn('Empty monitor response, retrying', { coin: ctx.coin, slot: llm.label, finish_reason: finish }); continue }
+      if (attempt === 0) { logger.warn('Empty monitor response, retrying', { coin, slot: llm.label, finish_reason: finish }); continue }
       throw new LLMError(`Empty LLM response (finish_reason: ${finish ?? 'unknown'})`)
     }
 
     try {
       raw = parseReview(content)
     } catch (err) {
-      if (attempt === 0) { logger.warn('Monitor parse failed, retrying', { coin: ctx.coin, slot: llm.label, error: (err as Error).message }); continue }
+      if (attempt === 0) { logger.warn('Monitor parse failed, retrying', { coin, slot: llm.label, error: (err as Error).message }); continue }
       throw err
     }
 
@@ -242,71 +379,57 @@ async function askModel(llm: MonitorLLM, system: string, user: string, ctx: Posi
 }
 
 async function monitorCoin(
-  ctx: PositionContext,
+  coin: string,
+  entry: MonitorEntry,
   cycleId: string,
-  ensemble: MonitorEnsemble,
-  adjustEnabled: boolean,
-  reduceEnabled: boolean,
-  trustLlm: boolean,
-  useHorizon: boolean,
-  utcOffsetHours: number,
-  now: string,
-  horizonConfigs: HorizonConfigs,
-  historyTf: string,
-  historyCount: number,
-  minConfidence: number,
-  reviewIntervalMin: number | null,
-  breakevenPct: number,
-  feeRate: number,
-  adjustCooldownMin: number,
+  p: CycleParams,
 ): Promise<PositionReview | null> {
-  const history = (await positionReviews.find(
-    { coin: ctx.coin },
-    { sort: { created_at: -1 }, limit: 3 },
-  )) as unknown as PositionReview[]
+  const { ensemble } = p
 
-  const storedNotes = (await monitorNotes.findOne(
-    { _id: ctx.coin },
-    { projection: { notes: 1, updated_at: 1 } },
-  )) as MonitorNotes | null
-
-  const tf = isTimeframe(historyTf) ? historyTf : '1h'
-  const count = Math.max(1, Math.min(100, historyCount))
-  let candles: Awaited<ReturnType<typeof getOHLCV>> = []
-  try {
-    candles = await getOHLCV(ctx.coin, tf, count)
-  } catch (err) {
-    logger.warn('Failed to fetch candle history for monitor prompt', { coin: ctx.coin, tf, error: (err as Error).message })
+  // The coin's fresh context + prompt is built lazily and memoized: the first voter
+  // dispatched for this coin triggers the JIT build, every later voter (and the
+  // synthesizer) reuses that same snapshot, and the post-LLM merge/validate stage
+  // below reads it back — so prompt and engine logic agree on one market view.
+  let cachedContext: Promise<ReviewContext> | null = null
+  const getContext = (): Promise<ReviewContext> => {
+    // Share one snapshot across voters/synthesizer, but never cache a rejection — a
+    // failed build (e.g. a transient market fetch) must be retryable by askModel.
+    if (!cachedContext) cachedContext = buildReviewContext(coin, entry, p).catch((err) => { cachedContext = null; throw err })
+    return cachedContext
   }
-
-  const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf, reviewIntervalMin, storedNotes, breakevenPct, reduceEnabled)
+  const voterPrompt = async () => { const c = await getContext(); return { system: c.system, user: c.user } }
 
   // Gather each voter's independent verdict. Voters run concurrently — calls to the
   // same endpoint are still serialized by the per-URL LLM gate, so this only adds
   // real parallelism when A and B point at different endpoints.
   const opinions: Opinion[] = await Promise.all(
-    ensemble.voters.map(async (voter) => ({ llm: voter, review: await askModel(voter, system, user, ctx, cycleId) })),
+    ensemble.voters.map(async (voter) => ({ llm: voter, review: await askModel(voter, voterPrompt, coin, cycleId) })),
   )
+
+  // Read back the JIT snapshot the voters reviewed (already resolved at this point).
+  const { ctx, history, effectiveUseHorizon } = await getContext()
+  const useHorizon = effectiveUseHorizon
 
   // Resolve the voters into the single verdict the engine will act on.
   let raw: RawReview
   let finalLlm: MonitorLLM
   if (ensemble.mode === 'abc' && ensemble.synthesizer) {
     // Model C is the final arbiter: it sees the position + both voter verdicts and
-    // writes its own. Its output is authoritative.
-    const synthUser = buildSynthesizerUser(user, opinions.map(o => ({
+    // writes its own. Its output is authoritative. Its prompt is likewise built JIT.
+    const voterSummaries = opinions.map(o => ({
       label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence,
       reasoning: o.review.reasoning, new_stop_loss_pct: o.review.new_stop_loss_pct,
       new_take_profit_pct: o.review.new_take_profit_pct, reduce_to_pct: o.review.reduce_to_pct,
-    })))
-    raw = await askModel(ensemble.synthesizer, system, synthUser, ctx, cycleId)
+    }))
+    const synthPrompt = async () => { const c = await getContext(); return { system: c.system, user: buildSynthesizerUser(c.user, voterSummaries) } }
+    raw = await askModel(ensemble.synthesizer, synthPrompt, coin, cycleId)
     finalLlm = ensemble.synthesizer
   } else if (ensemble.mode === 'ab') {
     // Confidence-weighted: the more certain verdict wins, intact.
     const winner = pickHigherConfidence(opinions)
     raw = winner.review
     finalLlm = winner.llm
-    logger.info('Monitor A+B merged', { coin: ctx.coin, cycleId, winner: winner.llm.label, votes: opinions.map(o => `${o.llm.label}:${o.review.action}@${o.review.confidence.toFixed(2)}`) })
+    logger.info('Monitor A+B merged', { coin, cycleId, winner: winner.llm.label, votes: opinions.map(o => `${o.llm.label}:${o.review.action}@${o.review.confidence.toFixed(2)}`) })
   } else {
     raw = opinions[0].review
     finalLlm = opinions[0].llm
@@ -334,7 +457,7 @@ async function monitorCoin(
   }
   // REDUCE disabled in settings: the prompt no longer offers it, but downgrade defensively
   // in case the LLM returns it anyway, so a partial exit is never executed.
-  if (raw.action === 'REDUCE' && !reduceEnabled) {
+  if (raw.action === 'REDUCE' && !p.reduceEnabled) {
     logger.warn('Monitor REDUCE disabled by setting — storing as HOLD', { coin: ctx.coin })
     raw = { ...raw, action: 'HOLD', reasoning: `[REDUCE disabled — not executed] ${raw.reasoning}` }
     reduceToPct = null
@@ -343,9 +466,9 @@ async function monitorCoin(
     logger.warn('Monitor REDUCE missing reduce_to_pct — storing as HOLD', { coin: ctx.coin })
     raw = { ...raw, action: 'HOLD', reasoning: `[REDUCE missing reduce_to_pct — not executed] ${raw.reasoning}` }
   }
-  if ((raw.action === 'CLOSE' || raw.action === 'REDUCE') && confidence < minConfidence) {
-    logger.warn('Monitor action below confidence threshold — storing as HOLD', { coin: ctx.coin, action: raw.action, confidence, minConfidence })
-    raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} suppressed: confidence ${confidence.toFixed(2)} < required ${minConfidence.toFixed(2)}] ${raw.reasoning}` }
+  if ((raw.action === 'CLOSE' || raw.action === 'REDUCE') && confidence < p.minConfidence) {
+    logger.warn('Monitor action below confidence threshold — storing as HOLD', { coin: ctx.coin, action: raw.action, confidence, minConfidence: p.minConfidence })
+    raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} suppressed: confidence ${confidence.toFixed(2)} < required ${p.minConfidence.toFixed(2)}] ${raw.reasoning}` }
     reduceToPct = null
   }
 
@@ -354,10 +477,10 @@ async function monitorCoin(
   // trade — without this, the LLM re-trails the stop dozens of times per position
   // (58× observed), each costing an exchange-side OCO cancel+replace.
   // Seeding (no SL or TP yet) is exempt: protection must never wait.
-  if (raw.action === 'ADJUST' && ctx.positionId != null && adjustCooldownMin > 0 &&
+  if (raw.action === 'ADJUST' && ctx.positionId != null && p.adjustCooldownMin > 0 &&
       ctx.stopLoss != null && ctx.takeProfit != null) {
     const horizonFactor = ctx.horizon === 'short' ? 0.5 : ctx.horizon === 'long' ? 2 : 1
-    const cooldownMs = adjustCooldownMin * horizonFactor * 60_000
+    const cooldownMs = p.adjustCooldownMin * horizonFactor * 60_000
     const last = (await positionAdjustments.findOne(
       { position_id: ctx.positionId, status: 'APPLIED' },
       { sort: { id: -1 }, projection: { created_at: 1 } },
@@ -385,7 +508,7 @@ async function monitorCoin(
     const isLlmHorizon = ctx.horizon === 'llm'
     const effectiveHorizon: 'short' | 'medium' | 'long' =
       (ctx.horizon === 'disabled' || isLlmHorizon) ? 'medium' : ctx.horizon as 'short' | 'medium' | 'long'
-    const hcfg = horizonConfigs[effectiveHorizon]
+    const hcfg = p.horizonConfigs[effectiveHorizon]
     const pctToPrice = (pct: number) => ctx.currentPrice * (1 + pct / 100)
     // LLM-horizon: null means "keep existing" — don't seed from horizon config.
     const proposedSl = typeof raw.new_stop_loss_pct === 'number'
@@ -395,7 +518,7 @@ async function monitorCoin(
       ? pctToPrice(raw.new_take_profit_pct)
       : (ctx.takeProfit ?? (isLlmHorizon ? null : pctToPrice(hcfg.tpPct)))
 
-    if (trustLlm) {
+    if (p.trustLlm) {
       // Trust mode: bypass risk rules, only enforce SL < price and TP > price.
       // 0.25%-of-price deadband: an LLM echoing the displayed (2-dp rounded) level must
       // not register as a change — each one costs an OCO cancel+replace on the exchange.
@@ -408,12 +531,12 @@ async function monitorCoin(
         const slChanged = proposedSl != null && !(ctx.stopLoss != null && same(proposedSl, ctx.stopLoss))
         const tpChanged = proposedTp != null && !(ctx.takeProfit != null && same(proposedTp, ctx.takeProfit))
         if (slChanged || tpChanged) {
-          if (adjustEnabled) {
+          if (p.adjustEnabled) {
             newStopLoss = slChanged ? proposedSl! : null
             newTakeProfit = tpChanged ? proposedTp! : null
             proposalToEmit = { newSl: newStopLoss, newTp: newTakeProfit }
           }
-          logger.info('SL/TP trusted (bypass validation)', { coin: ctx.coin, sl: proposedSl, tp: proposedTp, applied: adjustEnabled })
+          logger.info('SL/TP trusted (bypass validation)', { coin: ctx.coin, sl: proposedSl, tp: proposedTp, applied: p.adjustEnabled })
         } else {
           raw = { ...raw, action: 'HOLD' }
         }
@@ -435,10 +558,10 @@ async function monitorCoin(
         maxSlPct: isLlmHorizon ? 100 : hcfg.slPct,
         entryPrice: ctx.entryPrice,
         slRecentlyTightened,
-        feeRoundTripPct: feeRate * 2 * 100,
+        feeRoundTripPct: p.feeRate * 2 * 100,
         // Same trigger the prompt's profit-protection rule announces — the engine
         // rejects break-even stops before it instead of trusting the LLM to wait.
-        breakevenTriggerPct: useHorizon ? hcfg.tpPct / 2 : breakevenPct,
+        breakevenTriggerPct: useHorizon ? hcfg.tpPct / 2 : p.breakevenPct,
         // Same gap the prompt announces: horizon-scaled when guidance is on,
         // the 0.5% floor when the LLM manages risk freely.
         minSlGapPct: minStopGapPct(useHorizon && !isLlmHorizon ? hcfg.slPct : null),
@@ -446,7 +569,7 @@ async function monitorCoin(
       if (validated.notes.length > 0) {
         logger.info('SL/TP adjustment validated', { coin: ctx.coin, changed: validated.changed, notes: validated.notes })
       }
-      if (validated.changed && adjustEnabled) {
+      if (validated.changed && p.adjustEnabled) {
         // Final safety net: never emit a half OCO. If validation left a side null
         // (old was unset and the proposal was rejected), seed from horizon unless in
         // llm-horizon mode where null means "keep whatever is in the DB".
@@ -517,7 +640,7 @@ async function monitorCoin(
     market_data: marketData,
     model: finalLlm.model,
     cycle_id: cycleId,
-    created_at: now,
+    created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
   }
 
   logger.info('Position review saved', { coin: ctx.coin, action: raw.action, confidence })
@@ -630,8 +753,9 @@ export async function runMonitor(cycleId: string): Promise<void> {
       return
     }
 
+    // Subscribe early so the live price feed is warm by the time each coin's prompt
+    // is built JIT inside the scheduler (buildReviewContext reads priceCache.getPrice).
     priceCache.subscribe(entries.map(e => e.coin))
-    const allPrices = priceCache.getAll()
 
     const s = getSettings()
     const ensemble = await buildEnsemble()
@@ -641,108 +765,55 @@ export async function runMonitor(cycleId: string): Promise<void> {
       voters: ensemble.voters.map(v => `${v.label}:${v.model}`),
       synthesizer: ensemble.synthesizer ? `${ensemble.synthesizer.label}:${ensemble.synthesizer.model}` : null,
     })
-    const adjustEnabled = s.monitor_adjust_sltp
-    const reduceEnabled = s.monitor_reduce_enabled
-    const trustLlm = s.monitor_trust_llm_sltp
-    const useHorizon = s.monitor_use_horizon
-    const utcOffsetHours = s.utc_offset_hours
-    const historyTf = s.monitor_history_tf
-    const historyCount = s.monitor_history_count
-    const minConfidence = Math.min(1, Math.max(0, s.monitor_min_confidence))
-    const breakevenPct = s.monitor_breakeven_pct > 0 ? s.monitor_breakeven_pct : 3
-    const feeRate = s.fee_rate
-    const adjustCooldownMin = s.monitor_adjust_cooldown_min
-    const reviewIntervalMin = s.monitor_auto_run ? cronIntervalMinutes(s.monitor_cron) : null
-    const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
 
-    const horizonConfigs: HorizonConfigs = {
-      short:  { slPct: s.monitor_sl_pct_short,  tpPct: s.monitor_tp_pct_short  },
-      medium: { slPct: s.monitor_sl_pct_medium, tpPct: s.monitor_tp_pct_medium },
-      long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
+    const p: CycleParams = {
+      ensemble,
+      adjustEnabled: s.monitor_adjust_sltp,
+      reduceEnabled: s.monitor_reduce_enabled,
+      trustLlm: s.monitor_trust_llm_sltp,
+      useHorizon: s.monitor_use_horizon,
+      utcOffsetHours: s.utc_offset_hours,
+      horizonConfigs: {
+        short:  { slPct: s.monitor_sl_pct_short,  tpPct: s.monitor_tp_pct_short  },
+        medium: { slPct: s.monitor_sl_pct_medium, tpPct: s.monitor_tp_pct_medium },
+        long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
+      },
+      historyTf: s.monitor_history_tf,
+      historyCount: s.monitor_history_count,
+      minConfidence: Math.min(1, Math.max(0, s.monitor_min_confidence)),
+      reviewIntervalMin: s.monitor_auto_run ? cronIntervalMinutes(s.monitor_cron) : null,
+      breakevenPct: s.monitor_breakeven_pct > 0 ? s.monitor_breakeven_pct : 3,
+      feeRate: s.fee_rate,
+      adjustCooldownMin: s.monitor_adjust_cooldown_min,
     }
 
-    const positionContexts: PositionContext[] = await Promise.all(
-      entries.map(async (entry): Promise<PositionContext> => {
-        const snap = allPrices.get(entry.coin)
-        const currentPrice = snap?.price ?? entry.avg_buy_price
+    // Decide which coins to review using only the horizon (a stable position-config
+    // field): a `disabled` position is skipped entirely so no LLM call is wasted on
+    // it. All live market/position values are fetched fresh at dispatch, not here.
+    const posRows = (await positionsRepo.find(
+      { status: 'OPEN', coin: { $ne: 'USDC' } },
+      { projection: { coin: 1, horizon: 1 } },
+    )) as unknown as { coin: string; horizon: string | null }[]
+    const horizonByCoin = new Map(posRows.map(r => [r.coin, r.horizon ?? 'medium']))
 
-        const [marketCtx, position] = await Promise.all([
-          getMarketContext(entry.coin, currentPrice),
-          positionsRepo.findOne(
-            { coin: entry.coin, status: 'OPEN' },
-            { projection: { id: 1, stop_loss: 1, take_profit: 1, horizon: 1 } },
-          ) as Promise<{ id: number; stop_loss: number | null; take_profit: number | null; horizon: string | null } | null>,
-        ])
+    const toReview = entries.filter(e => (horizonByCoin.get(e.coin) ?? 'medium') !== 'disabled')
+    const skipped = entries.length - toReview.length
+    if (skipped > 0) logger.info('Monitor skipping disabled positions', { cycleId, skipped })
 
-        const pnlUsd = (currentPrice - entry.avg_buy_price) * entry.quantity
-        const pnlPct = entry.avg_buy_price > 0
-          ? ((currentPrice - entry.avg_buy_price) / entry.avg_buy_price) * 100
-          : 0
+    logger.info('Monitor scheduling coins for review', { cycleId, coins: toReview.map(e => e.coin) })
 
-        const stopLoss = position?.stop_loss ?? null
-        const takeProfit = position?.take_profit ?? null
-        const distanceToSlPct = stopLoss != null && currentPrice > 0
-          ? ((currentPrice - stopLoss) / currentPrice) * 100
-          : null
-        const distanceToTpPct = takeProfit != null && currentPrice > 0
-          ? ((takeProfit - currentPrice) / currentPrice) * 100
-          : null
-
-        // Weighted-average entry timestamp (epoch ms) from the aggregation above.
-        const msFromJd = entry.avg_date_ms
-        const ageHours = (Date.now() - msFromJd) / (1000 * 60 * 60)
-        const entryDate = new Date(msFromJd + utcOffsetHours * 3600000)
-          .toISOString().replace('T', ' ').slice(0, 19) + ' ' + fmtOffsetLabel(utcOffsetHours)
-
-        const rawHorizon = position?.horizon ?? 'medium'
-        const horizon = (['short', 'medium', 'long', 'disabled', 'llm'].includes(rawHorizon)
-          ? rawHorizon : 'medium') as 'short' | 'medium' | 'long' | 'disabled' | 'llm'
-
-        return {
-          positionId: position?.id ?? null,
-          coin: entry.coin,
-          quantity: entry.quantity,
-          entryPrice: entry.avg_buy_price,
-          currentPrice,
-          pnlUsd,
-          pnlPct,
-          stopLoss,
-          takeProfit,
-          distanceToSlPct,
-          distanceToTpPct,
-          entryDate,
-          ageHours,
-          horizon,
-          rsi14: marketCtx.rsi14,
-          trend: marketCtx.trend,
-          volatility: marketCtx.volatility,
-          atr14: marketCtx.atr14,
-          sma7: marketCtx.sma7,
-          sma25: marketCtx.sma25,
-          change24h: marketCtx.change24h,
-          perf7d: marketCtx.perf7d,
-        }
-      }),
-    )
-
-    logger.info('Monitor running per-coin in parallel', { cycleId, coins: positionContexts.map(c => c.coin) })
-
-    // Positions are reviewed concurrently; the LLM scheduler's parallel lane + the
-    // per-endpoint gate throttle the actual inference fan-out, so a one-at-a-time
-    // local server is still respected while distinct endpoints run truly in parallel.
+    // Hand every coin to the LLM scheduler up front (each coin enqueues its voter
+    // jobs synchronously below), so the scheduler sees the full set of waiting monitor
+    // calls at once and can order/batch them by model affinity. Each coin's prompt is
+    // built JIT when its call is actually dispatched — never here — so a coin that
+    // waited behind a busy endpoint is still reviewed against current market data.
     const settled = await Promise.all(
-      positionContexts.map(async (ctx): Promise<PositionReview | null> => {
-        if (ctx.horizon === 'disabled') {
-          logger.info('Monitor skipping disabled position', { coin: ctx.coin, cycleId })
-          return null
-        }
-        // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
+      toReview.map(async (entry): Promise<PositionReview | null> => {
         try {
-          const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
-          return await monitorCoin(ctx, cycleId, ensemble, adjustEnabled, reduceEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
+          return await monitorCoin(entry.coin, entry, cycleId, p)
         } catch (err) {
-          logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })
-          broadcast('monitor_coin_error', { cycle_id: cycleId, coin: ctx.coin, error: (err as Error).message })
+          logger.error('Monitor coin failed', { coin: entry.coin, cycleId, error: (err as Error).message })
+          broadcast('monitor_coin_error', { cycle_id: cycleId, coin: entry.coin, error: (err as Error).message })
           return null
         }
       }),
