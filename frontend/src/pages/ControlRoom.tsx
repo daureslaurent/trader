@@ -10,6 +10,13 @@ interface SchedulerSnapshot {
   queueDepth: number
   gates: { key: string; active: number; residentModel: string | null; streak: number }[]
   waiting: { id: string; module: string; lane: string; coin: string | null; priority: number; waitedMs: number }[]
+  // Recent-activity history the scheduler keeps so a reloaded page rebuilds instead of
+  // blanking. `agoMs` = ms elapsed since the event, reconstructed against the local clock.
+  active?: { id: string; module: string; lane: string; coin: string | null; model: string; state: 'dispatching' | 'running'; agoMs: number }[]
+  feed?: { id: string; text: string; kind: JobState | 'swap'; agoMs: number }[]
+  ribbon?: { model: string; coin: string | null; agoMs: number }[]
+  swaps?: { gateKey: string; from: string; to: string; agoMs: number }[]
+  swapCount?: number
 }
 
 type JobState = 'queued' | 'dispatching' | 'running' | 'done' | 'error'
@@ -55,6 +62,7 @@ export default function ControlRoom() {
   const [feed, setFeed] = useState<{ id: string; text: string; kind: JobState | 'swap'; at: number }[]>([])
   const [ribbon, setRibbon] = useState<{ model: string; coin: string | null; at: number }[]>([])
   const [swaps, setSwaps] = useState<SwapMarker[]>([])
+  const [swapTotal, setSwapTotal] = useState(0)
   const jobsRef = useRef(jobs)
   jobsRef.current = jobs
 
@@ -64,6 +72,33 @@ export default function ControlRoom() {
     const t = setInterval(reload, 2000)
     return () => clearInterval(t)
   }, [reload])
+
+  // Seed the view from the scheduler's recent-activity history exactly once, the first
+  // time a snapshot lands. This is what survives a page reload: feed, ribbon, swaps,
+  // in-flight chips and the total swap count are all rebuilt from the server instead of
+  // starting blank. `agoMs` is turned back into a local timestamp. Live WS events take
+  // over from here; we only seed the rings that are still empty so a stray early event
+  // can't be duplicated, while in-flight jobs merge by id into the (keyed) jobs map.
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (seededRef.current || !snap) return
+    seededRef.current = true
+    const now = Date.now()
+    if (snap.active?.length) {
+      setJobs(j => {
+        const n = { ...j }
+        for (const a of snap.active!) {
+          if (n[a.id]) continue
+          n[a.id] = { id: a.id, module: a.module, lane: a.lane === 'analyse' ? 'analyse' : 'parallel', coin: a.coin, model: a.model, state: a.state, updatedAt: now - a.agoMs }
+        }
+        return n
+      })
+    }
+    if (snap.feed?.length) setFeed(f => f.length ? f : snap.feed!.map(x => ({ id: x.id, text: x.text, kind: x.kind, at: now - x.agoMs })))
+    if (snap.ribbon?.length) setRibbon(r => r.length ? r : snap.ribbon!.map(x => ({ model: x.model, coin: x.coin, at: now - x.agoMs })))
+    if (snap.swaps?.length) setSwaps(s => s.length ? s : snap.swaps!.map(x => ({ gateKey: x.gateKey, from: x.from, to: x.to, at: now - x.agoMs })))
+    if (typeof snap.swapCount === 'number') setSwapTotal(snap.swapCount)
+  }, [snap])
 
   const onMessage = useCallback((event: string, data: unknown) => {
     if (event === 'llm_job_enqueued') {
@@ -98,6 +133,7 @@ export default function ControlRoom() {
     } else if (event === 'llm_model_swap') {
       const d = data as { gate_key: string; from_model: string; to_model: string }
       setSwaps(s => [...s.slice(-19), { gateKey: d.gate_key, from: d.from_model, to: d.to_model, at: Date.now() }])
+      setSwapTotal(n => n + 1)
       pushFeed(setFeed, { id: `${d.gate_key}-${Date.now()}`, text: `model swap on ${shortGate(d.gate_key)}: ${d.from_model} → ${d.to_model}`, kind: 'swap', at: Date.now() })
     }
   }, [])
@@ -120,7 +156,7 @@ export default function ControlRoom() {
   const jobList = [...Object.values(jobs), ...waitingExtra].sort((a, b) => b.updatedAt - a.updatedAt)
   const analyseJobs = jobList.filter(j => j.lane === 'analyse')
   const parallelJobs = jobList.filter(j => j.lane === 'parallel')
-  const swapCount = swaps.length
+  const swapCount = swapTotal
 
   return (
     <div className="space-y-6">

@@ -105,6 +105,45 @@ const _residentModel = new Map<string, string>()
 const _sameModelStreak = new Map<string, number>()
 let _seq = 0
 
+// ── Recent-activity history (so a reloaded Control Room rebuilds, not blanks) ────
+// The scheduler is the source of truth for live LLM flow; the page is a thin view of
+// it. Without these, a page reload loses the feed, ribbon, swap count and in-flight
+// chips (they lived only in the browser's WS-fed state) until new events trickle in.
+// These bounded rings let `getSchedulerState()` replay that recent history on load.
+// In-memory only: this is live operational telemetry, not a durable record — the
+// `llm_jobs` table already covers actual job resume across restarts.
+type JobState = 'queued' | 'dispatching' | 'running' | 'done' | 'error'
+interface ActiveJob { id: string; module: string; lane: Lane; coin: string | null; model: string; state: 'dispatching' | 'running'; at: number }
+interface FeedRecord { id: string; text: string; kind: JobState | 'swap'; at: number }
+interface RibbonRecord { model: string; coin: string | null; at: number }
+interface SwapRecord { gateKey: string; from: string; to: string; at: number }
+
+const HISTORY_FEED = 80
+const HISTORY_RIBBON = 60
+const HISTORY_SWAPS = 20
+
+const _active = new Map<string, ActiveJob>()   // currently dispatching/running jobs
+const _feed: FeedRecord[] = []                 // newest-first
+const _ribbon: RibbonRecord[] = []             // oldest-first (a dispatch timeline)
+const _swaps: SwapRecord[] = []                // oldest-first
+let _swapTotal = 0                             // total swaps since start (survives ring eviction)
+let _feedSeq = 0
+
+const coinShort = (coin: string | null): string => (coin ? coin.replace('/USDC', '') : '')
+
+function recordFeed(text: string, kind: JobState | 'swap'): void {
+  _feed.unshift({ id: `feed_${_feedSeq++}`, text, kind, at: Date.now() })
+  if (_feed.length > HISTORY_FEED) _feed.length = HISTORY_FEED
+}
+
+// Collapse a gate key (base URL, optionally ::model) to a readable host for the feed.
+function shortGate(key: string): string {
+  const [url, model] = key.split('::')
+  let host = url
+  try { host = new URL(url).host } catch { /* keep raw */ }
+  return model ? `${host} · ${model}` : host
+}
+
 // Builder registry for durable resume. id → builder that rebuilds the request from
 // the persisted args at dispatch (fresh JIT context fetched inside).
 type Builder = (args: Record<string, unknown>, route: LLMRoute) => Promise<OpenAI.ChatCompletionCreateParams>
@@ -126,13 +165,25 @@ function newJobId(): string {
   return `job_${Date.now().toString(36)}_${(_seq).toString(36)}_${Math.random().toString(36).slice(2, 6)}`
 }
 
-/** Snapshot for the Control Room's initial render / debugging. */
+/**
+ * Snapshot for the Control Room's initial render / debugging. Beyond the live
+ * lane/gate/queue occupancy it replays the recent-activity rings (active chips, feed,
+ * ribbon, swaps) so a freshly-loaded or reloaded page rebuilds its full view instead
+ * of starting empty. Ages are returned as `agoMs` (ms elapsed) rather than absolute
+ * timestamps so the client reconstructs wall-clock times against its own clock.
+ */
 export function getSchedulerState() {
+  const now = Date.now()
   return {
     lanes: { analyse: { active: _laneActive.analyse, limit: LANE_LIMIT.analyse }, parallel: { active: _laneActive.parallel, limit: LANE_LIMIT.parallel } },
     queueDepth: _waiting.length,
     gates: Array.from(_gateActive.entries()).map(([key, active]) => ({ key, active, residentModel: _residentModel.get(key) ?? null, streak: _sameModelStreak.get(key) ?? 0 })),
-    waiting: _waiting.map(j => ({ id: j.id, module: j.spec.module, lane: j.spec.lane, coin: j.spec.coin ?? null, priority: defaultPriority(j.spec), waitedMs: Date.now() - j.enqueuedAt })),
+    waiting: _waiting.map(j => ({ id: j.id, module: j.spec.module, lane: j.spec.lane, coin: j.spec.coin ?? null, priority: defaultPriority(j.spec), waitedMs: now - j.enqueuedAt })),
+    active: Array.from(_active.values()).map(a => ({ id: a.id, module: a.module, lane: a.lane, coin: a.coin, model: a.model, state: a.state, agoMs: now - a.at })),
+    feed: _feed.map(f => ({ id: f.id, text: f.text, kind: f.kind, agoMs: now - f.at })),
+    ribbon: _ribbon.map(r => ({ model: r.model, coin: r.coin, agoMs: now - r.at })),
+    swaps: _swaps.map(s => ({ gateKey: s.gateKey, from: s.from, to: s.to, agoMs: now - s.at })),
+    swapCount: _swapTotal,
   }
 }
 
@@ -177,6 +228,7 @@ async function enqueue(
     coin: spec.coin ?? null, cycle_id: spec.cycleId ?? null, model, base_url: baseURL,
     queue_depth: _waiting.length, created_at: nowSql(),
   })
+  recordFeed(`${spec.module}${spec.coin ? ` · ${coinShort(spec.coin)}` : ''} queued`, 'queued')
   pump()
 }
 
@@ -238,12 +290,19 @@ async function dispatch(job: Job, route: LLMRoute, gateKey: string | null): Prom
     } else {
       _sameModelStreak.set(gateKey, 1)
       _residentModel.set(gateKey, route.model)
-      if (prev) broadcast('llm_model_swap', { gate_key: gateKey, from_model: prev, to_model: route.model, at: nowSql() })
+      if (prev) {
+        broadcast('llm_model_swap', { gate_key: gateKey, from_model: prev, to_model: route.model, at: nowSql() })
+        _swapTotal++
+        _swaps.push({ gateKey, from: prev, to: route.model, at: Date.now() })
+        if (_swaps.length > HISTORY_SWAPS) _swaps.shift()
+        recordFeed(`model swap on ${shortGate(gateKey)}: ${prev} → ${route.model}`, 'swap')
+      }
     }
   }
 
   if (job.durable) { try { await llmJobs.update({ _id: job.id }, { status: 'running' }) } catch { /* best effort */ } }
 
+  _active.set(job.id, { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, model: route.model, state: 'dispatching', at: Date.now() })
   broadcast('llm_job_state', {
     id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null,
     model: route.model, base_url: route.baseURL, state: 'dispatching',
@@ -254,13 +313,21 @@ async function dispatch(job: Job, route: LLMRoute, gateKey: string | null): Prom
     // JIT: build the request now, against the freshly-resolved route.
     const params = await job.spec.build(route)
     const meta: LLMCallMeta = { module: job.spec.module, coin: job.spec.coin ?? null, cycle_id: job.spec.cycleId ?? null, base_url: route.baseURL }
+    const active = _active.get(job.id)
+    if (active) { active.state = 'running'; active.at = Date.now() }
+    _ribbon.push({ model: route.model, coin: job.spec.coin ?? null, at: Date.now() })
+    if (_ribbon.length > HISTORY_RIBBON) _ribbon.shift()
     broadcast('llm_job_state', { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, model: route.model, base_url: route.baseURL, state: 'running' })
 
     const resp = await llmChat(route.client, params, meta, route.fallback)
     job.resolve(resp)
+    _active.delete(job.id)
+    recordFeed(`${job.spec.module}${job.spec.coin ? ` · ${coinShort(job.spec.coin)}` : ''} done`, 'done')
     broadcast('llm_job_state', { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, state: 'done' })
   } catch (err) {
     job.reject(err)
+    _active.delete(job.id)
+    recordFeed(`${job.spec.module}${job.spec.coin ? ` · ${coinShort(job.spec.coin)}` : ''} error: ${(err as Error).message}`, 'error')
     broadcast('llm_job_state', { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, state: 'error', error: (err as Error).message })
   } finally {
     _laneActive[lane]--
