@@ -8,7 +8,7 @@ import { getPortfolioState, getOpenEntries, detectExternalWithdrawal, checkOpenP
 import { isTradeable } from '../core/tradeable.js'
 import { Signal, MarketContext } from '../types.js'
 import { handleTradeSignal } from '../execution/index.js'
-import { analyzeCoin } from './analyze.js'
+import { analyzeCoin, type CoinAnalysisResult } from './analyze.js'
 import { prepareBuyOrder } from './buyEvaluation.js'
 import { deferToEntryDesk } from './entryStaging.js'
 import { logPipelineEvent } from './events.js'
@@ -16,8 +16,32 @@ import { PipelineCancelledError, clearCancel } from './cancellation.js'
 
 export const PIPELINE_TIMEOUT_MS = 60 * 60 * 1000 // 1 hour
 
+// How many coins' analysis pipelines run at once. Bounded because the researcher
+// shares one Puppeteer browser (a page per fetch) and we don't want to open dozens
+// at once. The LLM fan-out beneath this is governed separately by the scheduler's
+// parallel lane + per-endpoint gates — a higher value mainly keeps the extractor
+// endpoint saturated with same-model challenge/extract calls so they batch.
+const ANALYSIS_CONCURRENCY = Number(process.env.PIPELINE_ANALYSIS_CONCURRENCY) > 0
+  ? Number(process.env.PIPELINE_ANALYSIS_CONCURRENCY)
+  : 4
+
 let cycleCounter = 0
 let pipelineRunning = false
+
+// Run `fn` over `items` with at most `limit` in flight. Workers pull from a shared
+// cursor, so a slow coin never blocks the others. `fn` must not throw (callers
+// handle per-item errors) — a throw would reject the whole pool.
+async function mapPool<T>(items: T[], limit: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    for (;;) {
+      const i = cursor++
+      if (i >= items.length) break
+      await fn(items[i], i)
+    }
+  })
+  await Promise.all(workers)
+}
 
 export function isPipelineRunning(): boolean { return pipelineRunning }
 
@@ -132,32 +156,63 @@ async function tradingLoop() {
 
   let tradesInitiated = 0
 
-  // Coins already in the portfolio are managed by the monitor (SL/TP, CLOSE).
-  // The pipeline is entry-only — skip them here.
+  // Coins already in the portfolio are managed by the monitor (SL/TP, CLOSE) — the
+  // pipeline is entry-only, so skip them. A coin with a pending entry intent is
+  // already on the Entry Desk awaiting a deferred BUY, so skip its whole pipeline
+  // too (no point spending research + LLM calls to re-issue a signal the entry
+  // engine is already working). The late checkActiveIntent gate in buyEvaluation
+  // stays as a backstop for the SELL/manual paths.
   const portfolioCoinSet = new Set(portfolioCoins)
-
-  // Each coin runs its full pipeline sequentially; trade is proposed immediately after
-  // analysis completes — not batched after all coins finish.
-  for (const data of marketData) {
+  const candidates = marketData.filter(data => {
     if (portfolioCoinSet.has(data.symbol)) {
       logger.debug('Skipping pipeline for held coin — managed by monitor', { coin: data.symbol })
-      continue
+      return false
     }
-    // A coin with a pending entry intent is already awaiting a deferred BUY on the
-    // Entry Desk — skip its whole pipeline (no point spending research + LLM calls
-    // to re-issue a signal the entry engine is already working). The late
-    // checkActiveIntent gate in buyEvaluation stays as a backstop for SELL/manual paths.
     if (entry.hasActiveIntent(data.symbol)) {
       logger.debug('Skipping pipeline for coin with active entry intent — on the Entry Desk', { coin: data.symbol })
-      continue
+      return false
     }
-    const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
-    // Re-fetch portfolio state so position counts reflect any trades already done this cycle
-    const portfolioState = await getPortfolioState(marketData, settings)
+    return true
+  })
 
+  // One portfolio snapshot for the whole analysis phase: no trades have executed yet
+  // this cycle, so it's consistent for every coin's analyst prompt. The execution
+  // phase re-fetches per coin to reflect trades made earlier in the same cycle.
+  const analysisPortfolioState = await getPortfolioState(marketData, settings)
+  const cycleIds = candidates.map(() => `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`)
+
+  // ── Phase 1: analysis (concurrent, bounded) ─────────────────────────────────
+  // Each coin's pipeline (research → extraction → selection → analyst) runs
+  // concurrently up to ANALYSIS_CONCURRENCY. The expensive LLM work is ordered by
+  // the scheduler: the many extractor/challenge calls fan out and batch by model on
+  // the parallel lane, while analyst calls stay serialized on the analyse lane.
+  // Results are kept in candidate order so the execution phase allocates capital
+  // deterministically rather than by whichever coin's research finished first.
+  const analyzed: (CoinAnalysisResult | null)[] = new Array(candidates.length).fill(null)
+  await mapPool(candidates, ANALYSIS_CONCURRENCY, async (data, i) => {
+    const cycleId = cycleIds[i]
     try {
-      const { signal, marketCtx } = await analyzeCoin(data, portfolioState, cycleId)
+      analyzed[i] = await analyzeCoin(data, analysisPortfolioState, cycleId)
+    } catch (err) {
+      const isCancelled = err instanceof PipelineCancelledError
+      clearCancel(cycleId)
+      const stage = isCancelled ? 'pipeline_cancelled' : 'pipeline_error'
+      logPipelineEvent(stage, data.symbol, cycleId, {
+        symbol: data.symbol, error: err instanceof Error ? err.message : String(err),
+        price: data.price, change24h: data.change24h, volume: data.volume,
+      } as Record<string, unknown>)
+      if (!isCancelled) logger.error('Error in pipeline analysis', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
+    }
+  })
 
+  // ── Phase 2: decision + execution (sequential) ──────────────────────────────
+  // Trade gates (max positions, capital, position size) and order submission run in
+  // candidate order. Keeping this sequential preserves the invariant that two BUYs
+  // can't race past the same gate — analysis parallelism never touches execution.
+  for (const result of analyzed) {
+    if (!result) continue
+    const { data, signal, marketCtx, cycleId } = result
+    try {
       if (signal.action === 'HOLD' || signal.confidence < settings.min_confidence) {
         logger.debug('Skipping trade', { coin: data.symbol, action: signal.action, confidence: signal.confidence })
         if (signal.action !== 'HOLD' && signal.confidence < settings.min_confidence) {
@@ -167,6 +222,9 @@ async function tradingLoop() {
         }
         continue
       }
+
+      // Re-fetch portfolio state so position counts reflect any trades already done this cycle
+      const portfolioState = await getPortfolioState(marketData, settings)
 
       if (signal.action === 'BUY') {
         if (await handleBuySignal({ data, marketCtx, signal, portfolioState, settings, cycleId, checkActiveIntent: true })) {
@@ -197,7 +255,7 @@ async function tradingLoop() {
         symbol: data.symbol, error: err instanceof Error ? err.message : String(err),
         price: data.price, change24h: data.change24h, volume: data.volume,
       } as Record<string, unknown>)
-      if (!isCancelled) logger.error('Error in pipeline', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
+      if (!isCancelled) logger.error('Error in pipeline execution', { coin: data.symbol, error: err instanceof Error ? err.message : String(err) })
     }
   }
 
