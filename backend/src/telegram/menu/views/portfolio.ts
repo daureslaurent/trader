@@ -1,6 +1,11 @@
 import { Markup } from 'telegraf'
-import { positions as positionsRepo, portfolioSnapshots } from '../../../db/index.js'
+import { positions as positionsRepo, portfolioSnapshots, getSettings } from '../../../db/index.js'
 import { formatCurrency, formatPnlPct, pnlEmoji, esc } from '../../components/formatting.js'
+
+/** Signed USDC amount, e.g. +$12.34 / −$5.00. */
+function signedUsd(value: number): string {
+  return `${value >= 0 ? '+' : '−'}${formatCurrency(Math.abs(value))}`
+}
 
 async function fetchLivePrice(coin: string, fallback: number): Promise<number> {
   try {
@@ -24,6 +29,10 @@ export async function render(_ctx: any) {
   } else {
     lines[0] = `💼 <b>Portfolio</b> — ${positions.length} open position${positions.length > 1 ? 's' : ''}`
 
+    // Round-trip fee as a fraction of notional (entry + exit leg). A close nets
+    // exactly zero P&L at entry × (1 + 2·feeRate) — the break-even price.
+    const roundTripFee = getSettings().fee_rate * 2
+
     for (let i = 0; i < positions.length; i++) {
       const p = positions[i]
       const entryPrice = Number(p.entry_price)
@@ -33,11 +42,25 @@ export async function render(_ctx: any) {
       const pnlPct = ((currentPrice - entryPrice) / entryPrice) * 100
       const emoji = pnlEmoji(pnlPct)
 
+      const breakEvenPrice = entryPrice * (1 + roundTripFee)
+      const pastBreakEven = currentPrice >= breakEvenPrice
+      const beBadge = pastBreakEven ? '  🟢 <i>B/E cleared</i>' : ''
+
+      // P&L in USDC if the stop is hit now: (stop − entry) × qty.
+      const stopLoss = p.stop_loss != null ? Number(p.stop_loss) : null
+      const slPnl = stopLoss != null ? (stopLoss - entryPrice) * qty : null
+      const slLine = stopLoss != null
+        ? `  SL: ${formatCurrency(stopLoss)}  <i>(${signedUsd(slPnl as number)} at stop)</i>`
+        : `  SL: —`
+      const tpLine = `  TP: ${p.take_profit ? formatCurrency(Number(p.take_profit)) : '—'}`
+
       lines.push(
-        `<b>${esc((p.coin as string).replace('/USDC', ''))}</b>`,
+        `<b>${esc((p.coin as string).replace('/USDC', ''))}</b>${beBadge}`,
         `  Qty: ${qty.toFixed(6)}  ·  Entry: ${formatCurrency(entryPrice)}`,
         `  Now: ${formatCurrency(currentPrice)}  ${emoji} <b>${formatPnlPct(pnlPct)}</b> (${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)})`,
-        `  SL: ${formatCurrency(Number(p.stop_loss))}  TP: ${p.take_profit ? formatCurrency(Number(p.take_profit)) : '—'}`
+        `  B/E: ${formatCurrency(breakEvenPrice)}${pastBreakEven ? ' ✓' : ''}`,
+        slLine,
+        tpLine,
       )
       if (i < positions.length - 1) lines.push('')
     }
