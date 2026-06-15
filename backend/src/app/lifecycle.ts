@@ -11,6 +11,7 @@ import { isTradeable } from '../core/tradeable.js'
 import { closeBrowser } from '../scraper/browser.js'
 import { logPipelineEvent } from '../pipeline/index.js'
 import { startSchedulers, stopSchedulers } from './scheduler.js'
+import { resumeDurableJobs } from '../core/llmScheduler.js'
 
 let server: ReturnType<typeof startAPI> | undefined
 
@@ -75,6 +76,11 @@ export async function start(): Promise<void> {
   if (initialCoins.length > 0) priceCache.subscribe([...new Set(initialCoins)])
 
   await entry.start(settings)
+
+  // Re-dispatch durable LLM jobs that were still queued when the process last
+  // stopped. Done after price cache + entry engine are up so any builder needing
+  // live market context can run. In-flight-at-crash jobs are dropped here.
+  await resumeDurableJobs()
 
   startSchedulers(settings)
 

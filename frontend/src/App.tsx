@@ -22,6 +22,7 @@ import LLMDebug from './pages/LLMDebug'
 import CacheView from './pages/CacheView'
 import Discover from './pages/Discover'
 import LLMStats from './pages/LLMStats'
+import ControlRoom from './pages/ControlRoom'
 import Agent from './pages/Agent'
 import Host from './pages/Host'
 
@@ -41,6 +42,7 @@ const PAGE_TITLES: Record<Page, string> = {
   discover: 'Discover Coins',
   'llm-debug': 'LLM Debug',
   'llm-stats': 'LLM Stats',
+  'control-room': 'Inference Control Room',
   agent: 'Agent',
   host: 'System',
 }
@@ -220,6 +222,7 @@ function AppInner() {
           {page === 'discover' && <Discover />}
           {page === 'llm-debug' && <LLMDebug />}
           {page === 'llm-stats' && <LLMStats />}
+          {page === 'control-room' && <ControlRoom />}
           {page === 'host' && <Host />}
           {page === 'settings' && <Settings />}
         </main>

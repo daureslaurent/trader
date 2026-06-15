@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { llmCalls, llmStatsSnapshots, getSettings } from '../../db/index.js'
 import { getRunningLLMCalls } from '../../core/llm.js'
+import { getSchedulerState } from '../../core/llmScheduler.js'
 import { getEndpointHealth, runEndpointHealthCheck } from '../../core/endpointHealth.js'
 import { config } from '../../config/index.js'
 
@@ -48,6 +49,13 @@ router.get('/llm/defaults', (_req: Request, res: Response) => {
 
 router.get('/llm-calls/running', (_req: Request, res: Response) => {
   res.json(getRunningLLMCalls())
+})
+
+// Live snapshot of the LLM scheduler: lane occupancy, per-gate residency, and the
+// pending queue. The Control Room uses this for its initial paint, then stays in
+// sync via the `llm_job_*` / `llm_model_swap` WS events.
+router.get('/llm/scheduler', (_req: Request, res: Response) => {
+  res.json(getSchedulerState())
 })
 
 router.get('/llm-calls', async (req: Request, res: Response) => {

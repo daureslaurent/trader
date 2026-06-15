@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'agent' | 'host'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'charts' | 'logs' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'control-room' | 'agent' | 'host'
 
 export interface HostStats {
   timestamp: number

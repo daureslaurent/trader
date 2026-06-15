@@ -34,6 +34,12 @@ export const coinDiscoveries    = new Repository<Row>('coin_discoveries')
 export const llmCalls           = new Repository<Row>('llm_calls')
 export const llmStatsSnapshots  = new Repository<Row>('llm_stats_snapshots')
 
+// Durable LLM scheduler jobs (natural string key = job id). Only jobs flagged
+// `durable` persist here; rows are deleted on completion. On startup, rows still
+// `queued` are resumed via the builder registry — `running` rows were in flight at
+// crash and are dropped (the producing cycle re-drives them).
+export const llmJobs            = new Repository<Row>('llm_jobs', false)            // _id = job id
+
 // Lookup by collection name (used by the migration tool and index setup).
 export const ALL_REPOS: Record<string, Repository<Row>> = {
   trades, decisions, positions, portfolio_entries: portfolioEntries,
@@ -45,4 +51,5 @@ export const ALL_REPOS: Record<string, Repository<Row>> = {
   pipeline_events: pipelineEvents, extraction_cache: extractionCache,
   ohlcv_cache: ohlcvCache, coin_discoveries: coinDiscoveries,
   llm_calls: llmCalls, llm_stats_snapshots: llmStatsSnapshots,
+  llm_jobs: llmJobs,
 }

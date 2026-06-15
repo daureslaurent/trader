@@ -101,6 +101,23 @@ function resolveGate(baseURL: string, model: string): { key: string; limit: numb
   return max > 0 ? { key: `${baseURL}::${model}`, limit: max } : null
 }
 
+/**
+ * The physical concurrency gate a call to this endpoint+model would run under, or
+ * null for unlimited parallelism. Exposed so the LLM scheduler can mirror the same
+ * limit when admitting jobs — when the scheduler never admits more than `limit`
+ * concurrent calls per gate key, `runChat`'s own `runLimited` becomes a no-op
+ * pass-through and the scheduler's priority/affinity ordering is authoritative.
+ *
+ * The gate KEY is the unit of model contention: a serialized one-server endpoint is
+ * keyed by base URL alone, so multiple models pointed at it share one gate and a
+ * model swap is real — that is exactly where model-affinity batching pays off. A
+ * capped-parallel endpoint is keyed by base URL + model, so each model has its own
+ * lane and affinity is a no-op (the single-fixed-model deployment case).
+ */
+export function endpointGate(baseURL: string, model: string): { key: string; limit: number } | null {
+  return resolveGate(baseURL, model)
+}
+
 // OpenAI clients are cheap to reuse but shouldn't be rebuilt on every call. We
 // memoize one per base URL so that runtime endpoint switches (via per-module
 // settings) take effect immediately while still reusing connections.
