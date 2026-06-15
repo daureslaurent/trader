@@ -269,37 +269,20 @@ export default function ControlRoom() {
 // ── Endpoint timeline row ───────────────────────────────────────────────────────
 interface Band { model: string; widthPct: number; start: number; end: number; count: number; coins: string[]; gapPct: number }
 
-// Collapse consecutive same-model dispatch points into bands. Each band spans only its
-// own dispatch range (first to last event within the contiguous run). Gaps between bands
-// and idle time before the first dispatch remain transparent, so empty space stays empty.
+// Each dispatch is an independent band with zero width (min-w-[2px] in CSS makes it
+// visible). Gaps between dispatches and idle time before the first dispatch remain
+// transparent, so empty space stays empty regardless of model.
 function buildBands(events: { model: string; coin: string | null; agoMs: number }[], now: number, windowMs: number): { leadPct: number; bands: Band[] } {
   const windowStart = now - windowMs
   if (!events.length) return { leadPct: 100, bands: [] }
-  const segs: { model: string; start: number; end: number; count: number; coins: Set<string> }[] = []
-  for (const e of events) {
+  const bands: Band[] = events.map((e, i) => {
     const at = now - e.agoMs
-    const last = segs[segs.length - 1]
-    if (last && last.model === e.model) {
-      last.count++
-      last.end = at
-      if (e.coin) last.coins.add(e.coin.replace('/USDC', ''))
-    } else {
-      segs.push({ model: e.model, start: at, end: at, count: 1, coins: new Set(e.coin ? [e.coin.replace('/USDC', '')] : []) })
-    }
-  }
-
-  const firstStart = Math.max(segs[0].start, windowStart)
-  const leadPct = Math.max(0, ((firstStart - windowStart) / windowMs) * 100)
-  const bands: Band[] = segs.map((s, i) => {
-    const start = Math.max(s.start, windowStart)
-    const end = Math.max(s.end, start)
-    let gapPct = 0
-    if (i > 0) {
-      const prevEnd = Math.max(segs[i - 1].end, segs[i - 1].start, windowStart)
-      gapPct = Math.max(0, ((start - prevEnd) / windowMs) * 100)
-    }
-    return { model: s.model, start, end, count: s.count, coins: [...s.coins], gapPct, widthPct: Math.max(0, ((end - start) / windowMs) * 100) }
+    const start = Math.max(at, windowStart)
+    const gapPct = i === 0 ? 0 : Math.max(0, ((start - (now - events[i - 1].agoMs)) / windowMs) * 100)
+    return { model: e.model, start, end: start, count: 1, coins: e.coin ? [e.coin.replace('/USDC', '')] : [], gapPct, widthPct: 0 }
   })
+  const firstStart = Math.max(now - events[0].agoMs, windowStart)
+  const leadPct = Math.max(0, ((firstStart - windowStart) / windowMs) * 100)
   return { leadPct, bands }
 }
 
@@ -323,7 +306,7 @@ function EndpointRow({ ep, now, windowMs }: { ep: EndpointTimeline; now: number;
           <Fragment key={i}>
             {b.gapPct > 0.5 && <div style={{ width: `${b.gapPct}%` }} className="shrink-0" />}
             <div
-              className={cn('shrink-0 min-w-[2px] relative transition-[width]', i > 0 && 'border-l-2 border-sell')}
+              className="shrink-0 min-w-[2px] relative transition-[width]"
               style={{ width: `${b.widthPct}%`, background: modelColor(b.model) }}
               title={`${b.model}\n${b.count} dispatch${b.count === 1 ? '' : 'es'}${b.coins.length ? `\n${b.coins.join(', ')}` : ''}\n${new Date(b.start).toLocaleTimeString()} – ${new Date(b.end).toLocaleTimeString()}`}
             />
