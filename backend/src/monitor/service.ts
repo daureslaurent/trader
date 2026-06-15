@@ -212,6 +212,9 @@ interface CycleParams {
 interface ReviewContext {
   ctx: PositionContext
   system: string
+  // Synthesizer (model C) system prompt — same shared body as `system` but with an
+  // arbiter opener instead of the reviewer opener. Used only in 'abc' mode.
+  synthSystem: string
   user: string
   history: PositionReview[]
   effectiveUseHorizon: boolean
@@ -300,12 +303,12 @@ async function buildReviewContext(coin: string, entry: MonitorEntry, p: CyclePar
 
   // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
   const effectiveUseHorizon = horizon === 'llm' ? false : p.useHorizon
-  const { system, user } = buildMonitorPrompt(
+  const { system, synthSystem, user } = buildMonitorPrompt(
     ctx, history, p.horizonConfigs, effectiveUseHorizon, p.utcOffsetHours,
     candles, tf, p.reviewIntervalMin, storedNotes, p.breakevenPct, p.reduceEnabled,
   )
 
-  return { ctx, system, user, history, effectiveUseHorizon }
+  return { ctx, system, synthSystem, user, history, effectiveUseHorizon }
 }
 
 // Runs a single monitor model and returns its parsed verdict. The prompt is not
@@ -424,7 +427,7 @@ async function monitorCoin(
       reasoning: o.review.reasoning, new_stop_loss_pct: o.review.new_stop_loss_pct,
       new_take_profit_pct: o.review.new_take_profit_pct, reduce_to_pct: o.review.reduce_to_pct,
     }))
-    const synthPrompt = async () => { const c = await getContext(); return { system: c.system, user: buildSynthesizerUser(c.user, voterSummaries) } }
+    const synthPrompt = async () => { const c = await getContext(); return { system: c.synthSystem, user: buildSynthesizerUser(c.user, voterSummaries) } }
     raw = await askModel(ensemble.synthesizer, synthPrompt, coin, cycleId)
     finalLlm = ensemble.synthesizer
   } else if (ensemble.mode === 'ab') {

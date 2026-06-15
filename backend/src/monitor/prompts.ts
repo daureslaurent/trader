@@ -96,7 +96,7 @@ export function buildMonitorPrompt(
   notes: MonitorNotes | null = null,
   breakevenPct = 3,
   reduceEnabled = true,
-): { system: string; user: string } {
+): { system: string; synthSystem: string; user: string } {
   const effectiveHorizon: 'short' | 'medium' | 'long' =
     (position.horizon === 'disabled' || position.horizon === 'llm') ? 'medium' : position.horizon
   const cfg = horizonConfigs[effectiveHorizon]
@@ -165,9 +165,16 @@ REDUCE     Partial exit now (market sell of part of the position). REQUIRED:
            reduce_to_pct (integer: % of current size to KEEP, e.g. 50 = keep half, sell half).
            Use to lock in gains near TP, or to de-risk a weakening position.` : ''
 
-  const system = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST,${reduceEnabled ? ' REDUCE,' : ''} or CLOSE.
+  // The system prompt is one shared `body` (actions, rules, schema — identical for
+  // every model) preceded by a role-specific opener. Voters (A/B) get the reviewer
+  // opener; the synthesizer (C) gets an arbiter opener that frames its job as deciding
+  // FROM the two voter verdicts rather than reviewing from scratch. Same body so C is
+  // bound by the exact same rules and answers in the exact same schema.
+  const reviewerOpener = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST,${reduceEnabled ? ' REDUCE,' : ''} or CLOSE.`
 
-── Actions ──────────────────────────────────────────────────────────────────
+  const synthesizerOpener = `You are the senior risk manager and FINAL ARBITER for one open long position. Two independent analysts have each already reviewed this exact position and proposed an action; their verdicts are appended after the position data below. Your job is to SYNTHESIZE, not to review from scratch: weigh both opinions against the market data and issue the single authoritative decision — exactly one action: HOLD, ADJUST,${reduceEnabled ? ' REDUCE,' : ''} or CLOSE. Reason explicitly from the two analysts — state where they agree, adjudicate where they conflict, and decide. You may adopt one analyst's call, blend the two, or override both when the evidence demands it, but never merely average their numbers. The same rules below that bounded their reviews bind your verdict identically.`
+
+  const body = `── Actions ──────────────────────────────────────────────────────────────────
 CLOSE      Exit the whole position now (market sell). Use on confirmed trend reversal
            with negative momentum, or when deeply underwater with no recovery signals.
            Do NOT close merely because price is approaching the stop-loss — the
@@ -222,6 +229,9 @@ Return a single JSON object — no markdown, no extra keys:
 }
 Use null for new_stop_loss_pct / new_take_profit_pct when not changing them,
 and null for notes to keep the stored note as-is.`
+
+  const system = `${reviewerOpener}\n\n${body}`
+  const synthSystem = `${synthesizerOpener}\n\n${body}`
 
   const p = position
   const pnlSign = p.pnlPct >= 0 ? '+' : ''
@@ -313,7 +323,7 @@ ${rows.join('\n')}`
 
   const user = `Review this open position and recommend an action:\n\n${positionText}${candleHistoryText}${notesText}${prevDecisionText}\n\nRespond with a single JSON object.`
 
-  return { system, user }
+  return { system, synthSystem, user }
 }
 
 /** One analyst opinion fed to the synthesizer (model C) in A+B+C mode. */
@@ -328,10 +338,11 @@ export interface EnsembleOpinion {
   reduce_to_pct?: number | null
 }
 
-// Builds model C's user prompt in 'abc' mode: the same position review the A/B
-// models saw, followed by their two verdicts and an instruction to act as the final
-// arbiter. C may agree with one, blend them, or override entirely — it owns the
-// final decision and must answer in the identical JSON schema.
+// Builds model C's user prompt in 'abc' mode: the same position review the A/B models
+// saw, with their two verdicts appended as the material to synthesize. The arbiter
+// ROLE (weigh both, may adopt/blend/override, never average, identical schema) lives in
+// C's dedicated system prompt (synthSystem) — this only supplies the two verdicts as
+// data plus a short cue to decide.
 export function buildSynthesizerUser(baseUser: string, opinions: EnsembleOpinion[]): string {
   const rendered = opinions.map((o) => {
     const extras: string[] = []
@@ -344,11 +355,9 @@ export function buildSynthesizerUser(baseUser: string, opinions: EnsembleOpinion
 
   return `${baseUser}
 
-── Two independent analysts have already reviewed this position ──────────────
+── The two analysts' verdicts to synthesize ─────────────────────────────────
 ${rendered}
 
-You are the senior reviewer. Weigh both opinions against the data above and issue
-the FINAL verdict. You may side with either analyst, combine their views, or
-override both if the evidence warrants it. Do not simply average — decide. Respond
-with a single JSON object in the same schema.`
+Now adjudicate the two verdicts against the position data above and issue your
+final arbiter decision as a single JSON object in the required schema.`
 }
