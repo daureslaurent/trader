@@ -94,6 +94,23 @@
   color-scheme: dark;
 }
 
+[data-theme='volcano'] {
+  --surface-base: #0c0608;
+  --surface-card: #140a0d;
+  --surface-elevated: #1e1015;
+  --surface-hover: #2a161c;
+  --accent-rgb: 239 68 68;
+  --accent2-rgb: 250 204 21;
+  --buy-rgb: 250 204 21;
+  --sell-rgb: 239 68 68;
+  --warn-rgb: 251 146 60;
+  --foreground: #fef2f2;
+  --muted-fg: #a08080;
+  --border-color: rgba(239, 68, 68, 0.1);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 30px -12px rgba(239, 68, 68, 0.08);
+  color-scheme: dark;
+}
+
 [data-theme='light'] {
   --surface-base: #f8fafc;
   --surface-card: #ffffff;
@@ -249,4 +266,38 @@ body::before {
 
 [data-theme='synthwave'] .neon-border {
   box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.2), 0 0 20px rgba(236, 72, 153, 0.07);
+}
+
+/* ============================================================
+   VOLCANO THEME — molten red/gold glow + ember accents
+   ============================================================ */
+
+/* Stronger warm ambient glow — like a volcano illuminating the sky */
+[data-theme='volcano'] body::before {
+  background:
+    radial-gradient(ellipse 55% 40% at 75% -8%, rgb(var(--accent-rgb) / 0.15) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 30% at -5% 75%, rgb(var(--accent2-rgb) / 0.1) 0%, transparent 70%);
+}
+
+[data-theme='volcano'] aside {
+  background: linear-gradient(180deg, #1a0a0e 0%, #140a0d 100%);
+  border-right-color: rgba(239, 68, 68, 0.16);
+}
+
+[data-theme='volcano'] .neon-border {
+  box-shadow:
+    0 0 0 1px rgba(239, 68, 68, 0.2),
+    0 0 20px rgba(239, 68, 68, 0.06),
+    0 0 50px rgba(250, 204, 21, 0.03);
+}
+
+/* Subtle ember flicker for the live indicator dot */
+@keyframes ember-flicker {
+  0%, 100% { opacity: 0.5; transform: translateY(0); }
+  25%      { opacity: 1;   transform: translateY(-0.5px); }
+  75%      { opacity: 0.4; transform: translateY(0.5px); }
+}
+
+[data-theme='volcano'] .ember-dot {
+  animation: ember-flicker 2s ease-in-out infinite;
 }
