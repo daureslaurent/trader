@@ -168,6 +168,14 @@ async function tradingLoop() {
       logger.debug('Skipping pipeline for held coin — managed by monitor', { coin: data.symbol })
       continue
     }
+    // A coin with a pending entry intent is already awaiting a deferred BUY on the
+    // Entry Desk — skip its whole pipeline (no point spending research + LLM calls
+    // to re-issue a signal the entry engine is already working). The late
+    // checkActiveIntent gate in buyEvaluation stays as a backstop for SELL/manual paths.
+    if (entry.hasActiveIntent(data.symbol)) {
+      logger.debug('Skipping pipeline for coin with active entry intent — on the Entry Desk', { coin: data.symbol })
+      continue
+    }
     const cycleId = `${Date.now().toString(36)}-${(++cycleCounter).toString(36)}`
     // Re-fetch portfolio state so position counts reflect any trades already done this cycle
     const portfolioState = await getPortfolioState(marketData, settings)
