@@ -9,6 +9,8 @@ import { formatCurrency, formatTime, confidenceBar, esc } from './components/for
 export interface MenuSession {
   menuStack: string[]
   pagination: Record<string, { page: number }>
+  /** When set, free-text messages are routed to the conversational Agent. */
+  agent?: { conversationId: number }
 }
 
 export interface BotContext extends Context {
@@ -31,6 +33,16 @@ export function startTelegramBot() {
   bot = new Telegraf<BotContext>(config.telegram.botToken)
 
   bot.use(session({ defaultSession: (): MenuSession => ({ menuStack: ['main'], pagination: {} }) }))
+
+  // Discoverable command hints in the Telegram "/" menu.
+  bot.telegram.setMyCommands([
+    { command: 'menu', description: '🤖 Open the main menu' },
+    { command: 'ask', description: '💬 Ask the AI agent a question' },
+    { command: 'run', description: '▶️ Run pipeline for a symbol' },
+    { command: 'discover', description: '🔍 Run coin discovery' },
+    { command: 'set', description: '⚙️ Update a setting' },
+    { command: 'help', description: 'ℹ️ Show help' },
+  ]).catch(() => {})
 
   // Auto-learn chat ID from the first incoming message if not set via env
   bot.use((ctx, next) => {
