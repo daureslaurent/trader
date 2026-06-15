@@ -5,6 +5,7 @@ import { getSettings, updateSetting } from '../../db/index.js'
 import { bus } from '../../core/events.js'
 import { approveDiscovery, rejectDiscovery } from '../../discoverer/index.js'
 import { runChatTurn, createConversation, getConversation, isGenerating } from '../../agent/index.js'
+import { runEndpointHealthCheck } from '../../core/endpointHealth.js'
 import { esc, mdToHtml, chunkText } from '../components/formatting.js'
 import * as dashboard from './views/dashboard.js'
 import * as portfolio from './views/portfolio.js'
@@ -18,6 +19,7 @@ import * as summary from './views/summary.js'
 import * as monitor from './views/monitor.js'
 import * as discover from './views/discover.js'
 import * as host from './views/host.js'
+import * as endpoints from './views/endpoints.js'
 import * as agent from './views/agent.js'
 
 type ViewModule = { render: (ctx: any) => Promise<{ text: string; buttons: ReturnType<typeof Markup.button.callback>[][] }> }
@@ -43,6 +45,7 @@ export class MenuController {
     this.views.set('monitor', monitor)
     this.views.set('discover', discover)
     this.views.set('host', host)
+    this.views.set('endpoints', endpoints)
     this.views.set('agent', agent)
   }
 
@@ -146,6 +149,12 @@ export class MenuController {
       bus.emit('discovery_run_requested', { cycle_id: cycleId('discovery') })
       await ctx.answerCbQuery('🔍 Discovery started…')
       await this.renderView(ctx, 'discover')
+    })
+
+    this.bot.action('run:endpoint-health', async (ctx) => {
+      await ctx.answerCbQuery('🔌 Re-checking endpoints…')
+      await runEndpointHealthCheck()
+      await this.renderView(ctx, 'endpoints')
     })
 
     // ── Discovery approve / reject ───────────────────────────────────────────
@@ -311,8 +320,9 @@ export class MenuController {
       [Markup.button.callback('🎯 Entry Desk', 'menu:entry'), Markup.button.callback('🩺 Monitor', 'menu:monitor')],
       [Markup.button.callback('🔭 Discover', 'menu:discover'), Markup.button.callback('🔬 Pipeline', 'menu:pipeline')],
       [Markup.button.callback('🧭 Summary', 'menu:summary'), Markup.button.callback(`💬 Agent${inChat ? ' 🟢' : ''}`, 'menu:agent')],
-      [Markup.button.callback('🖥️ Host', 'menu:host'), Markup.button.callback('⚙️ Settings', 'menu:settings')],
-      [Markup.button.callback('✅ Approvals', 'menu:approvals'), Markup.button.callback('🔄 Refresh', 'menu:refresh')],
+      [Markup.button.callback('🖥️ Host', 'menu:host'), Markup.button.callback('🔌 Endpoints', 'menu:endpoints')],
+      [Markup.button.callback('⚙️ Settings', 'menu:settings'), Markup.button.callback('✅ Approvals', 'menu:approvals')],
+      [Markup.button.callback('🔄 Refresh', 'menu:refresh')],
     ]
     const text = '🤖 <b>CryptoBot</b> — Main Menu\n\nSelect a section, or just type a question to ask the AI agent.'
     const opts = { parse_mode: 'HTML' as const, reply_markup: Markup.inlineKeyboard(buttons).reply_markup }
