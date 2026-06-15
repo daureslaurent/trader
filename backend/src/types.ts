@@ -232,6 +232,9 @@ export interface BotSettings {
   summary_cron: string
   /** Delete portfolio summaries older than this many days. 0 = keep forever. */
   summary_retain_days: number
+  /** How many hours of LLM-scheduler activity the Control Room retains (feed + per-URL
+   *  timeline). The page rebuilds this much scrollback on reload. Default 3. */
+  control_room_retain_hours: number
   /** Master switch for outbound Telegram push notifications. When false, no event
    *  notifications are sent. Trade-approval prompts are unaffected — they're
    *  functional (you reply to them), not notifications. */

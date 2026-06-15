@@ -2,7 +2,7 @@ import OpenAI from 'openai'
 import { llmChat, endpointGate, type LLMTarget, type LLMCallMeta } from './llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from './logger.js'
-import { llmJobs, nowSql } from '../db/index.js'
+import { llmJobs, nowSql, getSettings } from '../db/index.js'
 
 /**
  * Central LLM scheduler — the single front door every module funnels its chat
@@ -107,37 +107,59 @@ let _seq = 0
 
 // ── Recent-activity history (so a reloaded Control Room rebuilds, not blanks) ────
 // The scheduler is the source of truth for live LLM flow; the page is a thin view of
-// it. Without these, a page reload loses the feed, ribbon, swap count and in-flight
-// chips (they lived only in the browser's WS-fed state) until new events trickle in.
-// These bounded rings let `getSchedulerState()` replay that recent history on load.
-// In-memory only: this is live operational telemetry, not a durable record — the
-// `llm_jobs` table already covers actual job resume across restarts.
+// it. Without these, a page reload loses the feed, the per-endpoint timeline, the swap
+// count and the in-flight chips (they lived only in the browser's WS-fed state) until
+// new events trickle in. These rings let `getSchedulerState()` replay recent history
+// on load. Retention is TIME-based (control_room_retain_hours, ~3h) so the page shows a
+// real scrollback window rather than a fixed item count; hard caps below just bound
+// memory against a runaway burst. In-memory only: this is live operational telemetry,
+// not a durable record — the `llm_jobs` table already covers job resume across restarts.
 type JobState = 'queued' | 'dispatching' | 'running' | 'done' | 'error'
-interface ActiveJob { id: string; module: string; lane: Lane; coin: string | null; model: string; state: 'dispatching' | 'running'; at: number }
+interface ActiveJob { id: string; module: string; lane: Lane; coin: string | null; model: string; url: string; state: 'dispatching' | 'running'; at: number }
 interface FeedRecord { id: string; text: string; kind: JobState | 'swap'; at: number }
-interface RibbonRecord { model: string; coin: string | null; at: number }
-interface SwapRecord { gateKey: string; from: string; to: string; at: number }
+// One entry per running dispatch. Grouped by `url` into per-endpoint timelines; the
+// model changing between consecutive entries on a URL is a visible reload-forcing swap.
+interface DispatchRecord { url: string; model: string; coin: string | null; at: number }
 
-const HISTORY_FEED = 80
-const HISTORY_RIBBON = 60
-const HISTORY_SWAPS = 20
+const MAX_FEED = 1000        // safety cap; time-based retention is the real bound
+const MAX_DISPATCHES = 5000
 
 const _active = new Map<string, ActiveJob>()   // currently dispatching/running jobs
 const _feed: FeedRecord[] = []                 // newest-first
-const _ribbon: RibbonRecord[] = []             // oldest-first (a dispatch timeline)
-const _swaps: SwapRecord[] = []                // oldest-first
-let _swapTotal = 0                             // total swaps since start (survives ring eviction)
+const _dispatches: DispatchRecord[] = []       // oldest-first; the per-endpoint timeline
+let _swapTotal = 0                             // total swaps since start (survives pruning)
 let _feedSeq = 0
 
 const coinShort = (coin: string | null): string => (coin ? coin.replace('/USDC', '') : '')
 
-function recordFeed(text: string, kind: JobState | 'swap'): void {
-  _feed.unshift({ id: `feed_${_feedSeq++}`, text, kind, at: Date.now() })
-  if (_feed.length > HISTORY_FEED) _feed.length = HISTORY_FEED
+// Retention window for the Control Room's history, in ms, from settings (hours).
+function retentionMs(): number {
+  const h = getSettings().control_room_retain_hours
+  return (Number.isFinite(h) && h > 0 ? h : 3) * 3_600_000
 }
 
-// Collapse a gate key (base URL, optionally ::model) to a readable host for the feed.
-function shortGate(key: string): string {
+// Drop history older than the retention window (and enforce the memory safety caps).
+// _feed is newest-first so stale entries sit at the tail; _dispatches is oldest-first.
+function pruneHistory(): void {
+  const cutoff = Date.now() - retentionMs()
+  while (_dispatches.length && _dispatches[0].at < cutoff) _dispatches.shift()
+  if (_dispatches.length > MAX_DISPATCHES) _dispatches.splice(0, _dispatches.length - MAX_DISPATCHES)
+  while (_feed.length && _feed[_feed.length - 1].at < cutoff) _feed.pop()
+  if (_feed.length > MAX_FEED) _feed.length = MAX_FEED
+}
+
+function recordFeed(text: string, kind: JobState | 'swap'): void {
+  _feed.unshift({ id: `feed_${_feedSeq++}`, text, kind, at: Date.now() })
+  pruneHistory()
+}
+
+function recordDispatch(url: string, model: string, coin: string | null): void {
+  _dispatches.push({ url, model, coin, at: Date.now() })
+  pruneHistory()
+}
+
+// Collapse a base URL (optionally a gate key with ::model) to a readable host.
+function shortHost(key: string): string {
   const [url, model] = key.split('::')
   let host = url
   try { host = new URL(url).host } catch { /* keep raw */ }
@@ -167,22 +189,43 @@ function newJobId(): string {
 
 /**
  * Snapshot for the Control Room's initial render / debugging. Beyond the live
- * lane/gate/queue occupancy it replays the recent-activity rings (active chips, feed,
- * ribbon, swaps) so a freshly-loaded or reloaded page rebuilds its full view instead
- * of starting empty. Ages are returned as `agoMs` (ms elapsed) rather than absolute
- * timestamps so the client reconstructs wall-clock times against its own clock.
+ * lane/gate/queue occupancy it replays the recent-activity history (active chips, feed,
+ * and the per-endpoint dispatch timeline) so a freshly-loaded or reloaded page rebuilds
+ * its full view instead of starting empty. Ages are returned as `agoMs` (ms elapsed)
+ * rather than absolute timestamps so the client reconstructs wall-clock times against
+ * its own clock. `endpoints[]` is the timeline grouped by base URL — one bar per URL —
+ * with each URL's dispatches in time order; a model change between consecutive entries
+ * is a reload-forcing swap, rendered as a colour break in that URL's bar.
  */
 export function getSchedulerState() {
+  pruneHistory()
   const now = Date.now()
+
+  const byUrl = new Map<string, { url: string; events: { model: string; coin: string | null; agoMs: number }[] }>()
+  for (const d of _dispatches) {
+    let g = byUrl.get(d.url)
+    if (!g) { g = { url: d.url, events: [] }; byUrl.set(d.url, g) }
+    g.events.push({ model: d.model, coin: d.coin, agoMs: now - d.at })
+  }
+  const endpoints = Array.from(byUrl.values())
+    .map(g => ({
+      url: g.url,
+      host: shortHost(g.url),
+      residentModel: g.events.length ? g.events[g.events.length - 1].model : null,
+      active: Array.from(_active.values()).filter(a => a.url === g.url).length,
+      events: g.events,
+    }))
+    .sort((a, b) => a.url.localeCompare(b.url))
+
   return {
     lanes: { analyse: { active: _laneActive.analyse, limit: LANE_LIMIT.analyse }, parallel: { active: _laneActive.parallel, limit: LANE_LIMIT.parallel } },
     queueDepth: _waiting.length,
+    retainHours: getSettings().control_room_retain_hours,
     gates: Array.from(_gateActive.entries()).map(([key, active]) => ({ key, active, residentModel: _residentModel.get(key) ?? null, streak: _sameModelStreak.get(key) ?? 0 })),
     waiting: _waiting.map(j => ({ id: j.id, module: j.spec.module, lane: j.spec.lane, coin: j.spec.coin ?? null, priority: defaultPriority(j.spec), waitedMs: now - j.enqueuedAt })),
     active: Array.from(_active.values()).map(a => ({ id: a.id, module: a.module, lane: a.lane, coin: a.coin, model: a.model, state: a.state, agoMs: now - a.at })),
     feed: _feed.map(f => ({ id: f.id, text: f.text, kind: f.kind, agoMs: now - f.at })),
-    ribbon: _ribbon.map(r => ({ model: r.model, coin: r.coin, agoMs: now - r.at })),
-    swaps: _swaps.map(s => ({ gateKey: s.gateKey, from: s.from, to: s.to, agoMs: now - s.at })),
+    endpoints,
     swapCount: _swapTotal,
   }
 }
@@ -293,16 +336,14 @@ async function dispatch(job: Job, route: LLMRoute, gateKey: string | null): Prom
       if (prev) {
         broadcast('llm_model_swap', { gate_key: gateKey, from_model: prev, to_model: route.model, at: nowSql() })
         _swapTotal++
-        _swaps.push({ gateKey, from: prev, to: route.model, at: Date.now() })
-        if (_swaps.length > HISTORY_SWAPS) _swaps.shift()
-        recordFeed(`model swap on ${shortGate(gateKey)}: ${prev} → ${route.model}`, 'swap')
+        recordFeed(`model swap on ${shortHost(gateKey)}: ${prev} → ${route.model}`, 'swap')
       }
     }
   }
 
   if (job.durable) { try { await llmJobs.update({ _id: job.id }, { status: 'running' }) } catch { /* best effort */ } }
 
-  _active.set(job.id, { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, model: route.model, state: 'dispatching', at: Date.now() })
+  _active.set(job.id, { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, model: route.model, url: route.baseURL, state: 'dispatching', at: Date.now() })
   broadcast('llm_job_state', {
     id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null,
     model: route.model, base_url: route.baseURL, state: 'dispatching',
@@ -315,8 +356,7 @@ async function dispatch(job: Job, route: LLMRoute, gateKey: string | null): Prom
     const meta: LLMCallMeta = { module: job.spec.module, coin: job.spec.coin ?? null, cycle_id: job.spec.cycleId ?? null, base_url: route.baseURL }
     const active = _active.get(job.id)
     if (active) { active.state = 'running'; active.at = Date.now() }
-    _ribbon.push({ model: route.model, coin: job.spec.coin ?? null, at: Date.now() })
-    if (_ribbon.length > HISTORY_RIBBON) _ribbon.shift()
+    recordDispatch(route.baseURL, route.model, job.spec.coin ?? null)
     broadcast('llm_job_state', { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, model: route.model, base_url: route.baseURL, state: 'running' })
 
     const resp = await llmChat(route.client, params, meta, route.fallback)

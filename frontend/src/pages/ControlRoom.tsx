@@ -5,17 +5,25 @@ import { Card, CardHeader } from '../components/ui/Card'
 import { cn } from '../lib/utils'
 
 // ── Types mirroring the backend scheduler's WS payloads + snapshot ──────────────
+interface EndpointTimeline {
+  url: string
+  host: string
+  residentModel: string | null
+  active: number
+  events: { model: string; coin: string | null; agoMs: number }[]
+}
+
 interface SchedulerSnapshot {
   lanes: { analyse: { active: number; limit: number }; parallel: { active: number; limit: number } }
   queueDepth: number
+  retainHours: number
   gates: { key: string; active: number; residentModel: string | null; streak: number }[]
   waiting: { id: string; module: string; lane: string; coin: string | null; priority: number; waitedMs: number }[]
-  // Recent-activity history the scheduler keeps so a reloaded page rebuilds instead of
-  // blanking. `agoMs` = ms elapsed since the event, reconstructed against the local clock.
+  // Recent-activity history the scheduler retains (~retainHours) so a reload rebuilds
+  // instead of blanking. `agoMs` = ms elapsed since the event, reconstructed locally.
   active?: { id: string; module: string; lane: string; coin: string | null; model: string; state: 'dispatching' | 'running'; agoMs: number }[]
   feed?: { id: string; text: string; kind: JobState | 'swap'; agoMs: number }[]
-  ribbon?: { model: string; coin: string | null; agoMs: number }[]
-  swaps?: { gateKey: string; from: string; to: string; agoMs: number }[]
+  endpoints?: EndpointTimeline[]
   swapCount?: number
 }
 
@@ -32,12 +40,10 @@ interface JobView {
   error?: string
 }
 
-interface SwapMarker { gateKey: string; from: string; to: string; at: number }
-
 // Deterministic color per model id, so the same model keeps its hue across the
-// swimlanes and the batch ribbon — that visual continuity is what makes a model
-// swap pop out.
-const PALETTE = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#ef4444', '#84cc16']
+// endpoint timelines, the legend and the chips — that visual continuity is what makes
+// a model swap (a color break in a bar) pop out.
+const PALETTE = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#ef4444', '#84cc16', '#14b8a6', '#f97316']
 function modelColor(model: string): string {
   if (!model) return 'rgb(var(--muted-rgb))'
   let h = 0
@@ -53,50 +59,44 @@ const STATE_STYLE: Record<JobState, string> = {
   error:       'border-sell/50 text-sell',
 }
 
-const MAX_FEED = 80
-const MAX_RIBBON = 60
+const MAX_FEED = 600
 
 export default function ControlRoom() {
   const { data: snap, reload } = useApi<SchedulerSnapshot>('/api/llm/scheduler')
   const [jobs, setJobs] = useState<Record<string, JobView>>({})
   const [feed, setFeed] = useState<{ id: string; text: string; kind: JobState | 'swap'; at: number }[]>([])
-  const [ribbon, setRibbon] = useState<{ model: string; coin: string | null; at: number }[]>([])
-  const [swaps, setSwaps] = useState<SwapMarker[]>([])
   const [swapTotal, setSwapTotal] = useState(0)
-  const jobsRef = useRef(jobs)
-  jobsRef.current = jobs
 
-  // Poll the authoritative snapshot for lane/gate occupancy; live job flow comes
-  // from the WS events below.
+  const retainHours = snap?.retainHours && snap.retainHours > 0 ? snap.retainHours : 3
+  const retainMs = retainHours * 3_600_000
+  const now = Date.now()
+
+  // Poll the authoritative snapshot for lane/gate occupancy + the per-endpoint
+  // timeline (rendered straight from it); live job flow comes from the WS events below.
   useEffect(() => {
     const t = setInterval(reload, 2000)
     return () => clearInterval(t)
   }, [reload])
 
-  // Seed the view from the scheduler's recent-activity history exactly once, the first
-  // time a snapshot lands. This is what survives a page reload: feed, ribbon, swaps,
-  // in-flight chips and the total swap count are all rebuilt from the server instead of
-  // starting blank. `agoMs` is turned back into a local timestamp. Live WS events take
-  // over from here; we only seed the rings that are still empty so a stray early event
-  // can't be duplicated, while in-flight jobs merge by id into the (keyed) jobs map.
+  // Seed the live view (feed, in-flight chips, swap total) from the scheduler's history
+  // exactly once, the first time a snapshot lands — this is what survives a page reload.
+  // The endpoint timeline isn't seeded: it renders directly from the polled snapshot.
   const seededRef = useRef(false)
   useEffect(() => {
     if (seededRef.current || !snap) return
     seededRef.current = true
-    const now = Date.now()
+    const t = Date.now()
     if (snap.active?.length) {
       setJobs(j => {
         const n = { ...j }
         for (const a of snap.active!) {
           if (n[a.id]) continue
-          n[a.id] = { id: a.id, module: a.module, lane: a.lane === 'analyse' ? 'analyse' : 'parallel', coin: a.coin, model: a.model, state: a.state, updatedAt: now - a.agoMs }
+          n[a.id] = { id: a.id, module: a.module, lane: a.lane === 'analyse' ? 'analyse' : 'parallel', coin: a.coin, model: a.model, state: a.state, updatedAt: t - a.agoMs }
         }
         return n
       })
     }
-    if (snap.feed?.length) setFeed(f => f.length ? f : snap.feed!.map(x => ({ id: x.id, text: x.text, kind: x.kind, at: now - x.agoMs })))
-    if (snap.ribbon?.length) setRibbon(r => r.length ? r : snap.ribbon!.map(x => ({ model: x.model, coin: x.coin, at: now - x.agoMs })))
-    if (snap.swaps?.length) setSwaps(s => s.length ? s : snap.swaps!.map(x => ({ gateKey: x.gateKey, from: x.from, to: x.to, at: now - x.agoMs })))
+    if (snap.feed?.length) setFeed(f => f.length ? f : snap.feed!.map(x => ({ id: x.id, text: x.text, kind: x.kind, at: t - x.agoMs })))
     if (typeof snap.swapCount === 'number') setSwapTotal(snap.swapCount)
   }, [snap])
 
@@ -121,18 +121,14 @@ export default function ControlRoom() {
         }
         return { ...j, [d.id]: merged }
       })
-      if (d.state === 'running' && d.model) {
-        setRibbon(r => [...r.slice(-(MAX_RIBBON - 1)), { model: d.model!, coin: d.coin ?? null, at: Date.now() }])
-      }
       if (d.state === 'done' || d.state === 'error') {
-        pushFeed(setFeed, { id: d.id, text: `${d.module}${d.coin ? ` · ${d.coin.replace('/USDC', '')}` : ''} ${d.state}${d.error ? `: ${d.error}` : ''}`, kind: d.state, at: Date.now() })
+        pushFeed(setFeed, { id: `${d.id}:${d.state}`, text: `${d.module}${d.coin ? ` · ${d.coin.replace('/USDC', '')}` : ''} ${d.state}${d.error ? `: ${d.error}` : ''}`, kind: d.state, at: Date.now() })
         // Let the chip linger briefly, then drop terminal jobs so the lanes stay legible.
         const id = d.id
         setTimeout(() => setJobs(j => { const n = { ...j }; delete n[id]; return n }), 4000)
       }
     } else if (event === 'llm_model_swap') {
       const d = data as { gate_key: string; from_model: string; to_model: string }
-      setSwaps(s => [...s.slice(-19), { gateKey: d.gate_key, from: d.from_model, to: d.to_model, at: Date.now() }])
       setSwapTotal(n => n + 1)
       pushFeed(setFeed, { id: `${d.gate_key}-${Date.now()}`, text: `model swap on ${shortGate(d.gate_key)}: ${d.from_model} → ${d.to_model}`, kind: 'swap', at: Date.now() })
     }
@@ -140,13 +136,9 @@ export default function ControlRoom() {
 
   useWebSocket(onMessage)
 
-  // Render from BOTH sources: live WS events (which carry model + running/done
-  // transitions) and the polled snapshot's authoritative `waiting[]` queue. The
-  // snapshot is what makes already-enqueued jobs visible when the page is opened
-  // mid-cycle — without it, a freshly-submitted monitor batch shows only as a
-  // queueDepth number because its enqueue events arrived before we subscribed.
-  // WS state wins on conflict (a running job is no longer in `waiting`, so there
-  // is none); queued-only jobs come from the snapshot.
+  // Render lane chips from BOTH sources: live WS events (model + running/done) and the
+  // polled snapshot's authoritative `waiting[]` queue, so already-enqueued jobs show
+  // when the page is opened mid-cycle. WS state wins on conflict.
   const waitingExtra: JobView[] = (snap?.waiting ?? [])
     .filter(w => !jobs[w.id])
     .map(w => ({
@@ -156,39 +148,55 @@ export default function ControlRoom() {
   const jobList = [...Object.values(jobs), ...waitingExtra].sort((a, b) => b.updatedAt - a.updatedAt)
   const analyseJobs = jobList.filter(j => j.lane === 'analyse')
   const parallelJobs = jobList.filter(j => j.lane === 'parallel')
-  const swapCount = swapTotal
+
+  const endpoints = snap?.endpoints ?? []
+  const inFlight = jobList.filter(j => j.state === 'running' || j.state === 'dispatching').length
+  const visibleFeed = feed.filter(f => now - f.at <= retainMs)
+
+  // Models present across all endpoint timelines, for the shared legend.
+  const legendModels = Array.from(new Set(endpoints.flatMap(e => e.events.map(ev => ev.model)).filter(Boolean))).sort()
 
   return (
     <div className="space-y-6">
-      {/* Endpoint / gate cards */}
-      <div>
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted mb-3">Endpoints — model residency &amp; concurrency</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          {(snap?.gates ?? []).length === 0 && (
-            <Card className="text-sm text-muted">No active inference gates. Idle.</Card>
-          )}
-          {(snap?.gates ?? []).map(g => (
-            <Card key={g.key}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs text-muted truncate">{shortGate(g.key)}</p>
-                  <p className="text-sm font-semibold text-foreground truncate flex items-center gap-2 mt-0.5">
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: modelColor(g.residentModel ?? '') }} />
-                    {g.residentModel ?? '—'}
-                  </p>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className="text-lg font-bold text-foreground tabular-nums">{g.active}</p>
-                  <p className="text-[10px] text-muted uppercase tracking-wide">in flight</p>
-                </div>
-              </div>
-              <div className="mt-3 flex items-center gap-2 text-[11px] text-muted">
-                <span className="px-1.5 py-0.5 rounded bg-surface-elevated border border-border">batch streak {g.streak}</span>
-              </div>
-            </Card>
-          ))}
-        </div>
+      {/* Stat strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Stat label="Queue depth" value={snap?.queueDepth ?? 0} tone={snap?.queueDepth ? 'warn' : 'muted'} />
+        <Stat label="In flight" value={inFlight} tone={inFlight ? 'accent' : 'muted'} />
+        <Stat label="Swaps seen" value={swapTotal} tone={swapTotal ? 'sell' : 'muted'} />
+        <Stat label="Retention" value={`${retainHours}h`} tone="muted" />
       </div>
+
+      {/* Per-endpoint model timeline — one bar per URL, color = model, red break = swap */}
+      <Card>
+        <CardHeader
+          title="Endpoint model timeline"
+          subtitle={`One bar per endpoint URL over the last ${retainHours}h. Contiguous color = a batched same-model run; a red break = a reload-forcing model swap on that URL.`}
+          action={legendModels.length > 0 && (
+            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 max-w-md">
+              {legendModels.map(m => (
+                <span key={m} className="flex items-center gap-1.5 text-[11px] text-muted">
+                  <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: modelColor(m) }} />
+                  <span className="truncate max-w-[120px]">{m}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        />
+        {endpoints.length === 0 ? (
+          <p className="text-sm text-muted">No dispatches in the window yet — trigger the pipeline or a monitor run.</p>
+        ) : (
+          <div className="space-y-3">
+            {endpoints.map(ep => (
+              <EndpointRow key={ep.url} ep={ep} now={now} windowMs={retainMs} />
+            ))}
+            {/* Time axis */}
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted/70 pl-[160px] pt-1">
+              <span>−{retainHours}h</span>
+              <span>now</span>
+            </div>
+          </div>
+        )}
+      </Card>
 
       {/* Lane swimlanes */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -206,40 +214,43 @@ export default function ControlRoom() {
         />
       </div>
 
-      {/* Model-batch ribbon + swap counter */}
-      <Card>
-        <CardHeader
-          title="Model-batch ribbon"
-          subtitle="Contiguous same-model bands = batched runs. Red ticks = a reload-forcing model swap."
-          action={<div className="text-right"><p className="text-lg font-bold text-foreground tabular-nums">{swapCount}</p><p className="text-[10px] text-muted uppercase tracking-wide">swaps seen</p></div>}
-        />
-        {ribbon.length === 0 ? (
-          <p className="text-sm text-muted">No dispatches yet — trigger the pipeline or a monitor run.</p>
-        ) : (
-          <div className="flex items-stretch h-10 rounded-lg overflow-hidden border border-border">
-            {ribbon.map((seg, i) => {
-              const swapped = i > 0 && ribbon[i - 1].model !== seg.model
-              return (
-                <div
-                  key={`${seg.at}-${i}`}
-                  className={cn('flex-1 min-w-[3px] relative', swapped && 'border-l-2 border-sell')}
-                  style={{ background: modelColor(seg.model) }}
-                  title={`${seg.model}${seg.coin ? ` · ${seg.coin}` : ''}`}
-                />
-              )
-            })}
+      {/* Gate concurrency cards */}
+      {(snap?.gates ?? []).length > 0 && (
+        <div>
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted mb-3">Gates — concurrency &amp; batch streak</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+            {(snap?.gates ?? []).map(g => (
+              <Card key={g.key}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted truncate">{shortGate(g.key)}</p>
+                    <p className="text-sm font-semibold text-foreground truncate flex items-center gap-2 mt-0.5">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: modelColor(g.residentModel ?? '') }} />
+                      {g.residentModel ?? '—'}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-lg font-bold text-foreground tabular-nums">{g.active}</p>
+                    <p className="text-[10px] text-muted uppercase tracking-wide">in flight</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center gap-2 text-[11px] text-muted">
+                  <span className="px-1.5 py-0.5 rounded bg-surface-elevated border border-border">batch streak {g.streak}</span>
+                </div>
+              </Card>
+            ))}
           </div>
-        )}
-      </Card>
+        </div>
+      )}
 
       {/* Live feed */}
       <Card noPad>
         <div className="px-5 pt-5">
-          <CardHeader title="Live scheduler feed" subtitle={`Queue depth ${snap?.queueDepth ?? 0}`} />
+          <CardHeader title="Live scheduler feed" subtitle={`Last ${retainHours}h · ${visibleFeed.length} events`} />
         </div>
-        <div className="max-h-72 overflow-y-auto px-5 pb-4 space-y-1">
-          {feed.length === 0 && <p className="text-sm text-muted">Waiting for activity…</p>}
-          {feed.map(f => (
+        <div className="max-h-80 overflow-y-auto px-5 pb-4 space-y-1">
+          {visibleFeed.length === 0 && <p className="text-sm text-muted">Waiting for activity…</p>}
+          {visibleFeed.map(f => (
             <div key={f.id} className="flex items-center gap-2 text-xs">
               <span className="text-muted/60 tabular-nums w-16 shrink-0">{new Date(f.at).toLocaleTimeString()}</span>
               <span className={cn(
@@ -252,6 +263,77 @@ export default function ControlRoom() {
         </div>
       </Card>
     </div>
+  )
+}
+
+// ── Endpoint timeline row ───────────────────────────────────────────────────────
+interface Band { model: string; widthPct: number; start: number; end: number; count: number; coins: string[] }
+
+// Collapse a URL's dispatch points into contiguous same-model bands across the window.
+// A band runs from the model's first dispatch until the next different model's first
+// dispatch (the swap moment), the last extending to now. Idle time before the first
+// dispatch becomes a leading gap so every bar shares one time axis.
+function buildBands(events: { model: string; coin: string | null; agoMs: number }[], now: number, windowMs: number): { leadPct: number; bands: Band[] } {
+  const windowStart = now - windowMs
+  if (!events.length) return { leadPct: 100, bands: [] }
+  const segs: { model: string; start: number; end: number; count: number; coins: Set<string> }[] = []
+  for (const e of events) {
+    const at = now - e.agoMs
+    const last = segs[segs.length - 1]
+    if (last && last.model === e.model) {
+      last.count++
+      if (e.coin) last.coins.add(e.coin.replace('/USDC', ''))
+    } else {
+      segs.push({ model: e.model, start: at, end: now, count: 1, coins: new Set(e.coin ? [e.coin.replace('/USDC', '')] : []) })
+    }
+  }
+  for (let i = 0; i < segs.length; i++) segs[i].end = i < segs.length - 1 ? segs[i + 1].start : now
+
+  const firstStart = Math.max(segs[0].start, windowStart)
+  const leadPct = Math.max(0, ((firstStart - windowStart) / windowMs) * 100)
+  const bands: Band[] = segs.map(s => {
+    const start = Math.max(s.start, windowStart)
+    return { model: s.model, start, end: s.end, count: s.count, coins: [...s.coins], widthPct: Math.max(0, ((s.end - start) / windowMs) * 100) }
+  })
+  return { leadPct, bands }
+}
+
+function EndpointRow({ ep, now, windowMs }: { ep: EndpointTimeline; now: number; windowMs: number }) {
+  const { leadPct, bands } = buildBands(ep.events, now, windowMs)
+  return (
+    <div className="flex items-center gap-3">
+      {/* Label column (fixed width keeps every bar's time axis aligned) */}
+      <div className="w-[148px] shrink-0 min-w-0">
+        <p className="text-xs font-medium text-foreground truncate" title={ep.url}>{ep.host}</p>
+        <p className="text-[10px] text-muted truncate flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: modelColor(ep.residentModel ?? '') }} />
+          <span className="truncate">{ep.residentModel ?? 'idle'}</span>
+          {ep.active > 0 && <span className="text-accent shrink-0">· {ep.active} live</span>}
+        </p>
+      </div>
+      {/* Bar */}
+      <div className="flex-1 flex h-8 rounded-lg overflow-hidden border border-border bg-surface-elevated/40">
+        {leadPct > 0.5 && <div style={{ width: `${leadPct}%` }} className="shrink-0" />}
+        {bands.map((b, i) => (
+          <div
+            key={i}
+            className={cn('shrink-0 min-w-[2px] relative transition-[width]', i > 0 && 'border-l-2 border-sell')}
+            style={{ width: `${b.widthPct}%`, background: modelColor(b.model) }}
+            title={`${b.model}\n${b.count} dispatch${b.count === 1 ? '' : 'es'}${b.coins.length ? `\n${b.coins.join(', ')}` : ''}\n${new Date(b.start).toLocaleTimeString()} – ${new Date(b.end).toLocaleTimeString()}`}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function Stat({ label, value, tone }: { label: string; value: string | number; tone: 'accent' | 'warn' | 'sell' | 'muted' }) {
+  const toneClass = tone === 'accent' ? 'text-accent' : tone === 'warn' ? 'text-warn' : tone === 'sell' ? 'text-sell' : 'text-foreground'
+  return (
+    <Card className="py-3">
+      <p className="text-[10px] uppercase tracking-[0.14em] text-muted">{label}</p>
+      <p className={cn('text-2xl font-bold tabular-nums mt-0.5', toneClass)}>{value}</p>
+    </Card>
   )
 }
 

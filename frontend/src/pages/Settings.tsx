@@ -100,6 +100,7 @@ interface SettingsData {
   summary_auto_run: boolean
   summary_cron: string
   summary_retain_days: number
+  control_room_retain_hours: number
   telegram_notify_enabled: boolean
   telegram_notify_startup: boolean
   telegram_notify_position_opened: boolean
@@ -1498,6 +1499,20 @@ export default function Settings() {
               label="Allow parallel same-endpoint calls"
               checked={settings.llm_allow_parallel_same_url}
               onChange={() => toggle('llm_allow_parallel_same_url')}
+            />
+          </Row>
+          <Row
+            label="Control Room history"
+            hint="How much LLM-scheduler activity the Control Room retains — the feed and the per-endpoint model timeline. The page rebuilds this much scrollback when reopened or reloaded. Kept in memory only."
+          >
+            <UnitInput
+              type="number"
+              step="0.5"
+              min="0.5"
+              max="72"
+              unit="hours"
+              value={settings.control_room_retain_hours}
+              onChange={e => set('control_room_retain_hours', parseFloat(e.target.value) || 3)}
             />
           </Row>
           {LLM_MODULES.map(m => (

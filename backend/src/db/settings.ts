@@ -141,6 +141,7 @@ export function getSettings(): BotSettings {
     summary_auto_run: map.summary_auto_run === 'true',
     summary_cron: map.summary_cron || '0 */6 * * *',
     summary_retain_days: parseInt(map.summary_retain_days || '30', 10),
+    control_room_retain_hours: parseFloat(map.control_room_retain_hours || '3'),
     telegram_notify_enabled: (map.telegram_notify_enabled ?? 'true') === 'true',
     telegram_notify_startup: (map.telegram_notify_startup ?? 'true') === 'true',
     telegram_notify_position_opened: (map.telegram_notify_position_opened ?? 'true') === 'true',
