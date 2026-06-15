@@ -53,6 +53,11 @@ export default function EntryDesk() {
   const [selected, setSelected] = useState<string | null>(null)
   const [cancelTarget, setCancelTarget] = useState<EntryIntent | null>(null)
   const [now, setNow] = useState(Date.now())
+  // The "Refresh LLM" button only makes sense when the Entry Planner is on —
+  // otherwise bands come from the static settings and there's no LLM to re-run.
+  const [plannerEnabled, setPlannerEnabled] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const prices = usePrices()
 
   useEffect(() => {
@@ -61,6 +66,9 @@ export default function EntryDesk() {
     }).catch(() => {})
     fetch('/api/entry-events').then(r => r.json()).then((d: EntryEvent[]) => {
       if (Array.isArray(d)) setEvents(d)
+    }).catch(() => {})
+    fetch('/api/settings').then(r => r.json()).then((s: { entry_planner_enabled?: boolean }) => {
+      if (s && typeof s.entry_planner_enabled === 'boolean') setPlannerEnabled(s.entry_planner_enabled)
     }).catch(() => {})
   }, [])
 
@@ -88,6 +96,36 @@ export default function EntryDesk() {
   useEffect(() => {
     if (selectedIntent && selectedIntent.coin !== selected) setSelected(selectedIntent.coin)
   }, [selectedIntent, selected])
+
+  // Re-run the Entry Planner LLM for the selected intent. On success the new band
+  // arrives via the entry_intent_update broadcast, so the chart/levels update on
+  // their own — we only surface failures here.
+  const onRefreshLlm = useCallback(async (coin: string) => {
+    setRefreshError(null)
+    setRefreshing(true)
+    try {
+      const res = await fetch('/api/entry-intents/replan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ coin }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) setRefreshError(data.error ?? 'Refresh failed')
+    } catch {
+      setRefreshError('Request failed')
+    } finally {
+      setRefreshing(false)
+    }
+  }, [])
+
+  // Drop a stale error when switching coins, and auto-dismiss it after a moment.
+  const selectedCoin = selectedIntent?.coin
+  useEffect(() => { setRefreshError(null) }, [selectedCoin])
+  useEffect(() => {
+    if (!refreshError) return
+    const t = setTimeout(() => setRefreshError(null), 6000)
+    return () => clearTimeout(t)
+  }, [refreshError])
 
   // Session stats from the activity feed.
   const fills = events.filter(e => e.type === 'filled')
@@ -163,6 +201,23 @@ export default function EntryDesk() {
                   )}
                   <Badge variant="accent" dot>Waiting</Badge>
                   <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={refreshing}
+                    disabled={!plannerEnabled || refreshing}
+                    onClick={() => onRefreshLlm(selectedIntent.coin)}
+                    title={plannerEnabled
+                      ? 'Re-run the Entry Planner LLM and re-anchor these levels to the live price'
+                      : 'Enable “LLM-decided entry levels” in Settings to use this'}
+                  >
+                    {!refreshing && (
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                      </svg>
+                    )}
+                    Refresh LLM
+                  </Button>
+                  <Button
                     variant="danger"
                     size="sm"
                     onClick={() => setCancelTarget(selectedIntent)}
@@ -179,6 +234,14 @@ export default function EntryDesk() {
                 <p className="px-5 pb-1 text-xs text-muted leading-relaxed">
                   <span className="font-medium text-foreground">Entry Planner:</span> {selectedIntent.planReason}
                 </p>
+              )}
+              {refreshError && (
+                <div className="mx-5 mb-1 mt-1 flex items-center gap-2 rounded-lg bg-sell/10 border border-sell/20 px-3 py-2 text-xs text-sell">
+                  <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m0 3.75h.008M10.34 3.94l-7.5 12.99A1.5 1.5 0 004.14 19.5h15.72a1.5 1.5 0 001.3-2.57l-7.5-12.99a1.5 1.5 0 00-2.62 0z" />
+                  </svg>
+                  {refreshError}
+                </div>
               )}
               <CandleChart symbol={selectedIntent.coin} levels={levels} zones={zones} hideSlTp />
             </>

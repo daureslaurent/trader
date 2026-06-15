@@ -4,7 +4,7 @@ import { bus } from '../../core/events.js'
 import { logger } from '../../core/logger.js'
 import { Signal, PortfolioEntry } from '../../types.js'
 import { getPendingApprovals } from '../../execution/index.js'
-import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent } from '../../entry/index.js'
+import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent, replan as replanEntryIntent } from '../../entry/index.js'
 import { executeTrade, executeCoinTrade, fetchBalance } from '../../trader/index.js'
 import {
   getOpenEntries, getUsdcEntry, updatePortfolioForTrade,
@@ -59,6 +59,22 @@ router.post('/entry-intents/cancel', (req: Request, res: Response) => {
   logger.info('Entry intent cancelled by user', { coin })
   cancelEntryIntent(coin, 'manual')
   res.json({ ok: true })
+})
+
+// Re-run the Entry Planner LLM for an active intent, re-anchoring its band on the
+// current live price and resetting the TTL. Leaves the intent untouched on any
+// failure (returns the reason). Like cancel, the slashed coin goes in the body.
+router.post('/entry-intents/replan', async (req: Request, res: Response) => {
+  const { coin } = req.body
+  if (!coin || typeof coin !== 'string') {
+    return res.status(400).json({ error: 'coin required' })
+  }
+  const result = await replanEntryIntent(coin)
+  if (!result.ok) {
+    const status = result.error?.startsWith('No active entry intent') ? 404 : 400
+    return res.status(status).json({ error: result.error })
+  }
+  res.json({ ok: true, intent: result.intent })
 })
 
 router.post('/trade/approve/:id', async (req: Request, res: Response) => {

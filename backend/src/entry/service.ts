@@ -3,8 +3,9 @@ import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
 import * as priceCache from '../market/index.js'
 import { getSettings } from '../db/index.js'
+import { getMarketContext } from '../portfolio/index.js'
 import { Signal, BotSettings } from '../types.js'
-import { EntryBand } from '../entryPlanner/index.js'
+import { EntryBand, planEntry, resolveEntryBand } from '../entryPlanner/index.js'
 import { EntryIntent, EntryEvent, CancelReason, FillTrigger } from './types.js'
 import * as store from './store.js'
 
@@ -84,6 +85,77 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band }: Regis
   })
   recordEvent({ coin, type: 'registered', signalPrice, targetPrice: intent.targetPrice })
   broadcastIntents()
+}
+
+export interface ReplanResult {
+  ok: boolean
+  error?: string
+  intent?: EntryIntent
+}
+
+/**
+ * Re-run the Entry Planner LLM for an active intent and re-materialize its band
+ * on the *current live price* (the Entry Desk "Refresh LLM" button). The new plan
+ * fully replaces the window — levels are re-anchored to the live price and the
+ * TTL is reset. On any failure (planner disabled, no live price, market-data or
+ * LLM error, unusable output) the existing intent is left untouched and an error
+ * is returned, so a refresh can never degrade a good band into the static one.
+ */
+export async function replan(coin: string): Promise<ReplanResult> {
+  const intent = intents.get(coin)
+  if (!intent) return { ok: false, error: 'No active entry intent for this coin' }
+
+  const settings = getSettings()
+  if (!settings.entry_planner_enabled) {
+    return { ok: false, error: 'Entry Planner is disabled — enable LLM-decided entry levels in Settings' }
+  }
+
+  const snap = priceCache.getPrice(coin)
+  if (!snap || !(snap.price > 0)) {
+    return { ok: false, error: 'No live price available for this coin yet' }
+  }
+  const livePrice = snap.price
+
+  let market
+  try {
+    market = await getMarketContext(coin, livePrice)
+  } catch (err) {
+    logger.warn('Entry replan: failed to build market context', { coin, error: (err as Error).message })
+    return { ok: false, error: 'Failed to fetch live market data' }
+  }
+
+  const plan = await planEntry({
+    coin, price: livePrice, market, signal: intent.signal,
+    candleTf: settings.entry_planner_candle_tf, candleCount: settings.entry_planner_candle_count,
+  })
+  if (!plan) {
+    return { ok: false, error: 'Entry Planner returned no usable levels — try again' }
+  }
+
+  // plan is non-null, so resolveEntryBand yields an 'llm' band.
+  const band = resolveEntryBand(plan, settings)
+  const now = Date.now()
+  const updated: EntryIntent = {
+    ...intent,
+    signalPrice: livePrice,
+    targetPrice: livePrice * (1 - band.pullbackPct / 100),
+    invalidatePrice: livePrice * (1 - band.invalidatePct / 100),
+    chaseCapPrice: livePrice * (1 + band.chaseCapPct / 100),
+    atr: market.atr14, // refresh ATR too — it feeds SL/TP sizing at fill
+    bandSource: band.source,
+    planReason: band.reason,
+    expiresAt: now + band.ttlMinutes * 60_000,
+  }
+
+  intents.set(coin, updated)
+  store.saveIntent(updated)
+  logger.info('Entry intent re-planned by user', {
+    coin, signalPrice: livePrice, target: updated.targetPrice,
+    invalidate: updated.invalidatePrice, chaseCap: updated.chaseCapPrice,
+    ttlMinutes: band.ttlMinutes, planReason: band.reason,
+  })
+  broadcastIntents()
+  return { ok: true, intent: updated }
 }
 
 export function cancel(coin: string, reason: CancelReason, price?: number): void {
