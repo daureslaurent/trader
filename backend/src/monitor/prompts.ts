@@ -48,26 +48,40 @@ export function fmtOffsetLabel(offsetHours: number): string {
   return m > 0 ? `UTC${sign}${h}:${m.toString().padStart(2, '0')}` : `UTC${sign}${h}`
 }
 
-const HORIZON_BEHAVIOR: Record<'short' | 'medium' | 'long', string> = {
-  short: `SHORT horizon (days to weeks):
+// Per-horizon behaviour guidance. The short/long blocks reference REDUCE; when partial
+// exits are disabled those lines are swapped for stop-trailing equivalents so the prompt
+// never advertises an action the engine won't execute.
+function horizonBehavior(horizon: 'short' | 'medium' | 'long', reduceEnabled: boolean): string {
+  switch (horizon) {
+    case 'short':
+      return `SHORT horizon (days to weeks):
   - Prioritise capital protection and quick profit-taking over patience.
-  - CLOSE or REDUCE on the first sign of trend weakness; don't wait for a full reversal.
+  - ${reduceEnabled
+        ? 'CLOSE or REDUCE on the first sign of trend weakness'
+        : 'CLOSE on the first sign of trend weakness'}; don't wait for a full reversal.
   - Trail stops aggressively — move SL up to break-even or just below SMA7 early.
-  - If in profit ≥ TP target, REDUCE to lock in gains rather than holding for more.
-  - Accept less upside to avoid giving back gains.`,
+  - ${reduceEnabled
+        ? 'If in profit ≥ TP target, REDUCE to lock in gains rather than holding for more.'
+        : 'If in profit ≥ TP target, tighten the stop hard (ADJUST) to lock in gains rather than holding for more.'}
+  - Accept less upside to avoid giving back gains.`
 
-  medium: `MEDIUM horizon (weeks to months):
+    case 'medium':
+      return `MEDIUM horizon (weeks to months):
   - Standard risk management — balance protection against normal market noise.
   - Hold through minor pullbacks if the trend and RSI are broadly intact.
   - Trail stop conservatively (below SMA25 or ATR×2 from price) once meaningfully in profit.
-  - CLOSE only on confirmed trend reversal — otherwise let the stop-loss handle downside exits.`,
+  - CLOSE only on confirmed trend reversal — otherwise let the stop-loss handle downside exits.`
 
-  long: `LONG horizon (months to years):
+    case 'long':
+      return `LONG horizon (months to years):
   - Patient positioning — short-term noise should not trigger action.
   - Only CLOSE on major macro trend reversals; a 5–10% dip in an uptrend is normal.
   - Widen stops only when structurally justified (e.g. new higher low on weekly chart).
-  - Prefer HOLD or mild ADJUST over REDUCE; preserving position size matters more.
-  - Act on RSI extremes (>80 or <30) combined with clear trend change, not either alone.`,
+  - ${reduceEnabled
+        ? 'Prefer HOLD or mild ADJUST over REDUCE; preserving position size matters more.'
+        : 'Prefer HOLD or mild ADJUST; preserving position size matters more.'}
+  - Act on RSI extremes (>80 or <30) combined with clear trend change, not either alone.`
+  }
 }
 
 export function buildMonitorPrompt(
@@ -81,15 +95,16 @@ export function buildMonitorPrompt(
   reviewIntervalMin: number | null = null,
   notes: MonitorNotes | null = null,
   breakevenPct = 3,
+  reduceEnabled = true,
 ): { system: string; user: string } {
   const effectiveHorizon: 'short' | 'medium' | 'long' =
     (position.horizon === 'disabled' || position.horizon === 'llm') ? 'medium' : position.horizon
   const cfg = horizonConfigs[effectiveHorizon]
-  const horizonBehavior = HORIZON_BEHAVIOR[effectiveHorizon]
+  const behavior = horizonBehavior(effectiveHorizon, reduceEnabled)
 
   const horizonSection = useHorizon ? `
 ── Horizon: ${position.horizon.toUpperCase()} ─────────────────────────────────────────────────────
-${horizonBehavior}
+${behavior}
 
 ── Configured SL/TP targets for ${position.horizon.toUpperCase()} ──────────────────────────────────
   Stop-loss target:   -${cfg.slPct.toFixed(1)}% from current price
@@ -145,17 +160,19 @@ ${horizonBehavior}
       : `every ${Math.round(reviewIntervalMin / 60)} hour(s)`
     : 'periodically'
 
-  const system = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST, REDUCE, or CLOSE.
+  const reduceAction = reduceEnabled ? `
+REDUCE     Partial exit now (market sell of part of the position). REQUIRED:
+           reduce_to_pct (integer: % of current size to KEEP, e.g. 50 = keep half, sell half).
+           Use to lock in gains near TP, or to de-risk a weakening position.` : ''
+
+  const system = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST,${reduceEnabled ? ' REDUCE,' : ''} or CLOSE.
 
 ── Actions ──────────────────────────────────────────────────────────────────
 CLOSE      Exit the whole position now (market sell). Use on confirmed trend reversal
            with negative momentum, or when deeply underwater with no recovery signals.
            Do NOT close merely because price is approaching the stop-loss — the
            exchange-side stop exists exactly for that; closing early converts every
-           ordinary dip into a realized loss.
-REDUCE     Partial exit now (market sell of part of the position). REQUIRED:
-           reduce_to_pct (integer: % of current size to KEEP, e.g. 50 = keep half, sell half).
-           Use to lock in gains near TP, or to de-risk a weakening position.
+           ordinary dip into a realized loss.${reduceAction}
 ADJUST     Keep the position but update stop-loss and/or take-profit.
            Use to trail the stop UP as price rises, extend TP in a strong trend,
            or tighten risk when momentum weakens.
@@ -198,8 +215,7 @@ Return a single JSON object — no markdown, no extra keys:
 {
   "action": "ADJUST",
   "confidence": 0.8,
-  "reasoning": "Up 6.2%, uptrend intact, RSI 61. Trailing stop to 3% below current price.",
-  "reduce_to_pct": null,
+  "reasoning": "Up 6.2%, uptrend intact, RSI 61. Trailing stop to 3% below current price.",${reduceEnabled ? '\n  "reduce_to_pct": null,' : ''}
   "new_stop_loss_pct": -3.0,
   "new_take_profit_pct": null,
   "notes": "Thesis: breakout above $3.20 held. Trailing vs swing high $3.42. Invalidation: 1h close below $3.05. Watch RSI cooling from 70."

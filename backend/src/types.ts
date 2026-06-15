@@ -101,6 +101,9 @@ export interface BotSettings {
   monitor_model: 'a' | 'b' | 'alternate'
   monitor_cron: string
   monitor_adjust_sltp: boolean
+  /** When true, the monitor may propose/execute partial exits (REDUCE). When false, REDUCE is
+   *  removed from the prompt entirely and any REDUCE the LLM still returns is downgraded to HOLD. */
+  monitor_reduce_enabled: boolean
   monitor_auto_approve: boolean
   /** Per-horizon stop-loss distance as % below entry price */
   monitor_sl_pct_short: number

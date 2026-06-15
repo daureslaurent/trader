@@ -136,6 +136,7 @@ async function monitorCoin(
   cycleId: string,
   llm: MonitorLLM,
   adjustEnabled: boolean,
+  reduceEnabled: boolean,
   trustLlm: boolean,
   useHorizon: boolean,
   utcOffsetHours: number,
@@ -168,7 +169,7 @@ async function monitorCoin(
     logger.warn('Failed to fetch candle history for monitor prompt', { coin: ctx.coin, tf, error: (err as Error).message })
   }
 
-  const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf, reviewIntervalMin, storedNotes, breakevenPct)
+  const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf, reviewIntervalMin, storedNotes, breakevenPct, reduceEnabled)
 
   logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, model: llm.model })
 
@@ -229,6 +230,13 @@ async function monitorCoin(
   if (raw.action !== 'HOLD' && ctx.positionId == null) {
     logger.warn('Monitor action has no position record to act on — storing as HOLD', { coin: ctx.coin, action: raw.action })
     raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} not executable — no position record] ${raw.reasoning}` }
+    reduceToPct = null
+  }
+  // REDUCE disabled in settings: the prompt no longer offers it, but downgrade defensively
+  // in case the LLM returns it anyway, so a partial exit is never executed.
+  if (raw.action === 'REDUCE' && !reduceEnabled) {
+    logger.warn('Monitor REDUCE disabled by setting — storing as HOLD', { coin: ctx.coin })
+    raw = { ...raw, action: 'HOLD', reasoning: `[REDUCE disabled — not executed] ${raw.reasoning}` }
     reduceToPct = null
   }
   if (raw.action === 'REDUCE' && reduceToPct == null) {
@@ -522,6 +530,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
     }
     logger.info('Monitor using model', { cycleId, slot: active.slot, mode: s.monitor_model, model: active.model, baseURL: active.baseURL })
     const adjustEnabled = s.monitor_adjust_sltp
+    const reduceEnabled = s.monitor_reduce_enabled
     const trustLlm = s.monitor_trust_llm_sltp
     const useHorizon = s.monitor_use_horizon
     const utcOffsetHours = s.utc_offset_hours
@@ -615,7 +624,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
       // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
       try {
         const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
-        const review = await monitorCoin(ctx, cycleId, llm, adjustEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
+        const review = await monitorCoin(ctx, cycleId, llm, adjustEnabled, reduceEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
         if (review) reviews.push(review)
       } catch (err) {
         logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })
