@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
-import { llmChat } from '../core/llm.js'
 import { resolveLLM } from '../config/llm.js'
+import { scheduleChat } from '../core/llmScheduler.js'
 import { Signal, MarketContext, PortfolioState } from '../types.js'
 import { ExtractedResearch } from '../extractor/index.js'
 import { buildAnalysisPrompt } from '../portfolio/prompts.js'
@@ -100,56 +100,67 @@ export async function analyzeSignal(
   research: ExtractedResearch,
 ): Promise<Signal> {
   const settings = getSettings()
-  const coinCtx = await getCoinPortfolioContext(coin)
-
-  // Deterministic regime — handed to the LLM as a fact, never asked of it (#1).
+  // Regime is deterministic and cheap — recomputed here for the post-parse risk
+  // sizing; the prompt's copy is rebuilt fresh inside the JIT thunk at dispatch.
   const regime = classifyRegime(market)
 
-  // Fetch live order book for liquidity context; non-fatal if it fails
-  let orderBook: OrderBookAnalysis | null = null
-  try {
-    const book = await fetchOrderBook(coin, 20)
-    orderBook = analyzeOrderBook(book, market.price > 0 ? 100 / market.price : 1)
-  } catch (obErr) {
-    logger.warn('Order book fetch failed, proceeding without it', { coin, error: (obErr as Error).message })
-  }
+  // JIT data binding: the analyst runs on the SEQUENTIAL `analyse` lane, so a job
+  // can sit queued behind another coin. Building the prompt — including the live
+  // order book and candle history — is deferred into this thunk so it is fetched at
+  // the moment of dispatch, never stale from queue wait. The endpoint is likewise
+  // resolved fresh via `route`.
+  const buildRequest = async (route: { model: string; maxTokens: number }): Promise<OpenAI.ChatCompletionCreateParams> => {
+    const coinCtx = await getCoinPortfolioContext(coin)
 
-  // Recent candles give the decision LLM the actual price structure behind the
-  // summary indicators (swing highs/lows, extension, volume). Non-fatal on
-  // failure and skippable via count 0 — the prompt simply omits the table.
-  const tf = isTimeframe(settings.analyst_candle_tf) ? settings.analyst_candle_tf : '1h'
-  const count = Math.min(100, settings.analyst_candle_count)
-  let candles: Candle[] = []
-  if (count >= 1) {
+    // Fetch live order book for liquidity context; non-fatal if it fails
+    let orderBook: OrderBookAnalysis | null = null
     try {
-      candles = await getOHLCV(coin, tf, count)
-    } catch (cErr) {
-      logger.warn('Failed to fetch candle history for analyst prompt', { coin, tf, error: (cErr as Error).message })
+      const book = await fetchOrderBook(coin, 20)
+      orderBook = analyzeOrderBook(book, market.price > 0 ? 100 / market.price : 1)
+    } catch (obErr) {
+      logger.warn('Order book fetch failed, proceeding without it', { coin, error: (obErr as Error).message })
     }
-  }
 
-  // In 'llm' mode the analyst chooses the trade horizon as part of its judgement;
-  // any other mode resolves the horizon deterministically (see resolveHorizon below).
-  const chooseHorizon = settings.default_horizon === 'llm'
-  const { system, user } = buildAnalysisPrompt(coin, market, regime, portfolio, settings, research, coinCtx, orderBook, chooseHorizon, candles, tf)
-  const llm = resolveLLM('analyst')
-  logger.info('Request LLM', { module: 'analyst', coin, regime: regime.summary, model: llm.model })
+    // Recent candles give the decision LLM the actual price structure behind the
+    // summary indicators (swing highs/lows, extension, volume). Non-fatal on
+    // failure and skippable via count 0 — the prompt simply omits the table.
+    const tf = isTimeframe(settings.analyst_candle_tf) ? settings.analyst_candle_tf : '1h'
+    const count = Math.min(100, settings.analyst_candle_count)
+    let candles: Candle[] = []
+    if (count >= 1) {
+      try {
+        candles = await getOHLCV(coin, tf, count)
+      } catch (cErr) {
+        logger.warn('Failed to fetch candle history for analyst prompt', { coin, tf, error: (cErr as Error).message })
+      }
+    }
 
-  const params: OpenAI.ChatCompletionCreateParams = {
-    model: llm.model,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    // Single low temperature — the only subtask left is a discrete judgement (#1a)
-    temperature: 0.2,
-    max_tokens: llm.maxTokens,
-    response_format: { type: 'json_object' },
+    // In 'llm' mode the analyst chooses the trade horizon as part of its judgement;
+    // any other mode resolves the horizon deterministically (see resolveHorizon below).
+    const chooseHorizon = settings.default_horizon === 'llm'
+    const { system, user } = buildAnalysisPrompt(coin, market, regime, portfolio, settings, research, coinCtx, orderBook, chooseHorizon, candles, tf)
+    logger.info('Request LLM', { module: 'analyst', coin, regime: regime.summary, model: route.model })
+
+    return {
+      model: route.model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      // Single low temperature — the only subtask left is a discrete judgement (#1a)
+      temperature: 0.2,
+      max_tokens: route.maxTokens,
+      response_format: { type: 'json_object' },
+    }
   }
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
-      const resp = await llmChat(llm.client, params, { module: 'analyst', coin, base_url: llm.baseURL }, llm.fallback)
+      const resp = await scheduleChat({
+        module: 'analyst', lane: 'analyse', coin,
+        route: () => resolveLLM('analyst'),
+        build: buildRequest,
+      })
       const content = resp.choices[0]?.message?.content ?? ''
       logger.info('Response LLM', { module: 'analyst', coin, finish_reason: resp.choices[0]?.finish_reason })
       const signal = parseAnalystResponse(content, coin)
@@ -177,8 +188,7 @@ export async function analyzeSignal(
       }
       const e = err as any
       logger.error('LLM analysis failed', {
-        coin, message: e.message, status: e.status,
-        baseURL: llm.baseURL, model: llm.model,
+        coin, message: e.message, status: e.status, model: resolveLLM('analyst').model,
       })
       return { coin, action: 'HOLD', quantity: 0, reason: 'Analysis error', confidence: 0, horizon: undefined }
     }

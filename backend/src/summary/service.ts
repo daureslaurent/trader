@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
-import { llmChat } from '../core/llm.js'
 import type { LLMTarget } from '../core/llm.js'
+import { scheduleChat } from '../core/llmScheduler.js'
 import {
   portfolioSummaries, portfolioSnapshots, positions as positionsRepo, portfolioEntries,
   trades, positionReviews, nowSql, getSettings,
@@ -288,18 +288,22 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
 
     let raw: RawSummary | null = null
     for (let attempt = 0; attempt <= 1; attempt++) {
-      let resp: Awaited<ReturnType<typeof llmChat>>
+      let resp: OpenAI.ChatCompletion
       try {
-        resp = await llmChat(client, {
-          model: active.model,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-          temperature: 0.3,
-          max_tokens: active.maxTokens,
-          response_format: { type: 'json_object' },
-        }, { module: 'summary', cycle_id: cycleId, base_url: active.baseURL }, active.fallback)
+        resp = await scheduleChat({
+          module: 'summary', lane: 'parallel', cycleId,
+          route: () => ({ client, model: active.model, baseURL: active.baseURL, maxTokens: active.maxTokens, fallback: active.fallback }),
+          build: async (route) => ({
+            model: route.model,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+            temperature: 0.3,
+            max_tokens: route.maxTokens,
+            response_format: { type: 'json_object' },
+          }),
+        })
       } catch (apiErr) {
         if (attempt === 0) { logger.warn('Summary LLM API error, retrying', { error: (apiErr as Error).message }); continue }
         throw apiErr

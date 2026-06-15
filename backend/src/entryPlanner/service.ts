@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
-import { llmChat } from '../core/llm.js'
 import { resolveLLM } from '../config/llm.js'
+import { scheduleChat } from '../core/llmScheduler.js'
 import { MarketContext, Signal, BotSettings } from '../types.js'
 import { getOHLCV, isTimeframe, Candle } from '../market/index.js'
 import { buildEntryPlannerPrompt } from './prompts.js'
@@ -81,22 +81,23 @@ export async function planEntry(args: PlanArgs): Promise<EntryPlan | null> {
   }
 
   const { system, user } = buildEntryPlannerPrompt(coin, price, market, signal, candles, tf)
-  const llm = resolveLLM('entryPlanner')
-  logger.info('Request LLM', { module: 'entryPlanner', coin, model: llm.model })
-
-  const params: OpenAI.ChatCompletionCreateParams = {
-    model: llm.model,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    temperature: 0.2,
-    max_tokens: llm.maxTokens,
-    response_format: { type: 'json_object' },
-  }
+  logger.info('Request LLM', { module: 'entryPlanner', coin, model: resolveLLM('entryPlanner').model })
 
   try {
-    const resp = await llmChat(llm.client, params, { module: 'entryPlanner', coin, base_url: llm.baseURL }, llm.fallback)
+    const resp = await scheduleChat({
+      module: 'entryPlanner', lane: 'parallel', coin,
+      route: () => resolveLLM('entryPlanner'),
+      build: async (route): Promise<OpenAI.ChatCompletionCreateParams> => ({
+        model: route.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.2,
+        max_tokens: route.maxTokens,
+        response_format: { type: 'json_object' },
+      }),
+    })
     const content = resp.choices[0]?.message?.content ?? ''
     const plan = parsePlan(content)
     if (!plan) {
@@ -108,7 +109,7 @@ export async function planEntry(args: PlanArgs): Promise<EntryPlan | null> {
   } catch (err) {
     const e = err as { message?: string; status?: number }
     logger.warn('Entry planner LLM failed, falling back to static band', {
-      coin, message: e.message, status: e.status, baseURL: llm.baseURL, model: llm.model,
+      coin, message: e.message, status: e.status, model: resolveLLM('entryPlanner').model,
     })
     return null
   }

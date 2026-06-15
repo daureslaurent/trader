@@ -3,12 +3,14 @@
 // tools we execute them, persist + stream each step, and feed the results back —
 // repeating until the model returns a plain answer (or we hit the round cap).
 //
-// Every model call goes through `llmChat`, so each turn is recorded to `llm_calls`,
-// serialized per endpoint, and fails over to the configured fallback like the rest
-// of the app. Live progress is streamed to the frontend via `broadcast('agent_step')`.
+// Every model call goes through the LLM scheduler (parallel lane), so each turn is
+// recorded to `llm_calls`, ordered against the rest of the app's inference, and
+// fails over to the configured fallback. An interactive chat turn runs at an
+// elevated priority so a user's message isn't stuck behind a background batch.
+// Live progress is streamed to the frontend via `broadcast('agent_step')`.
 import OpenAI from 'openai'
-import { llmChat } from '../core/llm.js'
 import type { LLMTarget } from '../core/llm.js'
+import { scheduleChat } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
@@ -114,11 +116,12 @@ async function generateConversationTitle(conversationId: number): Promise<void> 
       .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${(m.content ?? '').replace(/\s+/g, ' ').slice(0, 500)}`)
       .join('\n')
 
-    const active = resolveLLM('agent')
-    const resp = await llmChat(
-      active.client,
-      {
-        model: active.model,
+    const resp = await scheduleChat({
+      // Background bookkeeping → default priority; it should yield to interactive turns.
+      module: 'agent', lane: 'parallel', cycleId: `agent-${conversationId}-title`,
+      route: () => resolveLLM('agent'),
+      build: async (route) => ({
+        model: route.model,
         messages: [
           { role: 'system', content: TITLE_SYSTEM_PROMPT },
           { role: 'user', content: `Conversation:\n${transcript}\n\nTitle:` },
@@ -129,11 +132,9 @@ async function generateConversationTitle(conversationId: number): Promise<void> 
         // reasoning_content before emitting the title — they'd return empty content
         // (finish_reason: length). It's only a ceiling: a non-reasoning model stops
         // right after the short title, and cleanTitle() keeps just the first line.
-        max_tokens: active.maxTokens,
-      },
-      { module: 'agent', cycle_id: `agent-${conversationId}-title`, base_url: active.baseURL },
-      active.fallback,
-    )
+        max_tokens: route.maxTokens,
+      }),
+    })
 
     const title = cleanTitle(resp.choices[0]?.message?.content ?? '')
     if (!title) return
@@ -204,19 +205,19 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       step(conversationId, { type: 'thinking' })
 
-      const resp = await llmChat(
-        active.client,
-        {
-          model: active.model,
+      const resp = await scheduleChat({
+        // Interactive turn → elevated priority so it jumps ahead of background batches.
+        module: 'agent', lane: 'parallel', priority: 10, cycleId,
+        route: () => active,
+        build: async (route) => ({
+          model: route.model,
           messages,
           tools,
           tool_choice: 'auto',
           temperature: 0.4,
-          max_tokens: active.maxTokens,
-        },
-        { module: 'agent', cycle_id: cycleId, base_url: active.baseURL },
-        active.fallback,
-      )
+          max_tokens: route.maxTokens,
+        }),
+      })
 
       const usage = resp.usage
       if (usage) {

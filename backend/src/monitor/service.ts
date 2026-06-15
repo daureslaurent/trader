@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
-import { llmChat } from '../core/llm.js'
 import type { LLMTarget } from '../core/llm.js'
+import { scheduleChat } from '../core/llmScheduler.js'
 import {
   getSettings, updateSetting, getRawSetting, nowSql,
   positionReviews, monitorNotes, positionAdjustments, positions as positionsRepo, portfolioEntries,
@@ -190,18 +190,25 @@ async function askModel(llm: MonitorLLM, system: string, user: string, ctx: Posi
 
   let raw: RawReview | null = null
   for (let attempt = 0; attempt <= 1; attempt++) {
-    let resp: Awaited<ReturnType<typeof llmChat>>
+    let resp: OpenAI.ChatCompletion
     try {
-      resp = await llmChat(llm.client, {
-        model: llm.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        temperature: 0.2,
-        max_tokens: llm.maxTokens,
-        response_format: { type: 'json_object' },
-      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: llm.baseURL }, llm.fallback)
+      // Routed through the scheduler's PARALLEL lane: monitor positions are reviewed
+      // concurrently, while the per-endpoint gate still serializes calls hitting the
+      // same one-at-a-time server. Voters with distinct endpoints run in true parallel.
+      resp = await scheduleChat({
+        module: 'monitor', lane: 'parallel', coin: ctx.coin, cycleId,
+        route: () => ({ client: llm.client, model: llm.model, baseURL: llm.baseURL, maxTokens: llm.maxTokens, fallback: llm.fallback }),
+        build: async (route) => ({
+          model: route.model,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          temperature: 0.2,
+          max_tokens: route.maxTokens,
+          response_format: { type: 'json_object' },
+        }),
+      })
     } catch (apiErr) {
       if (attempt === 0) {
         logger.warn('Monitor LLM API error, retrying', { coin: ctx.coin, slot: llm.label, error: (apiErr as Error).message })
@@ -718,24 +725,29 @@ export async function runMonitor(cycleId: string): Promise<void> {
       }),
     )
 
-    logger.info('Monitor running per-coin sequentially', { cycleId, coins: positionContexts.map(c => c.coin) })
+    logger.info('Monitor running per-coin in parallel', { cycleId, coins: positionContexts.map(c => c.coin) })
 
-    const reviews: PositionReview[] = []
-    for (const ctx of positionContexts) {
-      if (ctx.horizon === 'disabled') {
-        logger.info('Monitor skipping disabled position', { coin: ctx.coin, cycleId })
-        continue
-      }
-      // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
-      try {
-        const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
-        const review = await monitorCoin(ctx, cycleId, ensemble, adjustEnabled, reduceEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
-        if (review) reviews.push(review)
-      } catch (err) {
-        logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })
-        broadcast('monitor_coin_error', { cycle_id: cycleId, coin: ctx.coin, error: (err as Error).message })
-      }
-    }
+    // Positions are reviewed concurrently; the LLM scheduler's parallel lane + the
+    // per-endpoint gate throttle the actual inference fan-out, so a one-at-a-time
+    // local server is still respected while distinct endpoints run truly in parallel.
+    const settled = await Promise.all(
+      positionContexts.map(async (ctx): Promise<PositionReview | null> => {
+        if (ctx.horizon === 'disabled') {
+          logger.info('Monitor skipping disabled position', { coin: ctx.coin, cycleId })
+          return null
+        }
+        // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
+        try {
+          const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
+          return await monitorCoin(ctx, cycleId, ensemble, adjustEnabled, reduceEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
+        } catch (err) {
+          logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })
+          broadcast('monitor_coin_error', { cycle_id: cycleId, coin: ctx.coin, error: (err as Error).message })
+          return null
+        }
+      }),
+    )
+    const reviews: PositionReview[] = settled.filter((r): r is PositionReview => r !== null)
 
     await pruneMonitorHistory()
 

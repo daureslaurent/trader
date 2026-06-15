@@ -1,6 +1,6 @@
 import { logger } from '../core/logger.js'
-import { llmChat } from '../core/llm.js'
 import { resolveLLM } from '../config/llm.js'
+import { scheduleChat } from '../core/llmScheduler.js'
 import { coinDiscoveries, pipelineEvents, nowSql, getSettings, updateSetting } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { getTopPairs, fetchMarketData } from '../trader/index.js'
@@ -81,18 +81,21 @@ async function evaluateCandidate(
 
     const { system, user } = buildDiscoveryPrompt(symbol, marketCtx, research)
 
-    const scorer = resolveLLM('discoverer')
-    logger.info('Request LLM', { module: 'discoverer', coin: symbol, model: scorer.model })
-    const resp = await llmChat(scorer.client, {
-      model: scorer.model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.2,
-      max_tokens: scorer.maxTokens,
-      response_format: { type: 'json_object' },
-    }, { module: 'discoverer', coin: symbol, cycle_id: cycleId, base_url: scorer.baseURL }, scorer.fallback)
+    logger.info('Request LLM', { module: 'discoverer', coin: symbol, model: resolveLLM('discoverer').model })
+    const resp = await scheduleChat({
+      module: 'discoverer', lane: 'parallel', coin: symbol, cycleId,
+      route: () => resolveLLM('discoverer'),
+      build: async (route) => ({
+        model: route.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.2,
+        max_tokens: route.maxTokens,
+        response_format: { type: 'json_object' },
+      }),
+    })
 
     const content = resp.choices[0]?.message?.content ?? ''
     if (!content.trim()) throw new LLMError('Empty response')

@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
-import { llmChat } from '../core/llm.js'
 import type { LLMTarget } from '../core/llm.js'
+import { scheduleChat } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { extractionCache, getSettings, nowSql } from '../db/index.js'
 import { ResearchResult, ArticleContent } from '../researcher/index.js'
@@ -128,16 +128,20 @@ async function challengeArticle(
   const baseCoin = coin.split('/')[0]
   const { system, user } = buildChallengePrompt(baseCoin, article)
   try {
-    const resp = await llmChat(llm.client, {
-      model: llm.model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.0,
-      max_tokens: llm.maxTokens,
-      response_format: { type: 'json_object' },
-    }, { module: 'extractor-challenge', coin: baseCoin, base_url: llm.baseURL }, llm.fallback)
+    const resp = await scheduleChat({
+      module: 'extractor-challenge', lane: 'parallel', coin: baseCoin,
+      route: () => ({ client: llm.client, model: llm.model, baseURL: llm.baseURL, maxTokens: llm.maxTokens, fallback: llm.fallback }),
+      build: async (route) => ({
+        model: route.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.0,
+        max_tokens: route.maxTokens,
+        response_format: { type: 'json_object' },
+      }),
+    })
 
     const raw = resp.choices[0]?.message?.content ?? ''
     const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
@@ -194,16 +198,20 @@ async function extractSingleArticle(
 
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
-      const resp = await llmChat(llm.client, {
-        model: llm.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        temperature: 0.2,
-        max_tokens: llm.maxTokens,
-        response_format: { type: 'json_object' },
-      }, { module: 'extractor', coin, base_url: llm.baseURL }, llm.fallback)
+      const resp = await scheduleChat({
+        module: 'extractor', lane: 'parallel', coin,
+        route: () => ({ client: llm.client, model: llm.model, baseURL: llm.baseURL, maxTokens: llm.maxTokens, fallback: llm.fallback }),
+        build: async (route) => ({
+          model: route.model,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          temperature: 0.2,
+          max_tokens: route.maxTokens,
+          response_format: { type: 'json_object' },
+        }),
+      })
 
       const content = resp.choices[0]?.message?.content ?? ''
       if (resp.choices[0]?.finish_reason === 'length') {
@@ -309,21 +317,25 @@ export async function selectArticles(
   const cfg = llm ?? getDefaultExtractorConfig()
 
   try {
-    const resp = await llmChat(cfg.client, {
-      model: cfg.model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.1,
-      // Selection only needs a tiny JSON, but reasoning models spend tokens on a
-      // hidden reasoning_content trace first — a fixed 256 budget gets fully
-      // consumed by reasoning, leaving empty content (finish_reason: length). Use
-      // the module's configured budget (with a small floor) so the model has room
-      // to think *and* emit the JSON.
-      max_tokens: Math.max(cfg.maxTokens, 512),
-      response_format: { type: 'json_object' },
-    }, { module: 'extractor', coin, base_url: cfg.baseURL }, cfg.fallback)
+    const resp = await scheduleChat({
+      module: 'extractor', lane: 'parallel', coin,
+      route: () => ({ client: cfg.client, model: cfg.model, baseURL: cfg.baseURL, maxTokens: cfg.maxTokens, fallback: cfg.fallback }),
+      build: async (route) => ({
+        model: route.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.1,
+        // Selection only needs a tiny JSON, but reasoning models spend tokens on a
+        // hidden reasoning_content trace first — a fixed 256 budget gets fully
+        // consumed by reasoning, leaving empty content (finish_reason: length). Use
+        // the module's configured budget (with a small floor) so the model has room
+        // to think *and* emit the JSON.
+        max_tokens: Math.max(route.maxTokens, 512),
+        response_format: { type: 'json_object' },
+      }),
+    })
 
     const content = resp.choices[0]?.message?.content ?? ''
     const parsed = JSON.parse(content) as { selected_urls?: string[] }
