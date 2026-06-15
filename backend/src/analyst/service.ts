@@ -14,10 +14,34 @@ import { fetchOrderBook, analyzeOrderBook } from '../trader/index.js'
 import { OrderBookAnalysis } from '../trader/types.js'
 import { getOHLCV, isTimeframe, Candle } from '../market/index.js'
 
-const CONFIDENCE_MAP: Record<string, number> = {
+// Legacy fallback: the analyst now returns a numeric confidence in [0, 1], but a
+// local model may drift back to the old categorical words — map those if so.
+const LEGACY_CONFIDENCE_MAP: Record<string, number> = {
   HIGH: 0.9,
   MEDIUM: 0.6,
   LOW: 0.3,
+}
+
+/**
+ * Parse the analyst's confidence. Primary form is a number in [0, 1] (clamped);
+ * falls back to the legacy HIGH/MEDIUM/LOW words, then to a conservative 0.3.
+ */
+function parseConfidence(raw: unknown, coin: string): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.min(1, Math.max(0, raw))
+  }
+  const str = String(raw ?? '').trim()
+  const num = Number(str)
+  if (str !== '' && Number.isFinite(num)) {
+    return Math.min(1, Math.max(0, num))
+  }
+  const word = str.toUpperCase()
+  if (word in LEGACY_CONFIDENCE_MAP) {
+    logger.warn('Analyst returned legacy categorical confidence, mapping to number', { coin, word })
+    return LEGACY_CONFIDENCE_MAP[word]
+  }
+  logger.warn('Unparseable confidence, defaulting to 0.3', { coin, raw: str.substring(0, 40) })
+  return 0.3
 }
 
 // The decision LLM now returns only direction + confidence + reason.
@@ -39,11 +63,7 @@ function parseAnalystResponse(content: string, coin: string): Signal {
     throw new LLMError(`Invalid action "${action}". Raw: ${content.substring(0, 200)}`)
   }
 
-  const rawConf = String(parsed.confidence ?? '').toUpperCase()
-  const confidence = CONFIDENCE_MAP[rawConf] ?? CONFIDENCE_MAP.LOW
-  if (!(rawConf in CONFIDENCE_MAP)) {
-    logger.warn('Unrecognised confidence level, defaulting to LOW', { coin, rawConf })
-  }
+  const confidence = parseConfidence(parsed.confidence, coin)
 
   const reason = typeof parsed.reason === 'string' && parsed.reason.trim()
     ? parsed.reason.trim()

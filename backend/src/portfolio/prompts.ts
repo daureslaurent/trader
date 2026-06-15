@@ -9,7 +9,7 @@ import { Candle, renderCandleTable } from '../market/index.js'
  * Build the decision prompt for the analyst LLM.
  *
  * Scope (to_fix.md #1): the LLM is asked for ONE judgement — BUY / SELL / HOLD
- * plus a confidence band and a short reason. Market-regime classification is
+ * plus a confidence score in [0, 1] and a short reason. Market-regime classification is
  * already computed deterministically (`classifyRegime`) and SL/TP sizing is
  * computed deterministically (`computeRiskLevels`); both are handed to the model
  * as facts, not asked of it. This keeps the prompt small, runs at a single low
@@ -70,7 +70,7 @@ PROFIT DISCIPLINE
 - Read the recent price-history candles (when shown) to confirm the setup: where price sits relative to recent swing highs/lows, whether the move is extended or basing, and whether volume backs the move. Let the bars corroborate the indicators — don't buy into a vertical spike or sell into a clean higher-low structure.
 
 BUY only when ALL of these hold:
-- MEDIUM/HIGH confidence, a free slot, and regime + catalyst aligned in your favour.
+- confidence ≥ 0.6, a free slot, and regime + catalyst aligned in your favour.
 - Not chasing: avoid buying when momentum is overbought (RSI ≥ 70) or price is stretched far above SMA7 after a sharp run — that is where pumps top out.
 - In a downtrend or ranging regime, a BUY needs a concrete fresh catalyst (adoption, upgrade, listing, partnership) — oversold alone is not a reason.
 
@@ -80,14 +80,16 @@ SELL only when:
 
 HOLD when signals are mixed or conviction is low — a missed move beats a bad trade.
 
-CONFIDENCE — calibrate honestly; defaulting everything to MEDIUM makes the field useless:
-- HIGH: regime, technicals, AND a concrete fresh catalyst all align, the entry is a pullback
+CONFIDENCE — a single number in [0, 1]. Calibrate honestly; piling everything at 0.5 or round
+numbers makes the field useless. Use the full range and anchor to these bands:
+- 0.8–1.0: regime, technicals, AND a concrete fresh catalyst all align, the entry is a pullback
   (not a chase), and nothing material argues against the trade. Rare — expect roughly 1 in 10.
-- MEDIUM: regime and technicals align but the catalyst is generic or stale, or exactly one
+- 0.6–0.8: regime and technicals align but the catalyst is generic or stale, or exactly one
   minor factor conflicts.
-- LOW: weak or conflicting — prefer HOLD.
-Consistency rules: if regime and technicals disagree, confidence cannot be HIGH. If two or
-more of {regime, technicals, news} argue against the trade, it must be LOW.
+- 0.4–0.6: genuinely mixed — lean toward HOLD.
+- 0.0–0.4: weak or conflicting — prefer HOLD.
+Consistency rules: if regime and technicals disagree, confidence cannot exceed 0.8. If two or
+more of {regime, technicals, news} argue against the trade, it must be below 0.4.
 ${chooseHorizon ? `
 HORIZON — on a BUY, classify the trade thesis by how long you expect it to play out. This sets
 how the position is sized and managed, so match it to the catalyst, not to your confidence:
@@ -99,7 +101,7 @@ how the position is sized and managed, so match it to the catalyst, not to your 
   where short-term noise should not shake you out. Reserve for genuine long-horizon catalysts.
 ` : ''}
 OUTPUT — JSON only, no markdown, no extra keys:
-{"action":"BUY|SELL|HOLD","confidence":"HIGH|MEDIUM|LOW",${chooseHorizon ? '"horizon":"short|medium|long",' : ''}"reason":"<1-2 sentences: regime → technicals → news → position fit → decision>"}${chooseHorizon ? '\n("horizon" is required on BUY; omit or ignore it for SELL/HOLD.)' : ''}`
+{"action":"BUY|SELL|HOLD","confidence":<number 0.0-1.0>,${chooseHorizon ? '"horizon":"short|medium|long",' : ''}"reason":"<1-2 sentences: regime → technicals → news → position fit → decision>"}${chooseHorizon ? '\n("horizon" is required on BUY; omit or ignore it for SELL/HOLD.)' : ''}`
 
   // ── User prompt — compact fact sheet ────────────────────────────────────────
 
