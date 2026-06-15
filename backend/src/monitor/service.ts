@@ -328,7 +328,10 @@ async function askModel(
       // concurrently, while the per-endpoint gate still serializes calls hitting the
       // same one-at-a-time server. Voters with distinct endpoints run in true parallel.
       resp = await scheduleChat({
-        module: 'monitor', lane: 'parallel', coin, cycleId,
+        // priority > 0: open-position reviews jump ahead of other parallel-lane
+        // work (discovery, summary) when they contend for the same endpoint, so a
+        // position is never reviewed late because a discovery scan got the gate first.
+        module: 'monitor', lane: 'parallel', priority: 1, coin, cycleId,
         route: () => ({ client: llm.client, model: llm.model, baseURL: llm.baseURL, maxTokens: llm.maxTokens, fallback: llm.fallback }),
         // JIT: the prompt is generated here, at dispatch, against the current market +
         // position snapshot — a job that waited in the queue is never sent stale context.
