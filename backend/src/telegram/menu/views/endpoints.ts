@@ -42,6 +42,9 @@ export async function render(_ctx: any) {
 
   return {
     text: lines.join('\n').trimEnd(),
-    buttons: [[Markup.button.callback('🔄 Re-check', 'run:endpoint-health')]],
+    buttons: [[
+      Markup.button.callback('🔄 Re-check', 'run:endpoint-health'),
+      Markup.button.callback('📊 Model timeline', 'menu:timeline'),
+    ]],
   }
 }

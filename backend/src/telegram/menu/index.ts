@@ -20,6 +20,7 @@ import * as monitor from './views/monitor.js'
 import * as discover from './views/discover.js'
 import * as host from './views/host.js'
 import * as endpoints from './views/endpoints.js'
+import * as timeline from './views/timeline.js'
 import * as agent from './views/agent.js'
 
 type ViewModule = { render: (ctx: any) => Promise<{ text: string; buttons: ReturnType<typeof Markup.button.callback>[][] }> }
@@ -46,6 +47,7 @@ export class MenuController {
     this.views.set('discover', discover)
     this.views.set('host', host)
     this.views.set('endpoints', endpoints)
+    this.views.set('timeline', timeline)
     this.views.set('agent', agent)
   }
 
