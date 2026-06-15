@@ -4,4 +4,3 @@ data/
 .env
 *.log
 .update/
-docs/superpowers/

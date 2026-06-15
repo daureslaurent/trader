@@ -4,7 +4,7 @@ import { Button } from '../components/ui/Button'
 import { Input, Select } from '../components/ui/Input'
 import { useTheme, THEMES } from '../contexts/ThemeContext'
 import { cn } from '../lib/utils'
-import { MonitorModelsResponse, LLMDefaults, LLMModuleKey, LLMEndpoint, UpdateInfo } from '../types'
+import { MonitorModelsResponse, LLMDefaults, LLMModuleKey, LLMEndpoint } from '../types'
 
 interface SettingsData {
   watchlist: string[]
@@ -154,17 +154,6 @@ function isValidCron(expr: string): boolean {
   const parts = expr.trim().split(/\s+/)
   if (parts.length !== 5) return false
   return parts.every(p => CRON_FIELD.test(p))
-}
-
-function relTime(iso: string): string {
-  if (!iso) return 'never'
-  const t = new Date(iso).getTime()
-  if (!Number.isFinite(t)) return 'never'
-  const s = Math.floor((Date.now() - t) / 1000)
-  if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
-  return `${Math.floor(s / 86400)}d ago`
 }
 
 /* ---------------------------------- Section nav ---------------------------------- */
@@ -866,9 +855,6 @@ export default function Settings() {
   const [monitorModels, setMonitorModels] = useState<MonitorModelsResponse | null>(null)
   const [llmDefaults, setLlmDefaults] = useState<LLMDefaults | null>(null)
   const [endpointModalOpen, setEndpointModalOpen] = useState(false)
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
-  const [checking, setChecking] = useState(false)
-  const [checkError, setCheckError] = useState<string | null>(null)
   const { theme, setTheme } = useTheme()
   const savedTimer = useRef<ReturnType<typeof setTimeout>>()
 
@@ -893,13 +879,6 @@ export default function Settings() {
     fetch('/api/llm/defaults')
       .then(r => r.json())
       .then((data: LLMDefaults) => setLlmDefaults(data))
-      .catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    fetch('/api/host/update')
-      .then(r => r.json() as Promise<UpdateInfo>)
-      .then(data => setUpdateInfo(data))
       .catch(() => {})
   }, [])
 
@@ -942,21 +921,6 @@ export default function Settings() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [key]: next }),
     }).catch(() => {})
-  }
-
-  async function checkNow() {
-    setChecking(true)
-    setCheckError(null)
-    try {
-      const res = await fetch('/api/host/update/check', { method: 'POST' })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error((body as { error?: string }).error || `Request failed (${res.status})`)
-      setUpdateInfo(body as UpdateInfo)
-    } catch (e) {
-      setCheckError(e instanceof Error ? e.message : 'Check failed')
-    } finally {
-      setChecking(false)
-    }
   }
 
   async function save(e: FormEvent) {
@@ -1680,59 +1644,11 @@ export default function Settings() {
               onChange={e => set('update_check_interval_hours', parseFloat(e.target.value) || 1)}
             />
           </Row>
-          <div className="py-4 space-y-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-foreground">Check for updates</p>
-                <p className="text-xs text-muted mt-1 leading-relaxed">
-                  Manually check if origin/main is ahead of your deployed version.
-                </p>
-              </div>
-              <div className="shrink-0">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  loading={checking}
-                  disabled={!settings?.update_enabled}
-                  onClick={checkNow}
-                >
-                  Check for updates
-                </Button>
-              </div>
-            </div>
-
-            {updateInfo !== null && (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                {settings?.update_enabled ? (
-                  updateInfo.updateAvailable ? (
-                    <span className="inline-flex items-center gap-2 rounded-full bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">
-                      <span className="relative flex h-2 w-2">
-                        <span className="absolute inline-flex h-full w-full rounded-full bg-accent opacity-75 animate-ping" />
-                        <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
-                      </span>
-                      {updateInfo.status?.behindBy ?? 0} update{(updateInfo.status?.behindBy ?? 0) === 1 ? '' : 's'} available
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-2 rounded-full bg-buy/10 px-3 py-1 text-xs font-semibold text-buy">
-                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                      </svg>
-                      Up to date
-                    </span>
-                  )
-                ) : (
-                  <span className="text-xs text-muted italic">Updates disabled</span>
-                )}
-                {updateInfo.status?.checkedAt && (
-                  <span className="text-[11px] text-muted">Last checked {relTime(updateInfo.status.checkedAt)}</span>
-                )}
-              </div>
-            )}
-
-            {checkError && (
-              <div className="rounded-lg bg-sell/10 px-3 py-2 text-xs text-sell">{checkError}</div>
-            )}
+          <div className="flex items-start gap-2 pt-1 text-[11px] text-muted">
+            <svg className="mt-px h-3.5 w-3.5 shrink-0 text-accent" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+            </svg>
+            <span>The version status, commits-ahead list and the <span className="text-foreground font-medium">Update app</span> action live on the <span className="text-foreground font-medium">System</span> page.</span>
           </div>
         </Section>
 
