@@ -117,9 +117,19 @@ let _seq = 0
 type JobState = 'queued' | 'dispatching' | 'running' | 'done' | 'error'
 interface ActiveJob { id: string; module: string; lane: Lane; coin: string | null; model: string; url: string; state: 'dispatching' | 'running'; at: number }
 interface FeedRecord { id: string; text: string; kind: JobState | 'swap'; at: number }
-// One entry per running dispatch. Grouped by `url` into per-endpoint timelines; the
-// model changing between consecutive entries on a URL is a visible reload-forcing swap.
-interface DispatchRecord { url: string; model: string; coin: string | null; at: number }
+// One entry per dispatch, carrying its real wall-clock span (`at` → `endAt`). Grouped
+// by `url` into per-endpoint Gantt timelines: each call renders as a segment whose width
+// is its duration, coloured by model. `endAt` is null while the call is still running.
+interface DispatchRecord {
+  id: string
+  url: string
+  model: string
+  coin: string | null
+  module: string
+  at: number              // call start (ms epoch)
+  endAt: number | null    // call end; null while in flight
+  state: 'running' | 'done' | 'error'
+}
 
 const MAX_FEED = 1000        // safety cap; time-based retention is the real bound
 const MAX_DISPATCHES = 5000
@@ -129,6 +139,7 @@ const _feed: FeedRecord[] = []                 // newest-first
 const _dispatches: DispatchRecord[] = []       // oldest-first; the per-endpoint timeline
 let _swapTotal = 0                             // total swaps since start (survives pruning)
 let _feedSeq = 0
+let _dispatchSeq = 0
 
 const coinShort = (coin: string | null): string => (coin ? coin.replace('/USDC', '') : '')
 
@@ -153,9 +164,24 @@ function recordFeed(text: string, kind: JobState | 'swap'): void {
   pruneHistory()
 }
 
-function recordDispatch(url: string, model: string, coin: string | null): void {
-  _dispatches.push({ url, model, coin, at: Date.now() })
+// Open a dispatch record at call start and return its id; `endDispatch` closes it when
+// the call resolves/rejects, stamping the real duration the Gantt timeline renders.
+function recordDispatch(url: string, model: string, coin: string | null, module: string): string {
+  const id = `disp_${_dispatchSeq++}`
+  _dispatches.push({ id, url, model, coin, module, at: Date.now(), endAt: null, state: 'running' })
   pruneHistory()
+  return id
+}
+
+function endDispatch(id: string, state: 'done' | 'error'): void {
+  // Scan from the tail — a just-finished call is almost always among the newest records.
+  for (let i = _dispatches.length - 1; i >= 0; i--) {
+    if (_dispatches[i].id === id) {
+      _dispatches[i].endAt = Date.now()
+      _dispatches[i].state = state
+      return
+    }
+  }
 }
 
 // Collapse a base URL (optionally a gate key with ::model) to a readable host.
@@ -194,26 +220,38 @@ function newJobId(): string {
  * its full view instead of starting empty. Ages are returned as `agoMs` (ms elapsed)
  * rather than absolute timestamps so the client reconstructs wall-clock times against
  * its own clock. `endpoints[]` is the timeline grouped by base URL — one bar per URL —
- * with each URL's dispatches in time order; a model change between consecutive entries
- * is a reload-forcing swap, rendered as a colour break in that URL's bar.
+ * each carrying its calls as duration spans (`startAgoMs` + `durationMs`), rendered as a
+ * Gantt strip where a segment's width is the real call length and its colour is the model.
  */
 export function getSchedulerState() {
   pruneHistory()
   const now = Date.now()
 
-  const byUrl = new Map<string, { url: string; events: { model: string; coin: string | null; agoMs: number }[] }>()
+  // Per-endpoint Gantt timeline: each call is a span with a real start offset and
+  // duration. `startAgoMs` is ms elapsed since the call began; `durationMs` is its
+  // wall-clock length (extended to `now` while still running) — the client positions
+  // and sizes each segment from these against its own clock.
+  const byUrl = new Map<string, { url: string; calls: { model: string; coin: string | null; module: string; startAgoMs: number; durationMs: number; state: 'running' | 'done' | 'error' }[] }>()
   for (const d of _dispatches) {
     let g = byUrl.get(d.url)
-    if (!g) { g = { url: d.url, events: [] }; byUrl.set(d.url, g) }
-    g.events.push({ model: d.model, coin: d.coin, agoMs: now - d.at })
+    if (!g) { g = { url: d.url, calls: [] }; byUrl.set(d.url, g) }
+    const end = d.endAt ?? now
+    g.calls.push({
+      model: d.model,
+      coin: d.coin,
+      module: d.module,
+      startAgoMs: now - d.at,
+      durationMs: Math.max(0, end - d.at),
+      state: d.state,
+    })
   }
   const endpoints = Array.from(byUrl.values())
     .map(g => ({
       url: g.url,
       host: shortHost(g.url),
-      residentModel: g.events.length ? g.events[g.events.length - 1].model : null,
+      residentModel: g.calls.length ? g.calls[g.calls.length - 1].model : null,
       active: Array.from(_active.values()).filter(a => a.url === g.url).length,
-      events: g.events,
+      calls: g.calls,
     }))
     .sort((a, b) => a.url.localeCompare(b.url))
 
@@ -350,21 +388,24 @@ async function dispatch(job: Job, route: LLMRoute, gateKey: string | null): Prom
     waited_ms: Date.now() - job.enqueuedAt,
   })
 
+  let dispatchId: string | null = null
   try {
     // JIT: build the request now, against the freshly-resolved route.
     const params = await job.spec.build(route)
     const meta: LLMCallMeta = { module: job.spec.module, coin: job.spec.coin ?? null, cycle_id: job.spec.cycleId ?? null, base_url: route.baseURL }
     const active = _active.get(job.id)
     if (active) { active.state = 'running'; active.at = Date.now() }
-    recordDispatch(route.baseURL, route.model, job.spec.coin ?? null)
+    dispatchId = recordDispatch(route.baseURL, route.model, job.spec.coin ?? null, job.spec.module)
     broadcast('llm_job_state', { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, model: route.model, base_url: route.baseURL, state: 'running' })
 
     const resp = await llmChat(route.client, params, meta, route.fallback)
+    if (dispatchId) endDispatch(dispatchId, 'done')
     job.resolve(resp)
     _active.delete(job.id)
     recordFeed(`${job.spec.module}${job.spec.coin ? ` · ${coinShort(job.spec.coin)}` : ''} done`, 'done')
     broadcast('llm_job_state', { id: job.id, module: job.spec.module, lane, coin: job.spec.coin ?? null, state: 'done' })
   } catch (err) {
+    if (dispatchId) endDispatch(dispatchId, 'error')
     job.reject(err)
     _active.delete(job.id)
     recordFeed(`${job.spec.module}${job.spec.coin ? ` · ${coinShort(job.spec.coin)}` : ''} error: ${(err as Error).message}`, 'error')

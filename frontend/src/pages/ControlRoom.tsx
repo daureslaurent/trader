@@ -1,16 +1,25 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useApi } from '../hooks/useApi'
 import { Card, CardHeader } from '../components/ui/Card'
 import { cn } from '../lib/utils'
 
 // ── Types mirroring the backend scheduler's WS payloads + snapshot ──────────────
+interface EndpointCall {
+  model: string
+  coin: string | null
+  module: string
+  startAgoMs: number   // ms since the call began
+  durationMs: number   // wall-clock length (extended to now while running)
+  state: 'running' | 'done' | 'error'
+}
+
 interface EndpointTimeline {
   url: string
   host: string
   residentModel: string | null
   active: number
-  events: { model: string; coin: string | null; agoMs: number }[]
+  calls: EndpointCall[]
 }
 
 interface SchedulerSnapshot {
@@ -154,7 +163,7 @@ export default function ControlRoom() {
   const visibleFeed = feed.filter(f => now - f.at <= retainMs)
 
   // Models present across all endpoint timelines, for the shared legend.
-  const legendModels = Array.from(new Set(endpoints.flatMap(e => e.events.map(ev => ev.model)).filter(Boolean))).sort()
+  const legendModels = Array.from(new Set(endpoints.flatMap(e => e.calls.map(c => c.model)).filter(Boolean))).sort()
 
   return (
     <div className="space-y-6">
@@ -166,11 +175,11 @@ export default function ControlRoom() {
         <Stat label="Retention" value={`${retainHours}h`} tone="muted" />
       </div>
 
-      {/* Per-endpoint model timeline — one bar per URL, color = model, red break = swap */}
+      {/* Per-endpoint Gantt timeline — one lane per URL, each call a duration segment colored by model */}
       <Card>
         <CardHeader
           title="Endpoint model timeline"
-          subtitle={`One bar per endpoint URL over the last ${retainHours}h. Contiguous color = a batched same-model run; a red break = a reload-forcing model swap on that URL.`}
+          subtitle={`One lane per endpoint over the last ${retainHours}h. Each block is one LLM call — width = how long it ran, color = the model. Overlapping calls stack, so a tall stack = high concurrency. Empty = idle.`}
           action={legendModels.length > 0 && (
             <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 max-w-md">
               {legendModels.map(m => (
@@ -185,14 +194,23 @@ export default function ControlRoom() {
         {endpoints.length === 0 ? (
           <p className="text-sm text-muted">No dispatches in the window yet — trigger the pipeline or a monitor run.</p>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {endpoints.map(ep => (
               <EndpointRow key={ep.url} ep={ep} now={now} windowMs={retainMs} />
             ))}
-            {/* Time axis */}
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-muted/70 pl-[160px] pt-1">
-              <span>−{retainHours}h</span>
-              <span>now</span>
+            {/* Time axis — ticks aligned to the track (label column is 160px wide) */}
+            <div className="relative h-4 pl-[160px] pt-1">
+              <div className="relative h-full text-[10px] tabular-nums text-muted/70">
+                {axisTicks(retainHours).map(t => (
+                  <span
+                    key={t.frac}
+                    className="absolute top-0"
+                    style={{ left: `${t.frac * 100}%`, transform: t.frac === 0 ? 'none' : t.frac === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}
+                  >
+                    {t.label}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -266,51 +284,107 @@ export default function ControlRoom() {
   )
 }
 
-// ── Endpoint timeline row ───────────────────────────────────────────────────────
-interface Band { model: string; widthPct: number; start: number; end: number; count: number; coins: string[]; gapPct: number }
+// ── Endpoint Gantt timeline row ─────────────────────────────────────────────────
+// Each call becomes one positioned segment: left = when it started, width = how long it
+// ran, color = the model. Concurrent calls on the same endpoint can't share a row, so
+// they're packed into stacked sub-lanes (greedy interval scheduling) — a tall stack
+// reads as high concurrency. Idle time stays empty because nothing is drawn there.
+interface Seg extends EndpointCall { leftPct: number; widthPct: number; lane: number; startMs: number; endMs: number }
 
-// Each dispatch is an independent band with zero width (min-w-[2px] in CSS makes it
-// visible). Gaps between dispatches and idle time before the first dispatch remain
-// transparent, so empty space stays empty regardless of model.
-function buildBands(events: { model: string; coin: string | null; agoMs: number }[], now: number, windowMs: number): { leadPct: number; bands: Band[] } {
+function packLanes(calls: EndpointCall[], now: number, windowMs: number): { segs: Seg[]; laneCount: number } {
   const windowStart = now - windowMs
-  if (!events.length) return { leadPct: 100, bands: [] }
-  const bands: Band[] = events.map((e, i) => {
-    const at = now - e.agoMs
-    const start = Math.max(at, windowStart)
-    const gapPct = i === 0 ? 0 : Math.max(0, ((start - (now - events[i - 1].agoMs)) / windowMs) * 100)
-    return { model: e.model, start, end: start, count: 1, coins: e.coin ? [e.coin.replace('/USDC', '')] : [], gapPct, widthPct: 0 }
+  const items = calls
+    .map(c => {
+      const startMs = now - c.startAgoMs
+      return { ...c, startMs, endMs: startMs + Math.max(0, c.durationMs) }
+    })
+    .sort((a, b) => a.startMs - b.startMs)
+
+  const laneEnds: number[] = [] // endMs of the last segment placed in each lane
+  const segs: Seg[] = items.map(it => {
+    // Assign to the first lane free at this call's start; else open a new lane.
+    let lane = laneEnds.findIndex(end => end <= it.startMs)
+    if (lane === -1) { lane = laneEnds.length; laneEnds.push(it.endMs) }
+    else laneEnds[lane] = it.endMs
+
+    const vStart = Math.max(it.startMs, windowStart)
+    const vEnd = Math.max(it.endMs, vStart)
+    return {
+      ...it,
+      lane,
+      leftPct: ((vStart - windowStart) / windowMs) * 100,
+      widthPct: ((vEnd - vStart) / windowMs) * 100,
+    }
   })
-  const firstStart = Math.max(now - events[0].agoMs, windowStart)
-  const leadPct = Math.max(0, ((firstStart - windowStart) / windowMs) * 100)
-  return { leadPct, bands }
+  return { segs, laneCount: Math.max(1, laneEnds.length) }
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const m = Math.floor(ms / 60_000)
+  return `${m}m ${Math.round((ms % 60_000) / 1000)}s`
+}
+
+// Evenly spaced hour ticks across the window (0 = window start, 1 = now).
+function axisTicks(hours: number): { frac: number; label: string }[] {
+  const n = Math.max(1, Math.min(6, Math.round(hours)))
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const frac = i / n
+    const h = hours * (1 - frac)
+    return { frac, label: i === n ? 'now' : `−${h % 1 === 0 ? h : h.toFixed(1)}h` }
+  })
 }
 
 function EndpointRow({ ep, now, windowMs }: { ep: EndpointTimeline; now: number; windowMs: number }) {
-  const { leadPct, bands } = buildBands(ep.events, now, windowMs)
+  const { segs, laneCount } = packLanes(ep.calls, now, windowMs)
+  const laneH = 100 / laneCount
   return (
     <div className="flex items-center gap-3">
-      {/* Label column (fixed width keeps every bar's time axis aligned) */}
+      {/* Label column (fixed 148px + 12px gap = 160px, aligning every track + the axis) */}
       <div className="w-[148px] shrink-0 min-w-0">
         <p className="text-xs font-medium text-foreground truncate" title={ep.url}>{ep.host}</p>
         <p className="text-[10px] text-muted truncate flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: modelColor(ep.residentModel ?? '') }} />
           <span className="truncate">{ep.residentModel ?? 'idle'}</span>
-          {ep.active > 0 && <span className="text-accent shrink-0">· {ep.active} live</span>}
+          {ep.active > 0 && (
+            <span className="text-accent shrink-0 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+              {ep.active} live
+            </span>
+          )}
         </p>
       </div>
-      {/* Bar */}
-      <div className="flex-1 flex h-8 rounded-lg overflow-hidden border border-border bg-surface-elevated/40">
-        {leadPct > 0.5 && <div style={{ width: `${leadPct}%` }} className="shrink-0" />}
-        {bands.map((b, i) => (
-          <Fragment key={i}>
-            {b.gapPct > 0.5 && <div style={{ width: `${b.gapPct}%` }} className="shrink-0" />}
-            <div
-              className="shrink-0 min-w-[2px] relative transition-[width]"
-              style={{ width: `${b.widthPct}%`, background: modelColor(b.model) }}
-              title={`${b.model}\n${b.count} dispatch${b.count === 1 ? '' : 'es'}${b.coins.length ? `\n${b.coins.join(', ')}` : ''}\n${new Date(b.start).toLocaleTimeString()} – ${new Date(b.end).toLocaleTimeString()}`}
-            />
-          </Fragment>
+      {/* Track — segments are absolutely positioned; empty space is genuinely empty */}
+      <div className="relative flex-1 h-9 rounded-lg border border-border bg-surface-elevated/40 overflow-hidden">
+        {/* Faint gridlines at each axis tick for time reference */}
+        {axisTicks(windowMs / 3_600_000).slice(1, -1).map(t => (
+          <div key={t.frac} className="absolute inset-y-0 w-px bg-border/40" style={{ left: `${t.frac * 100}%` }} />
+        ))}
+        {segs.map((s, i) => (
+          <div
+            key={i}
+            className={cn(
+              'absolute rounded-[3px] transition-[opacity,transform] hover:z-10 hover:brightness-110 hover:ring-1 hover:ring-white/40',
+              s.state === 'running' && 'animate-pulse ring-1 ring-accent/60',
+              s.state === 'error' && 'ring-1 ring-sell',
+            )}
+            style={{
+              left: `${s.leftPct}%`,
+              width: `${s.widthPct}%`,
+              minWidth: '3px',
+              top: `calc(${s.lane * laneH}% + 1px)`,
+              height: `calc(${laneH}% - 2px)`,
+              background: modelColor(s.model),
+              opacity: s.state === 'error' ? 0.55 : 1,
+            }}
+            title={[
+              s.model,
+              `${s.module}${s.coin ? ` · ${s.coin.replace('/USDC', '')}` : ''}`,
+              `${fmtDuration(s.durationMs)}${s.state === 'running' ? ' (running)' : s.state === 'error' ? ' (error)' : ''}`,
+              `${new Date(s.startMs).toLocaleTimeString()} → ${s.state === 'running' ? 'now' : new Date(s.endMs).toLocaleTimeString()}`,
+            ].join('\n')}
+          />
         ))}
       </div>
     </div>
