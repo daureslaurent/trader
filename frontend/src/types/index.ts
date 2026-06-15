@@ -214,8 +214,8 @@ export interface EntryIntent {
   invalidatePrice: number
   chaseCapPrice: number
   notionalUsdc: number
-  /** Whether the band levels were chosen by the Entry Planner LLM or static settings. */
-  bandSource?: 'llm' | 'static'
+  /** How the band levels were set: the Entry Planner LLM, the static settings, or a user edit. */
+  bandSource?: 'llm' | 'static' | 'manual'
   /** The LLM's one-line rationale for these levels (present only when bandSource === 'llm'). */
   planReason?: string
   createdAt: number

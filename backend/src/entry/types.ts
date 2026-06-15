@@ -23,8 +23,8 @@ export interface EntryIntent {
   notionalUsdc: number
   /** ATR at analysis time — passed through so SL/TP are computed at the fill price. */
   atr: number
-  /** Whether the band levels were chosen by the Entry Planner LLM or the static settings. */
-  bandSource: 'llm' | 'static'
+  /** How the band levels were set: the Entry Planner LLM, the static settings, or a user edit. */
+  bandSource: 'llm' | 'static' | 'manual'
   /** The LLM's one-line rationale for these levels (present only when bandSource === 'llm'). */
   planReason?: string
   createdAt: number
@@ -32,7 +32,7 @@ export interface EntryIntent {
 }
 
 export type CancelReason = 'falling_knife' | 'ran_away' | 'expired' | 'manual'
-export type FillTrigger = 'pullback' | 'expiry-market'
+export type FillTrigger = 'pullback' | 'expiry-market' | 'manual'
 
 /**
  * A point-in-time record of something the engine did, for the activity feed.

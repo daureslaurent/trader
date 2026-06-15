@@ -158,6 +158,88 @@ export async function replan(coin: string): Promise<ReplanResult> {
   return { ok: true, intent: updated }
 }
 
+/**
+ * User clicked "Validate & open position" on the Entry Desk: stop waiting for a
+ * pullback and fire the deferred BUY *now* at the current live price. Execution
+ * still flows through the normal entry_fire path, so the live gates (already-held,
+ * max positions, min/available USDC, fee-edge) are re-checked and the approval
+ * setting is honored — this only skips the band-watching, not the safety net.
+ */
+export function fireNow(coin: string): { ok: boolean; error?: string } {
+  const intent = intents.get(coin)
+  if (!intent) return { ok: false, error: 'No active entry intent for this coin' }
+
+  const snap = priceCache.getPrice(coin)
+  if (!snap || !(snap.price > 0)) {
+    return { ok: false, error: 'No live price available for this coin yet' }
+  }
+
+  logger.info('Entry intent validated by user — firing now', { coin, price: snap.price })
+  fire(intent, snap.price, 'manual')
+  return { ok: true }
+}
+
+export interface IntentEdit {
+  targetPrice?: number
+  invalidatePrice?: number
+  chaseCapPrice?: number
+  /** New time-to-live in minutes, measured from now (resets the expiry clock). */
+  ttlMinutes?: number
+  notionalUsdc?: number
+}
+
+/**
+ * Manually override an active intent's entry window from the Entry Desk. Levels
+ * are absolute prices; any omitted field keeps its current value. Validates the
+ * band ordering (invalidate < target < chase cap) and positivity, then flags the
+ * band as user-set ('manual') and re-broadcasts. The next evaluate() tick acts on
+ * the new levels — e.g. a target at/above the live price fills immediately.
+ */
+export function updateIntent(coin: string, edit: IntentEdit): { ok: boolean; error?: string; intent?: EntryIntent } {
+  const intent = intents.get(coin)
+  if (!intent) return { ok: false, error: 'No active entry intent for this coin' }
+
+  const target = edit.targetPrice ?? intent.targetPrice
+  const invalidate = edit.invalidatePrice ?? intent.invalidatePrice
+  const chaseCap = edit.chaseCapPrice ?? intent.chaseCapPrice
+  if (!(target > 0) || !(invalidate > 0) || !(chaseCap > 0)) {
+    return { ok: false, error: 'Prices must be positive numbers' }
+  }
+  if (!(invalidate < target)) return { ok: false, error: 'Invalidate price must be below the buy target' }
+  if (!(chaseCap > target)) return { ok: false, error: 'Chase cap must be above the buy target' }
+
+  let notionalUsdc = intent.notionalUsdc
+  if (edit.notionalUsdc != null) {
+    if (!(edit.notionalUsdc > 0)) return { ok: false, error: 'Notional must be a positive number' }
+    notionalUsdc = edit.notionalUsdc
+  }
+
+  let expiresAt = intent.expiresAt
+  if (edit.ttlMinutes != null) {
+    if (!(edit.ttlMinutes > 0)) return { ok: false, error: 'TTL must be a positive number of minutes' }
+    expiresAt = Date.now() + edit.ttlMinutes * 60_000
+  }
+
+  const updated: EntryIntent = {
+    ...intent,
+    targetPrice: target,
+    invalidatePrice: invalidate,
+    chaseCapPrice: chaseCap,
+    notionalUsdc,
+    expiresAt,
+    bandSource: 'manual',
+    planReason: undefined,
+  }
+
+  intents.set(coin, updated)
+  store.saveIntent(updated)
+  logger.info('Entry intent edited by user', {
+    coin, target, invalidate, chaseCap, notionalUsdc, expiresAt,
+  })
+  broadcastIntents()
+  return { ok: true, intent: updated }
+}
+
 export function cancel(coin: string, reason: CancelReason, price?: number): void {
   const intent = intents.get(coin)
   if (!intents.delete(coin)) return

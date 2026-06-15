@@ -6,6 +6,8 @@ import { Badge } from '../components/ui/Badge'
 import { CandleChart, type ChartLevel, type ChartZone } from '../components/CandleChart'
 import { CancelEntryModal } from '../components/CancelEntryModal'
 import { ManualEntryModal } from '../components/ManualEntryModal'
+import { ValidateEntryModal } from '../components/ValidateEntryModal'
+import { EditEntryModal } from '../components/EditEntryModal'
 import { Button } from '../components/ui/Button'
 import { EntryIntent, EntryEvent } from '../types'
 import { fmtUSD, fmtPct, cn } from '../lib/utils'
@@ -32,9 +34,9 @@ function eventStyle(e: EntryEvent): EventStyle {
     return { label: 'Queued', cls: 'text-accent bg-accent/10', icon: 'M12 6v6l4 2' }
   }
   if (e.type === 'filled') {
-    return e.reason === 'expiry-market'
-      ? { label: 'Filled at expiry', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
-      : { label: 'Filled on pullback', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
+    if (e.reason === 'expiry-market') return { label: 'Filled at expiry', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
+    if (e.reason === 'manual') return { label: 'Bought manually', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
+    return { label: 'Filled on pullback', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
   }
   // cancelled
   const map: Record<string, EventStyle> = {
@@ -53,6 +55,9 @@ export default function EntryDesk() {
   const [events, setEvents] = useState<EntryEvent[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [cancelTarget, setCancelTarget] = useState<EntryIntent | null>(null)
+  const [validateTarget, setValidateTarget] = useState<EntryIntent | null>(null)
+  const [editTarget, setEditTarget] = useState<EntryIntent | null>(null)
+  const [approvalRequired, setApprovalRequired] = useState(false)
   const [now, setNow] = useState(Date.now())
   // The "Refresh LLM" button only makes sense when the Entry Planner is on —
   // otherwise bands come from the static settings and there's no LLM to re-run.
@@ -70,9 +75,10 @@ export default function EntryDesk() {
     fetch('/api/entry-events').then(r => r.json()).then((d: EntryEvent[]) => {
       if (Array.isArray(d)) setEvents(d)
     }).catch(() => {})
-    fetch('/api/settings').then(r => r.json()).then((s: { entry_planner_enabled?: boolean; watchlist?: string[] }) => {
+    fetch('/api/settings').then(r => r.json()).then((s: { entry_planner_enabled?: boolean; watchlist?: string[]; approval_required?: boolean }) => {
       if (s && typeof s.entry_planner_enabled === 'boolean') setPlannerEnabled(s.entry_planner_enabled)
       if (s && Array.isArray(s.watchlist)) setWatchlist(s.watchlist)
+      if (s && typeof s.approval_required === 'boolean') setApprovalRequired(s.approval_required)
     }).catch(() => {})
   }, [])
 
@@ -215,6 +221,9 @@ export default function EntryDesk() {
                   {selectedIntent.bandSource === 'llm' && (
                     <Badge variant="accent" title={selectedIntent.planReason || 'Levels chosen by the Entry Planner'}>AI levels</Badge>
                   )}
+                  {selectedIntent.bandSource === 'manual' && (
+                    <Badge variant="warning" title="Levels set manually">Manual levels</Badge>
+                  )}
                   <Badge variant="accent" dot>Waiting</Badge>
                   <Button
                     variant="secondary"
@@ -232,6 +241,28 @@ export default function EntryDesk() {
                       </svg>
                     )}
                     Refresh LLM
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setEditTarget(selectedIntent)}
+                    title="Manually edit this entry window (target / invalidate / chase cap / TTL / notional)"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                    </svg>
+                    Edit
+                  </Button>
+                  <Button
+                    variant="success"
+                    size="sm"
+                    onClick={() => setValidateTarget(selectedIntent)}
+                    title="Stop waiting and buy now at the live price"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Validate &amp; buy
                   </Button>
                   <Button
                     variant="danger"
@@ -357,6 +388,22 @@ export default function EntryDesk() {
         onCancelled={(coin) => { if (selected === coin) setSelected(null) }}
       />
 
+      {/* Validate & open position now */}
+      <ValidateEntryModal
+        intent={validateTarget}
+        currentPrice={validateTarget ? prices.get(validateTarget.coin)?.price : undefined}
+        approvalRequired={approvalRequired}
+        onClose={() => setValidateTarget(null)}
+        onValidated={(coin) => { if (selected === coin) setSelected(null) }}
+      />
+
+      {/* Manually edit the entry window */}
+      <EditEntryModal
+        intent={editTarget}
+        currentPrice={editTarget ? prices.get(editTarget.coin)?.price : undefined}
+        onClose={() => setEditTarget(null)}
+      />
+
       {/* Manually stage a coin */}
       <ManualEntryModal
         open={addOpen}
@@ -425,6 +472,17 @@ function IntentCard({ intent, now, currentPrice, selected, onSelect, onCancel }:
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.4 6.6L22 12l-6.6 2.4L13 21l-2.4-6.6L4 12l6.6-2.4L13 3z" />
               </svg>
               AI
+            </span>
+          )}
+          {intent.bandSource === 'manual' && (
+            <span
+              title="Levels set manually"
+              className="inline-flex items-center gap-1 rounded-md bg-warn/10 px-1.5 py-0.5 text-[10px] font-semibold text-warn"
+            >
+              <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+              </svg>
+              Manual
             </span>
           )}
         </span>

@@ -4,7 +4,7 @@ import { bus } from '../../core/events.js'
 import { logger } from '../../core/logger.js'
 import { Signal, PortfolioEntry } from '../../types.js'
 import { getPendingApprovals } from '../../execution/index.js'
-import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent, replan as replanEntryIntent } from '../../entry/index.js'
+import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent, replan as replanEntryIntent, fireNow as fireEntryIntent, updateIntent as updateEntryIntent } from '../../entry/index.js'
 import { stageManualEntry } from '../../pipeline/index.js'
 import { executeTrade, executeCoinTrade, fetchBalance } from '../../trader/index.js'
 import {
@@ -75,6 +75,55 @@ router.post('/entry-intents/replan', async (req: Request, res: Response) => {
     const status = result.error?.startsWith('No active entry intent') ? 404 : 400
     return res.status(status).json({ error: result.error })
   }
+  res.json({ ok: true, intent: result.intent })
+})
+
+// "Validate & open position" on the Entry Desk: fire the deferred BUY now at the
+// live price instead of waiting for a pullback. Execution still re-checks the live
+// gates and honors the approval setting (see fireNow). Slashed coin goes in the body.
+router.post('/entry-intents/fire', (req: Request, res: Response) => {
+  const { coin } = req.body
+  if (!coin || typeof coin !== 'string') {
+    return res.status(400).json({ error: 'coin required' })
+  }
+  const result = fireEntryIntent(coin)
+  if (!result.ok) {
+    const status = result.error?.startsWith('No active entry intent') ? 404 : 400
+    return res.status(status).json({ error: result.error })
+  }
+  res.json({ ok: true })
+})
+
+// Manually override an active intent's entry window (absolute prices, optional TTL
+// in minutes and notional). Omitted fields keep their current value. Sets the band
+// to 'manual'. Slashed coin goes in the body.
+router.post('/entry-intents/edit', (req: Request, res: Response) => {
+  const { coin, targetPrice, invalidatePrice, chaseCapPrice, ttlMinutes, notionalUsdc } = req.body
+  if (!coin || typeof coin !== 'string') {
+    return res.status(400).json({ error: 'coin required' })
+  }
+
+  // Accept numbers or numeric strings; reject anything non-numeric so a typo in the
+  // form can't silently fall through to "keep current value".
+  const num = (v: unknown): number | undefined | null => {
+    if (v == null || v === '') return undefined
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  const fields = { targetPrice, invalidatePrice, chaseCapPrice, ttlMinutes, notionalUsdc }
+  const parsed: Record<string, number> = {}
+  for (const [key, raw] of Object.entries(fields)) {
+    const n = num(raw)
+    if (n === null) return res.status(400).json({ error: `${key} must be a number` })
+    if (n !== undefined) parsed[key] = n
+  }
+
+  const result = updateEntryIntent(coin, parsed)
+  if (!result.ok) {
+    const status = result.error?.startsWith('No active entry intent') ? 404 : 400
+    return res.status(status).json({ error: result.error })
+  }
+  logger.info('Entry intent edited by user', { coin, ...parsed })
   res.json({ ok: true, intent: result.intent })
 })
 
