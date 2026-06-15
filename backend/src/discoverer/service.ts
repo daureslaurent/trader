@@ -160,7 +160,12 @@ export async function runDiscovery(cycleId: string): Promise<void> {
       watchlist,
     })
 
-    const topPairs = await getTopPairs(settings.discover_top_n)
+    // Over-fetch the pool so that, after removing already-watched/held and
+    // non-tradeable pairs, we still have ~discover_top_n fresh candidates to
+    // evaluate. discover_top_n is the target count of NEW candidates, applied
+    // after exclusions (not a cap on the raw top-by-volume list).
+    const poolSize = Math.max(settings.discover_top_n * 4, 100)
+    const topPairs = await getTopPairs(poolSize)
 
     const portfolioEntries = await getOpenEntries() as unknown as { coin: string }[]
 
@@ -171,7 +176,10 @@ export async function runDiscovery(cycleId: string): Promise<void> {
       ...portfolioEntries.map(e => toBase(e.coin)),
     ])
 
-    const candidates = topPairs.filter(s => !excludedBases.has(toBase(s)) && isTradeable(s))
+    // topPairs is sorted by volume; keep that order and trim to the target.
+    const candidates = topPairs
+      .filter(s => !excludedBases.has(toBase(s)) && isTradeable(s))
+      .slice(0, settings.discover_top_n)
     const excludedCount = topPairs.length - candidates.length
 
     logDiscoveryEvent('discovery_candidates_found', 'DISCOVERY', cycleId, {
