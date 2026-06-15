@@ -315,3 +315,40 @@ ${rows.join('\n')}`
 
   return { system, user }
 }
+
+/** One analyst opinion fed to the synthesizer (model C) in A+B+C mode. */
+export interface EnsembleOpinion {
+  label: string
+  model: string
+  action: string
+  confidence: number
+  reasoning: string
+  new_stop_loss_pct?: number | null
+  new_take_profit_pct?: number | null
+  reduce_to_pct?: number | null
+}
+
+// Builds model C's user prompt in 'abc' mode: the same position review the A/B
+// models saw, followed by their two verdicts and an instruction to act as the final
+// arbiter. C may agree with one, blend them, or override entirely — it owns the
+// final decision and must answer in the identical JSON schema.
+export function buildSynthesizerUser(baseUser: string, opinions: EnsembleOpinion[]): string {
+  const rendered = opinions.map((o) => {
+    const extras: string[] = []
+    if (typeof o.new_stop_loss_pct === 'number') extras.push(`SL ${o.new_stop_loss_pct > 0 ? '+' : ''}${o.new_stop_loss_pct}%`)
+    if (typeof o.new_take_profit_pct === 'number') extras.push(`TP ${o.new_take_profit_pct > 0 ? '+' : ''}${o.new_take_profit_pct}%`)
+    if (typeof o.reduce_to_pct === 'number') extras.push(`reduce_to ${o.reduce_to_pct}%`)
+    const extraText = extras.length ? ` · ${extras.join(' · ')}` : ''
+    return `Analyst ${o.label} (${o.model}): ${o.action} conf=${o.confidence.toFixed(2)}${extraText}\n  "${o.reasoning}"`
+  }).join('\n\n')
+
+  return `${baseUser}
+
+── Two independent analysts have already reviewed this position ──────────────
+${rendered}
+
+You are the senior reviewer. Weigh both opinions against the data above and issue
+the FINAL verdict. You may side with either analyst, combine their views, or
+override both if the evidence warrants it. Do not simply average — decide. Respond
+with a single JSON object in the same schema.`
+}

@@ -21,7 +21,7 @@ interface SettingsData {
   max_open_positions: number
   cache_ttl_hours: number
   monitor_auto_run: boolean
-  monitor_model: 'a' | 'b' | 'alternate'
+  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc'
   monitor_cron: string
   monitor_adjust_sltp: boolean
   monitor_reduce_enabled: boolean
@@ -68,6 +68,8 @@ interface SettingsData {
   llm_monitor_a_max_tokens: number
   llm_monitor_b_endpoint: string
   llm_monitor_b_max_tokens: number
+  llm_monitor_c_endpoint: string
+  llm_monitor_c_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
   llm_entry_planner_endpoint: string
@@ -86,6 +88,8 @@ interface SettingsData {
   llm_monitor_a_fb_max_tokens: number
   llm_monitor_b_fb_endpoint: string
   llm_monitor_b_fb_max_tokens: number
+  llm_monitor_c_fb_endpoint: string
+  llm_monitor_c_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
   llm_entry_planner_fb_endpoint: string
@@ -101,6 +105,7 @@ interface SettingsData {
   telegram_notify_position_opened: boolean
   telegram_notify_position_closed: boolean
   telegram_notify_sl_tp_adjusted: boolean
+  telegram_notify_monitor_disagreement: boolean
   telegram_notify_portfolio: boolean
   telegram_notify_summary: boolean
   telegram_notify_discovery: boolean
@@ -114,6 +119,7 @@ const TELEGRAM_EVENTS: { key: keyof SettingsData; label: string; hint: string }[
   { key: 'telegram_notify_position_opened', label: 'Position opened', hint: 'A new position was opened.' },
   { key: 'telegram_notify_position_closed', label: 'Position closed', hint: 'A position was closed — stop-loss / take-profit hit, monitor exit, or manual close.' },
   { key: 'telegram_notify_sl_tp_adjusted', label: 'SL/TP adjusted', hint: 'The monitor moved a position’s stop-loss or take-profit.' },
+  { key: 'telegram_notify_monitor_disagreement', label: 'Monitor disagreement', hint: 'In A + B / A + B + C monitor modes, the underlying models disagreed on the action for a position.' },
   { key: 'telegram_notify_trade_failed', label: 'Trade failed', hint: 'An order failed to execute on the exchange.' },
   { key: 'telegram_notify_summary', label: 'Portfolio summary', hint: 'A new portfolio summary briefing was produced.' },
   { key: 'telegram_notify_discovery', label: 'Coin discovered', hint: 'The discoverer found a new candidate coin.' },
@@ -411,7 +417,8 @@ const LLM_MODULES: {
   { key: 'discoverer',          label: 'Discoverer',           hint: 'Scores new coin candidates during discovery.',            endpointKey: 'llm_discoverer_endpoint',          maxTokensKey: 'llm_discoverer_max_tokens',          fbEndpointKey: 'llm_discoverer_fb_endpoint',          fbMaxTokensKey: 'llm_discoverer_fb_max_tokens' },
   { key: 'discovererExtractor', label: 'Discoverer extractor', hint: 'Extractor used inside the discovery pipeline.',            endpointKey: 'llm_discoverer_extractor_endpoint', maxTokensKey: 'llm_discoverer_extractor_max_tokens', fbEndpointKey: 'llm_discoverer_extractor_fb_endpoint', fbMaxTokensKey: 'llm_discoverer_extractor_fb_max_tokens' },
   { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     endpointKey: 'llm_monitor_a_endpoint',           maxTokensKey: 'llm_monitor_a_max_tokens',           fbEndpointKey: 'llm_monitor_a_fb_endpoint',           fbMaxTokensKey: 'llm_monitor_a_fb_max_tokens' },
-  { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — alternate model for the position monitor (used in B / Alternate mode).', endpointKey: 'llm_monitor_b_endpoint', maxTokensKey: 'llm_monitor_b_max_tokens', fbEndpointKey: 'llm_monitor_b_fb_endpoint', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens' },
+  { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — second model for the position monitor (used in B / Alternate / A+B / A+B+C modes).', endpointKey: 'llm_monitor_b_endpoint', maxTokensKey: 'llm_monitor_b_max_tokens', fbEndpointKey: 'llm_monitor_b_fb_endpoint', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens' },
+  { key: 'monitorC',            label: 'Monitor C',            hint: 'Slot C — the synthesizer in A+B+C mode. Sees A and B’s verdicts and writes the final decision. Use a strong, well-reasoned model.', endpointKey: 'llm_monitor_c_endpoint', maxTokensKey: 'llm_monitor_c_max_tokens', fbEndpointKey: 'llm_monitor_c_fb_endpoint', fbMaxTokensKey: 'llm_monitor_c_fb_max_tokens' },
   { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', endpointKey: 'llm_summary_endpoint', maxTokensKey: 'llm_summary_max_tokens', fbEndpointKey: 'llm_summary_fb_endpoint', fbMaxTokensKey: 'llm_summary_fb_max_tokens' },
   { key: 'entryPlanner',        label: 'Entry Planner',        hint: 'Picks the per-coin entry band (pullback / invalidate / chase cap / TTL) for deferred BUYs. A small fast model is enough.', endpointKey: 'llm_entry_planner_endpoint', maxTokensKey: 'llm_entry_planner_max_tokens', fbEndpointKey: 'llm_entry_planner_fb_endpoint', fbMaxTokensKey: 'llm_entry_planner_fb_max_tokens' },
   { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
@@ -1073,7 +1080,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'update_enabled')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'update_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1364,23 +1371,34 @@ export default function Settings() {
           <Row
             stacked
             label="Monitor model"
-            hint="Which LLM reviews open positions. Configure the two slots (model, endpoint, max tokens) in the LLM Models section below. Alternate flips between A and B on each monitor cycle."
+            hint="Which LLM(s) review open positions. Configure each slot (model, endpoint, max tokens) in the LLM Models section below. Single modes run one model; Alternate flips A/B each cycle; A+B runs both and keeps the higher-confidence verdict; A+B+C adds model C to synthesize the final decision from A and B."
           >
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {(['a', 'b'] as const).map(slot => {
+            {(() => {
+              const mode = settings.monitor_model
+              // Role of a slot under the current mode → drives its highlight + badge.
+              const slotRole = (slot: 'a' | 'b' | 'c'): { active: boolean; badge: string } => {
+                if (slot === 'c') return { active: mode === 'abc', badge: 'Synthesizer' }
+                if (mode === slot) return { active: true, badge: 'Active' }
+                if (mode === 'alternate') return { active: true, badge: 'In rotation' }
+                if (mode === 'ab' || mode === 'abc') return { active: true, badge: 'Voter' }
+                return { active: false, badge: '' }
+              }
+              // A/B are clickable (selects that single-model mode); C is informational.
+              const renderSlot = (slot: 'a' | 'b' | 'c') => {
                 const info = monitorModels?.[slot]
-                const active = settings.monitor_model === slot
-                const alternating = settings.monitor_model === 'alternate'
+                const { active, badge } = slotRole(slot)
+                const selectable = slot !== 'c'
                 return (
                   <button
                     key={slot}
                     type="button"
-                    onClick={() => set('monitor_model', slot)}
+                    disabled={!selectable}
+                    onClick={selectable ? () => set('monitor_model', slot) : undefined}
                     className={cn(
                       'flex flex-col items-start gap-1.5 px-3.5 py-3 rounded-xl border text-left transition-all duration-150',
-                      active
-                        ? 'bg-accent/10 border-accent/40 ring-1 ring-accent/20'
-                        : 'border-border hover:border-foreground/20',
+                      active ? 'bg-accent/10 border-accent/40 ring-1 ring-accent/20' : 'border-border',
+                      selectable && !active && 'hover:border-foreground/20',
+                      !selectable && 'cursor-default',
                     )}
                   >
                     <div className="flex items-center justify-between gap-2 w-full">
@@ -1388,15 +1406,10 @@ export default function Settings() {
                         'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded',
                         active ? 'bg-accent/20 text-accent' : 'bg-surface-elevated text-muted',
                       )}>
-                        {slot === 'a' ? 'Slot A' : 'Slot B'}
+                        {`Slot ${slot.toUpperCase()}`}
                       </span>
-                      {active && (
-                        <svg className="w-3.5 h-3.5 text-accent shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                      {alternating && (
-                        <span className="text-[10px] font-semibold text-accent shrink-0">in rotation</span>
+                      {active && badge && (
+                        <span className="text-[10px] font-semibold text-accent shrink-0">{badge}</span>
                       )}
                     </div>
                     <span className={cn(
@@ -1410,34 +1423,56 @@ export default function Settings() {
                     )}
                   </button>
                 )
-              })}
-            </div>
-            <button
-              type="button"
-              onClick={() => set('monitor_model', 'alternate')}
-              className={cn(
-                'mt-2 flex items-center justify-between gap-2 w-full px-3.5 py-3 rounded-xl border text-left transition-all duration-150',
-                settings.monitor_model === 'alternate'
-                  ? 'bg-accent/10 border-accent/40 ring-1 ring-accent/20'
-                  : 'border-border hover:border-foreground/20',
-              )}
-            >
-              <div className="flex items-center gap-2.5">
-                <span className={cn(
-                  'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded',
-                  settings.monitor_model === 'alternate' ? 'bg-accent/20 text-accent' : 'bg-surface-elevated text-muted',
-                )}>
-                  Alternate
-                </span>
-                <span className="text-sm font-medium text-foreground">A ⇄ B each cycle</span>
-                <span className="text-[10px] text-muted hidden sm:inline">one model per run, flips on the next</span>
-              </div>
-              {settings.monitor_model === 'alternate' && (
-                <svg className="w-3.5 h-3.5 text-accent shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-              )}
-            </button>
+              }
+              const modePills: { key: 'alternate' | 'ab' | 'abc'; badge: string; title: string; sub: string }[] = [
+                { key: 'alternate', badge: 'Alternate', title: 'A ⇄ B each cycle', sub: 'one model per run, flips on the next' },
+                { key: 'ab', badge: 'A + B', title: 'Both run · higher-confidence wins', sub: 'A and B review every position; the more confident verdict is kept' },
+                { key: 'abc', badge: 'A + B + C', title: 'C synthesizes A + B', sub: 'A and B vote, then C weighs both and writes the final call' },
+              ]
+              return (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {renderSlot('a')}
+                    {renderSlot('b')}
+                  </div>
+                  {mode === 'abc' && (
+                    <div className="mt-2">{renderSlot('c')}</div>
+                  )}
+                  <div className="mt-2 flex flex-col gap-2">
+                    {modePills.map(p => {
+                      const on = mode === p.key
+                      return (
+                        <button
+                          key={p.key}
+                          type="button"
+                          onClick={() => set('monitor_model', p.key)}
+                          className={cn(
+                            'flex items-center justify-between gap-2 w-full px-3.5 py-3 rounded-xl border text-left transition-all duration-150',
+                            on ? 'bg-accent/10 border-accent/40 ring-1 ring-accent/20' : 'border-border hover:border-foreground/20',
+                          )}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <span className={cn(
+                              'text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0',
+                              on ? 'bg-accent/20 text-accent' : 'bg-surface-elevated text-muted',
+                            )}>
+                              {p.badge}
+                            </span>
+                            <span className="text-sm font-medium text-foreground shrink-0">{p.title}</span>
+                            <span className="text-[10px] text-muted hidden md:inline truncate">{p.sub}</span>
+                          </div>
+                          {on && (
+                            <svg className="w-3.5 h-3.5 text-accent shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </>
+              )
+            })()}
           </Row>
 
           <Row label="Auto-run" hint="Periodically run the monitor to check positions">

@@ -96,9 +96,11 @@ export interface BotSettings {
   discover_auto_add: boolean
   discover_min_volume_usd: number
   monitor_auto_run: boolean
-  /** Which monitor LLM slot to use: 'a' = MONITOR_MODEL / MONITOR_BASE_URL, 'b' = MONITOR_MODEL_B / MONITOR_BASE_URL_B,
-   *  'alternate' = flip between A and B each monitor cycle. */
-  monitor_model: 'a' | 'b' | 'alternate'
+  /** Which monitor LLM configuration to use:
+   *  'a' = slot A only, 'b' = slot B only, 'alternate' = flip A/B each cycle,
+   *  'ab' = run A and B together and keep the higher-confidence verdict (confidence-weighted),
+   *  'abc' = run A and B, then model C synthesizes the final verdict from both. */
+  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc'
   monitor_cron: string
   monitor_adjust_sltp: boolean
   /** When true, the monitor may propose/execute partial exits (REDUCE). When false, REDUCE is
@@ -187,6 +189,9 @@ export interface BotSettings {
   llm_monitor_a_max_tokens: number
   llm_monitor_b_endpoint: string
   llm_monitor_b_max_tokens: number
+  /** Slot C — the synthesizer model used in 'abc' (A + B + C) mode to write the final verdict. */
+  llm_monitor_c_endpoint: string
+  llm_monitor_c_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
   /** Entry Planner — picks the per-coin entry band for deferred BUYs. */
@@ -210,6 +215,8 @@ export interface BotSettings {
   llm_monitor_a_fb_max_tokens: number
   llm_monitor_b_fb_endpoint: string
   llm_monitor_b_fb_max_tokens: number
+  llm_monitor_c_fb_endpoint: string
+  llm_monitor_c_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
   llm_entry_planner_fb_endpoint: string
@@ -237,6 +244,8 @@ export interface BotSettings {
   telegram_notify_position_closed: boolean
   /** The monitor adjusted a position's SL/TP. */
   telegram_notify_sl_tp_adjusted: boolean
+  /** In A+B / A+B+C monitor modes, the underlying models disagreed on the action for a position. */
+  telegram_notify_monitor_disagreement: boolean
   /** Portfolio snapshot (total value + open-position count) after each cycle. Noisy. */
   telegram_notify_portfolio: boolean
   /** A portfolio summary was produced by the summary engine. */

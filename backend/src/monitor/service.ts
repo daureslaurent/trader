@@ -13,18 +13,19 @@ import { getOHLCV, isTimeframe } from '../market/index.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
 import { PositionReview } from '../types.js'
-import { buildMonitorPrompt, fmtOffsetLabel, PositionContext, HorizonConfigs, MonitorNotes } from './prompts.js'
+import { buildMonitorPrompt, buildSynthesizerUser, fmtOffsetLabel, PositionContext, HorizonConfigs, MonitorNotes } from './prompts.js'
 import { LLMError } from '../core/errors.js'
 import { resolveLLM } from '../config/llm.js'
 
 let running = false
 
-interface MonitorSlot { slot: 'a' | 'b'; model: string; baseURL: string; maxTokens: number; fallback?: LLMTarget }
+interface MonitorSlot { slot: 'a' | 'b' | 'c'; model: string; baseURL: string; maxTokens: number; fallback?: LLMTarget }
 
 // Resolves a monitor slot through the shared Settings-aware LLM resolver, so the
 // model / endpoint / max-tokens overrides from the Settings page take effect.
-function resolveSlot(slot: 'a' | 'b'): MonitorSlot {
-  const { model, baseURL, maxTokens, fallback } = resolveLLM(slot === 'b' ? 'monitorB' : 'monitorA')
+function resolveSlot(slot: 'a' | 'b' | 'c'): MonitorSlot {
+  const module = slot === 'b' ? 'monitorB' : slot === 'c' ? 'monitorC' : 'monitorA'
+  const { model, baseURL, maxTokens, fallback } = resolveLLM(module)
   return { slot, model, baseURL, maxTokens, fallback }
 }
 
@@ -37,20 +38,11 @@ function alternateNextSlot(): 'a' | 'b' {
 // Resolves the monitor LLM slot the user selected in settings into its concrete
 // model + endpoint. Exported so the API can surface the active model. This is a
 // pure peek — in 'alternate' mode it returns the slot the NEXT cycle will use
-// without advancing the rotation (use advanceMonitorModel for that).
+// without advancing the rotation. For the ensemble modes ('ab'/'abc') it returns
+// slot A as the representative model.
 export function getActiveMonitorModel(): MonitorSlot {
   const mode = getSettings().monitor_model
   const slot = mode === 'alternate' ? alternateNextSlot() : (mode === 'b' ? 'b' : 'a')
-  return resolveSlot(slot)
-}
-
-// Picks the slot for a cycle about to run, advancing the alternate rotation as a
-// side effect so the next cycle gets the other model. Non-alternate modes are fixed.
-export async function advanceMonitorModel(): Promise<MonitorSlot> {
-  const mode = getSettings().monitor_model
-  if (mode !== 'alternate') return resolveSlot(mode === 'b' ? 'b' : 'a')
-  const slot = alternateNextSlot()
-  await updateSetting('monitor_alternate_last', slot)
   return resolveSlot(slot)
 }
 
@@ -60,6 +52,66 @@ interface MonitorLLM {
   baseURL: string
   maxTokens: number
   fallback?: LLMTarget
+  /** 'A' | 'B' | 'C' — for logs, the stored review's badge, and disagreement alerts. */
+  label: string
+}
+
+// How the cycle's models are combined. 'single' runs one model (a / b / alternate);
+// 'ab' runs both voters and keeps the higher-confidence verdict; 'abc' runs both
+// voters and then has the synthesizer (C) write the final verdict from their output.
+interface MonitorEnsemble {
+  mode: 'single' | 'ab' | 'abc'
+  voters: MonitorLLM[]
+  synthesizer: MonitorLLM | null
+}
+
+// Wraps a resolved slot in a per-cycle OpenAI client + label.
+function buildLLM(slot: MonitorSlot, label: string): MonitorLLM {
+  return {
+    client: new OpenAI({ baseURL: slot.baseURL, apiKey: 'ollama' }),
+    model: slot.model,
+    baseURL: slot.baseURL,
+    maxTokens: slot.maxTokens,
+    fallback: slot.fallback,
+    label,
+  }
+}
+
+// Builds the model set for a cycle about to run from the `monitor_model` setting,
+// advancing the alternate rotation as a side effect so the next cycle flips.
+async function buildEnsemble(): Promise<MonitorEnsemble> {
+  const mode = getSettings().monitor_model
+  if (mode === 'ab' || mode === 'abc') {
+    const voters = [buildLLM(resolveSlot('a'), 'A'), buildLLM(resolveSlot('b'), 'B')]
+    const synthesizer = mode === 'abc' ? buildLLM(resolveSlot('c'), 'C') : null
+    return { mode, voters, synthesizer }
+  }
+  let slot: 'a' | 'b'
+  if (mode === 'alternate') {
+    slot = alternateNextSlot()
+    await updateSetting('monitor_alternate_last', slot)
+  } else {
+    slot = mode === 'b' ? 'b' : 'a'
+  }
+  return { mode: 'single', voters: [buildLLM(resolveSlot(slot), slot.toUpperCase())], synthesizer: null }
+}
+
+// Action severity for tie-breaking the confidence-weighted A+B merge: when both
+// models report the same confidence, the more capital-protective action wins.
+const ACTION_SEVERITY: Record<string, number> = { CLOSE: 3, REDUCE: 2, ADJUST: 1, HOLD: 0 }
+
+interface Opinion { llm: MonitorLLM; review: RawReview }
+
+// A+B confidence-weighted merge: keep the higher-confidence verdict wholesale (so its
+// SL/TP/reduce numbers stay coherent). Ties break toward the more protective action,
+// then toward slot A for determinism.
+function pickHigherConfidence(opinions: Opinion[]): Opinion {
+  return [...opinions].sort((x, y) => {
+    if (y.review.confidence !== x.review.confidence) return y.review.confidence - x.review.confidence
+    const sev = (ACTION_SEVERITY[y.review.action] ?? 0) - (ACTION_SEVERITY[x.review.action] ?? 0)
+    if (sev !== 0) return sev
+    return x.llm.label.localeCompare(y.llm.label)
+  })[0]
 }
 
 interface RawReview {
@@ -131,10 +183,61 @@ async function pruneMonitorHistory(maxCycles = 20): Promise<void> {
   await positionReviews.deleteMany({ cycle_id: { $nin: keep } })
 }
 
+// Runs a single monitor model against a prepared prompt and returns its parsed
+// verdict. Retries once on both LLM API/network errors and parse failures (#2d).
+async function askModel(llm: MonitorLLM, system: string, user: string, ctx: PositionContext, cycleId: string): Promise<RawReview> {
+  logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, slot: llm.label, model: llm.model })
+
+  let raw: RawReview | null = null
+  for (let attempt = 0; attempt <= 1; attempt++) {
+    let resp: Awaited<ReturnType<typeof llmChat>>
+    try {
+      resp = await llmChat(llm.client, {
+        model: llm.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.2,
+        max_tokens: llm.maxTokens,
+        response_format: { type: 'json_object' },
+      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: llm.baseURL }, llm.fallback)
+    } catch (apiErr) {
+      if (attempt === 0) {
+        logger.warn('Monitor LLM API error, retrying', { coin: ctx.coin, slot: llm.label, error: (apiErr as Error).message })
+        continue
+      }
+      throw apiErr
+    }
+
+    const finish = resp.choices[0]?.finish_reason
+    const content = resp.choices[0]?.message?.content ?? ''
+
+    logger.info('Monitor LLM response', { coin: ctx.coin, slot: llm.label, attempt, finish_reason: finish, length: content.length })
+
+    if (!content.trim()) {
+      if (attempt === 0) { logger.warn('Empty monitor response, retrying', { coin: ctx.coin, slot: llm.label, finish_reason: finish }); continue }
+      throw new LLMError(`Empty LLM response (finish_reason: ${finish ?? 'unknown'})`)
+    }
+
+    try {
+      raw = parseReview(content)
+    } catch (err) {
+      if (attempt === 0) { logger.warn('Monitor parse failed, retrying', { coin: ctx.coin, slot: llm.label, error: (err as Error).message }); continue }
+      throw err
+    }
+
+    break
+  }
+
+  if (!raw) throw new LLMError('Monitor returned no valid review after retries')
+  return raw
+}
+
 async function monitorCoin(
   ctx: PositionContext,
   cycleId: string,
-  llm: MonitorLLM,
+  ensemble: MonitorEnsemble,
   adjustEnabled: boolean,
   reduceEnabled: boolean,
   trustLlm: boolean,
@@ -171,53 +274,43 @@ async function monitorCoin(
 
   const { system, user } = buildMonitorPrompt(ctx, history, horizonConfigs, useHorizon, utcOffsetHours, candles, tf, reviewIntervalMin, storedNotes, breakevenPct, reduceEnabled)
 
-  logger.info('Request LLM', { module: 'monitor', coin: ctx.coin, model: llm.model })
+  // Gather each voter's independent verdict. Voters run concurrently — calls to the
+  // same endpoint are still serialized by the per-URL LLM gate, so this only adds
+  // real parallelism when A and B point at different endpoints.
+  const opinions: Opinion[] = await Promise.all(
+    ensemble.voters.map(async (voter) => ({ llm: voter, review: await askModel(voter, system, user, ctx, cycleId) })),
+  )
 
-  let raw: RawReview | null = null
-
-  // #2d: Retry on both parse errors AND LLM API/network errors
-  for (let attempt = 0; attempt <= 1; attempt++) {
-    let resp: Awaited<ReturnType<typeof llmChat>>
-    try {
-      resp = await llmChat(llm.client, {
-        model: llm.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        temperature: 0.2,
-        max_tokens: llm.maxTokens,
-        response_format: { type: 'json_object' },
-      }, { module: 'monitor', cycle_id: cycleId, coin: ctx.coin, base_url: llm.baseURL }, llm.fallback)
-    } catch (apiErr) {
-      if (attempt === 0) {
-        logger.warn('Monitor LLM API error, retrying', { coin: ctx.coin, error: (apiErr as Error).message })
-        continue
-      }
-      throw apiErr
-    }
-
-    const finish = resp.choices[0]?.finish_reason
-    const content = resp.choices[0]?.message?.content ?? ''
-
-    logger.info('Monitor LLM response', { coin: ctx.coin, attempt, finish_reason: finish, length: content.length })
-
-    if (!content.trim()) {
-      if (attempt === 0) { logger.warn('Empty monitor response, retrying', { coin: ctx.coin, finish_reason: finish }); continue }
-      throw new LLMError(`Empty LLM response (finish_reason: ${finish ?? 'unknown'})`)
-    }
-
-    try {
-      raw = parseReview(content)
-    } catch (err) {
-      if (attempt === 0) { logger.warn('Monitor parse failed, retrying', { coin: ctx.coin, error: (err as Error).message }); continue }
-      throw err
-    }
-
-    break
+  // Resolve the voters into the single verdict the engine will act on.
+  let raw: RawReview
+  let finalLlm: MonitorLLM
+  if (ensemble.mode === 'abc' && ensemble.synthesizer) {
+    // Model C is the final arbiter: it sees the position + both voter verdicts and
+    // writes its own. Its output is authoritative.
+    const synthUser = buildSynthesizerUser(user, opinions.map(o => ({
+      label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence,
+      reasoning: o.review.reasoning, new_stop_loss_pct: o.review.new_stop_loss_pct,
+      new_take_profit_pct: o.review.new_take_profit_pct, reduce_to_pct: o.review.reduce_to_pct,
+    })))
+    raw = await askModel(ensemble.synthesizer, system, synthUser, ctx, cycleId)
+    finalLlm = ensemble.synthesizer
+  } else if (ensemble.mode === 'ab') {
+    // Confidence-weighted: the more certain verdict wins, intact.
+    const winner = pickHigherConfidence(opinions)
+    raw = winner.review
+    finalLlm = winner.llm
+    logger.info('Monitor A+B merged', { coin: ctx.coin, cycleId, winner: winner.llm.label, votes: opinions.map(o => `${o.llm.label}:${o.review.action}@${o.review.confidence.toFixed(2)}`) })
+  } else {
+    raw = opinions[0].review
+    finalLlm = opinions[0].llm
   }
 
-  if (!raw) throw new LLMError('Monitor returned no valid review after retries')
+  // Detect disagreement among the underlying models (voters, plus C's override in
+  // 'abc'). Surfaced via Telegram so contested positions are visible even though the
+  // engine still acts on the resolved verdict.
+  const ensembleActions = opinions.map(o => o.review.action)
+  if (ensemble.mode === 'abc') ensembleActions.push(raw.action)
+  const modelsDisagreed = ensemble.mode !== 'single' && new Set(ensembleActions).size > 1
 
   const confidence = Math.min(1, Math.max(0, raw.confidence))
   let reduceToPct = raw.action === 'REDUCE' && typeof raw.reduce_to_pct === 'number'
@@ -400,7 +493,7 @@ async function monitorCoin(
     coin: ctx.coin, action: raw.action, confidence, reasoning: raw.reasoning,
     reduce_to_pct: reduceToPct, old_stop_loss: ctx.stopLoss ?? null, old_take_profit: ctx.takeProfit ?? null,
     new_stop_loss: newStopLoss, new_take_profit: newTakeProfit, market_data: marketData,
-    model: llm.model, cycle_id: cycleId, created_at: nowSql(),
+    model: finalLlm.model, cycle_id: cycleId, created_at: nowSql(),
   })
 
   const review: PositionReview = {
@@ -415,13 +508,27 @@ async function monitorCoin(
     new_stop_loss: newStopLoss,
     new_take_profit: newTakeProfit,
     market_data: marketData,
-    model: llm.model,
+    model: finalLlm.model,
     cycle_id: cycleId,
     created_at: now,
   }
 
   logger.info('Position review saved', { coin: ctx.coin, action: raw.action, confidence })
   broadcast('monitor_coin_completed', { cycle_id: cycleId, review })
+
+  // Alert when the ensemble's models genuinely disagreed on the action. The engine
+  // still executes the resolved verdict above; this only flags the contested call.
+  if (modelsDisagreed && (ensemble.mode === 'ab' || ensemble.mode === 'abc')) {
+    const opinionPayload = opinions.map(o => ({ label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence }))
+    if (ensemble.mode === 'abc' && ensemble.synthesizer) {
+      opinionPayload.push({ label: 'C', model: ensemble.synthesizer.model, action: raw.action, confidence })
+    }
+    logger.info('Monitor models disagreed', { coin: ctx.coin, cycleId, mode: ensemble.mode, finalAction: raw.action, opinions: opinionPayload.map(o => `${o.label}:${o.action}`) })
+    bus.emit('monitor_disagreement', {
+      coin: ctx.coin, mode: ensemble.mode, finalAction: raw.action, finalConfidence: confidence,
+      opinions: opinionPayload, cycleId,
+    })
+  }
 
   // Fire close immediately — don't wait for other coins
   if (raw.action === 'CLOSE' && ctx.positionId != null) {
@@ -459,7 +566,7 @@ async function monitorCoin(
       newTakeProfit: proposalToEmit.newTp,
       reasoning: raw.reasoning,
       confidence,
-      model: llm.model,
+      model: finalLlm.model,
       cycleId,
     })
   }
@@ -520,15 +627,13 @@ export async function runMonitor(cycleId: string): Promise<void> {
     const allPrices = priceCache.getAll()
 
     const s = getSettings()
-    const active = await advanceMonitorModel()
-    const llm: MonitorLLM = {
-      client: new OpenAI({ baseURL: active.baseURL, apiKey: 'ollama' }),
-      model: active.model,
-      baseURL: active.baseURL,
-      maxTokens: active.maxTokens,
-      fallback: active.fallback,
-    }
-    logger.info('Monitor using model', { cycleId, slot: active.slot, mode: s.monitor_model, model: active.model, baseURL: active.baseURL })
+    const ensemble = await buildEnsemble()
+    logger.info('Monitor using model', {
+      cycleId,
+      mode: s.monitor_model,
+      voters: ensemble.voters.map(v => `${v.label}:${v.model}`),
+      synthesizer: ensemble.synthesizer ? `${ensemble.synthesizer.label}:${ensemble.synthesizer.model}` : null,
+    })
     const adjustEnabled = s.monitor_adjust_sltp
     const reduceEnabled = s.monitor_reduce_enabled
     const trustLlm = s.monitor_trust_llm_sltp
@@ -624,7 +729,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
       // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
       try {
         const effectiveUseHorizon = ctx.horizon === 'llm' ? false : useHorizon
-        const review = await monitorCoin(ctx, cycleId, llm, adjustEnabled, reduceEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
+        const review = await monitorCoin(ctx, cycleId, ensemble, adjustEnabled, reduceEnabled, trustLlm, effectiveUseHorizon, utcOffsetHours, now, horizonConfigs, historyTf, historyCount, minConfidence, reviewIntervalMin, breakevenPct, feeRate, adjustCooldownMin)
         if (review) reviews.push(review)
       } catch (err) {
         logger.error('Monitor coin failed', { coin: ctx.coin, cycleId, error: (err as Error).message })

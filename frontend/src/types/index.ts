@@ -360,9 +360,11 @@ export interface MonitorModelSlot {
 }
 
 export interface MonitorModelsResponse {
-  active: 'a' | 'b'
+  active: 'a' | 'b' | 'c'
+  mode: 'a' | 'b' | 'alternate' | 'ab' | 'abc'
   a: MonitorModelSlot
   b: MonitorModelSlot
+  c: MonitorModelSlot
 }
 
 /** A named LLM endpoint in the shared catalog. Modules reference one by `id`. */
@@ -392,6 +394,7 @@ export type LLMModuleKey =
   | 'discovererExtractor'
   | 'monitorA'
   | 'monitorB'
+  | 'monitorC'
   | 'summary'
   | 'entryPlanner'
   | 'agent'

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { positionReviews, positionAdjustments } from '../../db/index.js'
+import { positionReviews, positionAdjustments, getSettings } from '../../db/index.js'
 import { bus } from '../../core/events.js'
 import { resolveLLM } from '../../config/llm.js'
 import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning, getActiveMonitorModel } from '../../monitor/index.js'
@@ -16,15 +16,19 @@ router.get('/monitor', async (_req: Request, res: Response) => {
   }
 })
 
-// Exposes the two configured monitor LLM slots and which one is active, so the UI
-// can label the Settings toggle and badge the active model on the Monitor page.
+// Exposes the configured monitor LLM slots (A/B voters + the C synthesizer), the
+// selected mode, and which slot is the representative active one, so the Settings UI
+// can label each mode card and badge the model on the Monitor page.
 router.get('/monitor/models', (_req: Request, res: Response) => {
   const a = resolveLLM('monitorA')
   const b = resolveLLM('monitorB')
+  const c = resolveLLM('monitorC')
   res.json({
     active: getActiveMonitorModel().slot,
+    mode: getSettings().monitor_model,
     a: { model: a.model, baseURL: a.baseURL },
     b: { model: b.model, baseURL: b.baseURL },
+    c: { model: c.model, baseURL: c.baseURL },
   })
 })
 

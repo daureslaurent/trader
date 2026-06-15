@@ -147,6 +147,25 @@ export function startNotifier() {
     notify('telegram_notify_sl_tp_adjusted', lines.join('\n'))
   })
 
+  // ── Monitor ensemble disagreement ────────────────────────────────────────────
+  bus.on('monitor_disagreement', ({ coin, mode, finalAction, finalConfidence, opinions }) => {
+    const sym = coinLabel(coin)
+    const modeLabel = mode === 'abc' ? 'A + B + C' : 'A + B'
+    const verdicts = opinions.map(o => `  ${esc(o.label)}  <b>${esc(o.action)}</b>  <i>conf ${o.confidence.toFixed(2)}</i>  <code>${esc(o.model)}</code>`)
+
+    const lines = [
+      `🤔 <b>MONITOR DISAGREEMENT</b>`,
+      `<code>${SEP}</code>`,
+      `  <b>${sym}</b>  ·  <i>${modeLabel}</i>`,
+      ``,
+      ...verdicts,
+      ``,
+      `  Resolved → <b>${esc(finalAction)}</b>  <i>conf ${finalConfidence.toFixed(2)}</i>`,
+    ]
+
+    notify('telegram_notify_monitor_disagreement', lines.join('\n'))
+  })
+
   // ── Portfolio snapshot ───────────────────────────────────────────────────────
   bus.on('portfolio_updated', async () => {
     const s = getSettings()

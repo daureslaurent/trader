@@ -16,6 +16,7 @@ export type LLMModule =
   | 'discovererExtractor'
   | 'monitorA'
   | 'monitorB'
+  | 'monitorC'
   | 'summary'
   | 'entryPlanner'
   | 'agent'
@@ -77,6 +78,13 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     fbEndpointKey: 'llm_monitor_b_fb_endpoint',
     fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens',
     fallback: { baseURL: config.monitor.baseURLB, model: config.monitor.modelB, maxTokens: config.monitor.maxTokens },
+  },
+  monitorC: {
+    endpointKey: 'llm_monitor_c_endpoint',
+    maxTokensKey: 'llm_monitor_c_max_tokens',
+    fbEndpointKey: 'llm_monitor_c_fb_endpoint',
+    fbMaxTokensKey: 'llm_monitor_c_fb_max_tokens',
+    fallback: { baseURL: config.monitor.baseURLC, model: config.monitor.modelC, maxTokens: config.monitor.maxTokens },
   },
   summary: {
     endpointKey: 'llm_summary_endpoint',
