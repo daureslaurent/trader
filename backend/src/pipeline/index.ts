@@ -3,6 +3,8 @@
 // app/wiring layer connects bus events to these entry points.
 export { runPipeline, runSingleCoinPipeline, isPipelineRunning, PIPELINE_TIMEOUT_MS } from './runner.js'
 export { runSimulatedSignal } from './simulate.js'
+export { stageManualEntry } from './entryStaging.js'
+export type { ManualEntryResult } from './entryStaging.js'
 export { executeEntryFire } from './entryFire.js'
 export { logPipelineEvent } from './events.js'
 export { requestCancel } from './cancellation.js'

@@ -5,6 +5,7 @@ import { logger } from '../../core/logger.js'
 import { Signal, PortfolioEntry } from '../../types.js'
 import { getPendingApprovals } from '../../execution/index.js'
 import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent, replan as replanEntryIntent } from '../../entry/index.js'
+import { stageManualEntry } from '../../pipeline/index.js'
 import { executeTrade, executeCoinTrade, fetchBalance } from '../../trader/index.js'
 import {
   getOpenEntries, getUsdcEntry, updatePortfolioForTrade,
@@ -75,6 +76,34 @@ router.post('/entry-intents/replan', async (req: Request, res: Response) => {
     return res.status(status).json({ error: result.error })
   }
   res.json({ ok: true, intent: result.intent })
+})
+
+// Manually stage a coin onto the Entry Desk (a deferred BUY). Skips the
+// research/analyst pipeline — a synthetic BUY runs the usual gauntlet, then the
+// Entry Planner LLM picks the entry window, exactly like a pipeline BUY. Optional
+// `notional` (USDC) overrides auto position sizing. Awaited so validation errors
+// (already held, insufficient USDC, fee-edge, …) come straight back to the form.
+router.post('/entry-intents/manual', async (req: Request, res: Response) => {
+  const { coin, notional } = req.body
+  if (!coin || typeof coin !== 'string') return res.status(400).json({ error: 'coin required' })
+  const raw = coin.trim().toUpperCase()
+  const symbol = raw.includes('/') ? raw : `${raw}/USDC`
+
+  let notionalUsdc: number | undefined
+  if (notional != null && notional !== '') {
+    const n = Number(notional)
+    if (!Number.isFinite(n) || n <= 0) return res.status(400).json({ error: 'notional must be a positive number' })
+    notionalUsdc = n
+  }
+
+  try {
+    const result = await stageManualEntry({ symbol, notionalUsdc })
+    if (!result.ok) return res.status(400).json({ error: result.error })
+    logger.info('Manual entry staged by user', { coin: symbol, notionalUsdc })
+    res.json({ ok: true, coin: result.coin })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 router.post('/trade/approve/:id', async (req: Request, res: Response) => {

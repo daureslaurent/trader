@@ -5,6 +5,7 @@ import { Card, CardHeader } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { CandleChart, type ChartLevel, type ChartZone } from '../components/CandleChart'
 import { CancelEntryModal } from '../components/CancelEntryModal'
+import { ManualEntryModal } from '../components/ManualEntryModal'
 import { Button } from '../components/ui/Button'
 import { EntryIntent, EntryEvent } from '../types'
 import { fmtUSD, fmtPct, cn } from '../lib/utils'
@@ -56,6 +57,8 @@ export default function EntryDesk() {
   // The "Refresh LLM" button only makes sense when the Entry Planner is on —
   // otherwise bands come from the static settings and there's no LLM to re-run.
   const [plannerEnabled, setPlannerEnabled] = useState(false)
+  const [watchlist, setWatchlist] = useState<string[]>([])
+  const [addOpen, setAddOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const prices = usePrices()
@@ -67,8 +70,9 @@ export default function EntryDesk() {
     fetch('/api/entry-events').then(r => r.json()).then((d: EntryEvent[]) => {
       if (Array.isArray(d)) setEvents(d)
     }).catch(() => {})
-    fetch('/api/settings').then(r => r.json()).then((s: { entry_planner_enabled?: boolean }) => {
+    fetch('/api/settings').then(r => r.json()).then((s: { entry_planner_enabled?: boolean; watchlist?: string[] }) => {
       if (s && typeof s.entry_planner_enabled === 'boolean') setPlannerEnabled(s.entry_planner_enabled)
+      if (s && Array.isArray(s.watchlist)) setWatchlist(s.watchlist)
     }).catch(() => {})
   }, [])
 
@@ -158,7 +162,7 @@ export default function EntryDesk() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9 9 0 100-18 9 9 0 000 18zm0-4.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9zm0-3a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
             </svg>
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold text-foreground">Entry Desk</h2>
             <p className="text-sm text-muted mt-1 leading-relaxed max-w-3xl">
               When the analyst issues a BUY, the bot doesn't fill immediately — it watches the live price and waits for a
@@ -168,6 +172,18 @@ export default function EntryDesk() {
               and what the engine decided.
             </p>
           </div>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => setAddOpen(true)}
+            className="shrink-0"
+            title="Manually stage a coin onto the Entry Desk (uses the LLM entry planner)"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            Add coin
+          </Button>
         </div>
       </Card>
 
@@ -256,6 +272,12 @@ export default function EntryDesk() {
               <p className="text-sm text-muted mt-1 max-w-sm">
                 When the pipeline issues a BUY, it'll appear here with its live entry window. Recent outcomes are shown below.
               </p>
+              <Button variant="secondary" size="sm" className="mt-4" onClick={() => setAddOpen(true)}>
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+                Add a coin manually
+              </Button>
             </div>
           )}
         </Card>
@@ -333,6 +355,15 @@ export default function EntryDesk() {
         intent={cancelTarget}
         onClose={() => setCancelTarget(null)}
         onCancelled={(coin) => { if (selected === coin) setSelected(null) }}
+      />
+
+      {/* Manually stage a coin */}
+      <ManualEntryModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        plannerEnabled={plannerEnabled}
+        suggestions={watchlist}
+        onStaged={(coin) => setSelected(coin)}
       />
     </div>
   )

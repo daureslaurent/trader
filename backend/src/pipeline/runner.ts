@@ -3,15 +3,14 @@ import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
 import { broadcast } from '../api/ws.js'
 import { fetchMarketData, fetchBalance, getTopPairs } from '../trader/index.js'
-import * as priceCache from '../market/index.js'
 import * as entry from '../entry/index.js'
-import { planEntry, resolveEntryBand } from '../entryPlanner/index.js'
 import { getPortfolioState, getOpenEntries, detectExternalWithdrawal, checkOpenPositions } from '../portfolio/index.js'
 import { isTradeable } from '../core/tradeable.js'
 import { Signal, MarketContext } from '../types.js'
 import { handleTradeSignal } from '../execution/index.js'
 import { analyzeCoin } from './analyze.js'
 import { prepareBuyOrder } from './buyEvaluation.js'
+import { deferToEntryDesk } from './entryStaging.js'
 import { logPipelineEvent } from './events.js'
 import { PipelineCancelledError, clearCancel } from './cancellation.js'
 
@@ -55,35 +54,11 @@ async function handleBuySignal(args: {
 
   if (settings.entry_timing_enabled) {
     // Defer the fill to the entry engine, which waits for a good price before
-    // firing via the 'entry_fire' bus event. Base the entry band on the LIVE
-    // price at registration, not data.price: coins are analyzed sequentially
-    // through a slow (research + multi-LLM) pipeline, so data.price (captured at
-    // cycle start) can be minutes stale by the time this signal lands, falsely
-    // tripping "ran away" / "pullback" instantly. Position size + fee-edge gate
-    // stay on the analyzed (decision-time) price; only the band tracks live.
-    const entryBasis = priceCache.getPrice(symbol)?.price ?? data.price
-
-    // When the Entry Planner is on, an LLM picks the per-coin band from live market
-    // context + the analyst thesis; otherwise (or on any LLM failure / invalid
-    // output) resolveEntryBand falls back to the static entry_* settings.
-    const plan = settings.entry_planner_enabled
-      ? await planEntry({
-          coin: symbol, price: data.price, market: marketCtx, signal: buySignal,
-          candleTf: settings.entry_planner_candle_tf, candleCount: settings.entry_planner_candle_count,
-        })
-      : null
-    const band = resolveEntryBand(plan, settings)
-
-    entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * data.price, atr: marketCtx.atr14, band })
-    logPipelineEvent('entry_intent_created', symbol, cycleId, {
-      action: 'BUY', signal_price: entryBasis, analyzed_price: data.price, quantity: qty,
-      target_price: entryBasis * (1 - band.pullbackPct / 100),
-      invalidate_price: entryBasis * (1 - band.invalidatePct / 100),
-      chase_cap_price: entryBasis * (1 + band.chaseCapPct / 100),
-      ttl_minutes: band.ttlMinutes,
-      band_source: band.source,
-      plan_reason: band.reason,
-    })
+    // firing via the 'entry_fire' bus event. The shared helper bases the band on
+    // the LIVE price at registration (data.price can be minutes stale by the time
+    // this slow pipeline signal lands) while sizing stays on the analyzed price,
+    // and runs the Entry Planner LLM (or falls back to the static entry_* band).
+    await deferToEntryDesk({ buySignal, analyzedPrice: data.price, marketCtx, settings, cycleId })
     return true
   }
 
