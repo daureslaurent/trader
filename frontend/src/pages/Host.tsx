@@ -3,6 +3,7 @@ import { Card, CardHeader } from '../components/ui/Card'
 import { useApi } from '../hooks/useApi'
 import { HostStats } from '../types'
 import { cn } from '../lib/utils'
+import { SoftwareCard } from '../components/update/SoftwareCard'
 
 const POLL_MS = 2000
 
@@ -143,17 +144,23 @@ export default function Host() {
 
   if (loading && !data) {
     return (
-      <div className="flex items-center justify-center h-64 text-muted text-sm">
-        <span className="animate-pulse">Reading host telemetry…</span>
+      <div className="space-y-6">
+        <SoftwareCard />
+        <div className="flex items-center justify-center h-48 text-muted text-sm">
+          <span className="animate-pulse">Reading host telemetry…</span>
+        </div>
       </div>
     )
   }
 
   if (error && !data) {
     return (
-      <Card className="border-sell/30">
-        <p className="text-sm text-sell">Failed to load host stats: {error}</p>
-      </Card>
+      <div className="space-y-6">
+        <SoftwareCard />
+        <Card className="border-sell/30">
+          <p className="text-sm text-sell">Failed to load host stats: {error}</p>
+        </Card>
+      </div>
     )
   }
 
@@ -161,6 +168,8 @@ export default function Host() {
 
   return (
     <div className="space-y-6">
+      <SoftwareCard />
+
       {/* Header */}
       <div className="flex items-end justify-between">
         <div>

@@ -30,6 +30,37 @@ export interface HostStats {
   }
 }
 
+/** One commit that origin/main is ahead of the deployed checkout. */
+export interface UpdateCommit {
+  sha: string
+  shortSha: string
+  date: string
+  author: string
+  subject: string
+}
+
+/** The host-side git comparison result (from .update/status.json). */
+export interface UpdateStatus {
+  checkedAt: string
+  currentSha: string
+  currentShortSha: string
+  remoteSha: string
+  remoteShortSha: string
+  branch: string
+  behindBy: number
+  commits: UpdateCommit[]
+  error?: string
+}
+
+/** Response of GET/POST /api/host/update[/check] — drives the pin + update modal. */
+export interface UpdateInfo {
+  enabled: boolean
+  ready: boolean
+  reason?: string
+  status: UpdateStatus | null
+  updateAvailable: boolean
+}
+
 /** One message in an Agent conversation (GET /api/agent/conversations/:id). */
 export interface AgentMessage {
   id: number

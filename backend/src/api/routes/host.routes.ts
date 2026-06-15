@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { getHostStats, requestUpdate, getUpdateReadiness } from '../../host/index.js'
+import { getHostStats, requestUpdate, getUpdateReadiness, readUpdateStatus, runUpdateCheck } from '../../host/index.js'
 import { getSettings } from '../../db/index.js'
 import { logger } from '../../core/logger.js'
 
@@ -15,14 +15,36 @@ router.get('/host/stats', async (_req: Request, res: Response) => {
   }
 })
 
-// Whether the in-app update action is usable: the feature toggle plus whether the
-// host bind mount is actually wired up so a trigger would reach the watcher.
+// Update status: whether the action is usable (feature toggle + host bind mount
+// wired up) plus the last known origin/main comparison. `updateAvailable` drives
+// the sidebar pin and is fetched on load (so it survives a page reload).
 router.get('/host/update', async (_req: Request, res: Response) => {
   try {
     const enabled = getSettings().update_enabled
     const readiness = await getUpdateReadiness()
-    res.json({ enabled, ...readiness })
+    const status = await readUpdateStatus()
+    const updateAvailable = enabled && !!status && status.behindBy > 0
+    res.json({ enabled, ...readiness, status, updateAvailable })
   } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Run a check now (read-only: host git fetch + status.json). Gated by the bridge
+// being ready; independent of whether an update has been authorized to execute.
+router.post('/host/update/check', async (_req: Request, res: Response) => {
+  const readiness = await getUpdateReadiness()
+  if (!readiness.ready) {
+    res.status(503).json({ error: `Update host bridge not ready: ${readiness.reason}` })
+    return
+  }
+  try {
+    const status = await runUpdateCheck()
+    const enabled = getSettings().update_enabled
+    const updateAvailable = enabled && !!status && status.behindBy > 0
+    res.json({ enabled, ...readiness, status, updateAvailable })
+  } catch (err) {
+    logger.error('manual update check failed', { err: err instanceof Error ? err.message : String(err) })
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })

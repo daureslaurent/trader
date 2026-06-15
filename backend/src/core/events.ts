@@ -34,6 +34,7 @@ interface EventMap {
   position_closed: [{ positionId: number; coin: string; status: string; fillPrice: number; fillQty: number; pnl: number | null; reason: string; entryPrice: number | null; openedAt: string | null }]
   sl_tp_adjusted: [{ coin: string; positionId: number; oldStopLoss: number | null; oldTakeProfit: number | null; newStopLoss: number | null; newTakeProfit: number | null; currentPrice: number | null; entryPrice: number | null }]
   monitor_disagreement: [{ coin: string; mode: 'ab' | 'abc'; finalAction: string; finalConfidence: number; opinions: { label: string; model: string; action: string; confidence: number }[]; cycleId: string }]
+  update_available: [{ updateCount: number; currentShortSha: string; remoteShortSha: string; latestSubject: string }]
 }
 
 class BotEventBus extends EventEmitter {

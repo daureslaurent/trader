@@ -256,10 +256,15 @@ export interface BotSettings {
   telegram_notify_trade_failed: boolean
   /** System/runtime errors surfaced to Telegram. */
   telegram_notify_errors: boolean
-  /** Master switch for the in-app host self-update action ("Update app"). Off by
-   *  default — when on, the Settings page exposes a button that signals the host
-   *  watcher to pull latest main and rebuild/restart the stack. */
+  /** A new app update (origin/main ahead) was detected by the periodic checker. */
+  telegram_notify_update: boolean
+  /** Master switch for the in-app host self-update feature. Off by default — when
+   *  on, the System page exposes the version status, periodic update checks (which
+   *  drive the sidebar pin), and the button that signals the host watcher to pull
+   *  latest main and rebuild/restart the stack. */
   update_enabled: boolean
+  /** How often (hours) to check whether origin/main is ahead. Default 1. */
+  update_check_interval_hours: number
 }
 
 /** One run of the portfolio-summary engine: an LLM narrative + structured read of

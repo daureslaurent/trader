@@ -8,6 +8,8 @@ interface SidebarProps {
   onNavigate: (page: Page) => void
   wsConnected: boolean
   pendingCount: number
+  /** Show the "update available" pin on the System entry + its group header. */
+  updateAvailable: boolean
 }
 
 interface NavItem {
@@ -94,7 +96,7 @@ const ITEMS: Record<Page, NavItem> = {
   },
   host: {
     key: 'host',
-    label: 'Host',
+    label: 'System',
     path: 'M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z',
   },
   settings: {
@@ -126,7 +128,7 @@ const GROUPS: NavGroup[] = [
   { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'summary', 'entry', 'trade', 'trading-state'] },
   { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['pipeline', 'charts', 'discover'] },
   { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['llm-debug', 'llm-stats', 'cache'] },
-  { id: 'system', label: 'System', icon: SECTION_ICONS.system, keys: ['host', 'logs', 'settings'] },
+  { id: 'system', label: 'Platform', icon: SECTION_ICONS.system, keys: ['host', 'logs', 'settings'] },
 ]
 
 const STORAGE_KEY = 'cb-sidebar-collapsed'
@@ -146,11 +148,14 @@ function NavLink({
   isActive,
   onNavigate,
   badge,
+  dot,
 }: {
   item: NavItem
   isActive: boolean
   onNavigate: (page: Page) => void
   badge?: number
+  /** A small pulsing pin (e.g. "update available"), distinct from the count badge. */
+  dot?: boolean
 }) {
   return (
     <button
@@ -165,20 +170,31 @@ function NavLink({
       {isActive && (
         <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full bg-accent" />
       )}
-      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={isActive ? 2 : 1.5} viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" d={item.path} />
-      </svg>
+      <span className="relative shrink-0">
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={isActive ? 2 : 1.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d={item.path} />
+        </svg>
+        {dot && (
+          <span className="absolute -top-1 -right-1 flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-accent opacity-75 animate-ping" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+          </span>
+        )}
+      </span>
       <span className="truncate">{item.label}</span>
       {badge != null && badge > 0 && (
         <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-warn/15 text-warn text-xs font-semibold flex items-center justify-center">
           {badge}
         </span>
       )}
+      {dot && (badge == null || badge <= 0) && (
+        <span className="ml-auto text-[10px] font-semibold uppercase tracking-wide text-accent">Update</span>
+      )}
     </button>
   )
 }
 
-export function Sidebar({ active, onNavigate, wsConnected, pendingCount }: SidebarProps) {
+export function Sidebar({ active, onNavigate, wsConnected, pendingCount, updateAvailable }: SidebarProps) {
   const { theme } = useTheme()
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed)
 
@@ -256,6 +272,13 @@ export function Sidebar({ active, onNavigate, wsConnected, pendingCount }: Sideb
                 {!isOpen && containsActive && (
                   <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
                 )}
+                {/* update-available pin when this group (System) is collapsed */}
+                {!isOpen && updateAvailable && group.keys.includes('host') && (
+                  <span className="relative flex h-2 w-2 shrink-0">
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-accent opacity-75 animate-ping" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+                  </span>
+                )}
                 <svg
                   className={cn(
                     'ml-auto w-3.5 h-3.5 shrink-0 transition-transform duration-200',
@@ -285,6 +308,7 @@ export function Sidebar({ active, onNavigate, wsConnected, pendingCount }: Sideb
                         item={ITEMS[key]}
                         isActive={active === key}
                         onNavigate={onNavigate}
+                        dot={key === 'host' ? updateAvailable : undefined}
                       />
                     ))}
                   </div>

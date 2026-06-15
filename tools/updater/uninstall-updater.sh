@@ -16,16 +16,21 @@ fi
 
 SERVICE=/etc/systemd/system/cryptobot-update.service
 PATH_UNIT=/etc/systemd/system/cryptobot-update.path
+CHECK_SERVICE=/etc/systemd/system/cryptobot-update-check.service
+CHECK_PATH_UNIT=/etc/systemd/system/cryptobot-update-check.path
 
 echo "==> Disabling and stopping units..."
 systemctl disable --now cryptobot-update.path 2>/dev/null || true
+systemctl disable --now cryptobot-update-check.path 2>/dev/null || true
 systemctl stop cryptobot-update.service 2>/dev/null || true
+systemctl stop cryptobot-update-check.service 2>/dev/null || true
 
-rm -f "$PATH_UNIT" "$SERVICE"
+rm -f "$PATH_UNIT" "$SERVICE" "$CHECK_PATH_UNIT" "$CHECK_SERVICE"
 
 systemctl daemon-reload
 systemctl reset-failed cryptobot-update.service 2>/dev/null || true
+systemctl reset-failed cryptobot-update-check.service 2>/dev/null || true
 
-echo "==> Removed $PATH_UNIT"
-echo "==> Removed $SERVICE"
+echo "==> Removed $PATH_UNIT / $SERVICE"
+echo "==> Removed $CHECK_PATH_UNIT / $CHECK_SERVICE"
 echo "Done. The watcher is uninstalled; the in-app button will no longer have any effect."

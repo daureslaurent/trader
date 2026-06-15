@@ -25,15 +25,42 @@ directory. A host-side systemd `.path` unit watches that file and runs
 The frontend shows an "Updating…" overlay that polls the API and reloads the page
 once the rebuilt stack is back up.
 
+## Update *checking* (the sidebar pin)
+
+A second, read-only path tells the app **whether** an update exists, so the
+**System** page can show a pin and list the commits ahead:
+
+```
+backend (hourly / "Check now") ──writes──▶ <repo>/.update/check   (trigger)
+                                                   │ (bind mount)
+                                                   ▼
+                                   systemd cryptobot-update-check.path
+                                                   │ file appeared
+                                                   ▼
+                                   cryptobot-update-check.service
+                                       rm check → check_run.sh
+                                                   │
+                              git fetch origin main + compare HEAD..origin/main
+                                                   ▼
+                                  writes <repo>/.update/status.json ──▶ backend reads it
+```
+
+`check_run.sh` never rebuilds anything; it only fetches and writes `status.json`
+(current/remote sha, how many commits ahead, and each commit's author/subject,
+base64-encoded so arbitrary commit text can't break the JSON). The backend reads
+it back to drive the pin, the commits-ahead modal, a Telegram notification, and a
+live toast. The check interval is set in **Settings → System** (default 1 hour).
+
 ## Install (on the host, once)
 
 ```bash
 sudo tools/updater/install-updater.sh
 ```
 
-This resolves the repo path automatically, installs the units to run as the
-repo's owner (must be in the `docker` group), creates `./.update`, and enables
-the watcher. Then turn on **Settings → System → Enable app updates**.
+This resolves the repo path automatically, installs **both** unit pairs (update +
+update-check) to run as the repo's owner (must be in the `docker` group), creates
+`./.update`, and enables the watchers. Then turn on **Settings → System → Enable
+app updates**. (Existing installs must re-run this to get the update-check units.)
 
 ## Uninstall
 
@@ -49,5 +76,7 @@ sudo tools/updater/uninstall-updater.sh
   missing the backend reports the bridge as "not ready" and the button is
   disabled with a hint.
 - Update output is appended to `./.update/update.log` and also visible via
-  `journalctl -u cryptobot-update.service`.
+  `journalctl -u cryptobot-update.service` (or `…-update-check.service`).
 - Trigger a manual update for testing: `touch ./.update/trigger`.
+- Trigger a manual check for testing: `touch ./.update/check` → inspect
+  `./.update/status.json`.

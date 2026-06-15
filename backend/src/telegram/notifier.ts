@@ -241,6 +241,20 @@ export function startNotifier() {
     notify('telegram_notify_summary', lines.join('\n'))
   })
 
+  // ── App update available ─────────────────────────────────────────────────────
+  bus.on('update_available', ({ updateCount, currentShortSha, remoteShortSha, latestSubject }) => {
+    const plural = updateCount === 1 ? 'commit' : 'commits'
+    const lines = [
+      `⬆️ <b>UPDATE AVAILABLE</b>`,
+      `<code>${SEP}</code>`,
+      `  <b>${updateCount}</b> new ${plural} on <code>main</code>`,
+      `  <code>${esc(currentShortSha)}</code> → <code>${esc(remoteShortSha)}</code>`,
+      latestSubject ? `\n  Latest: ${esc(latestSubject)}` : '',
+      `\n  Open <b>System</b> in the app to review and update.`,
+    ].filter(Boolean)
+    notify('telegram_notify_update', lines.join('\n'))
+  })
+
   // ── New coin discovered ───────────────────────────────────────────────────────
   bus.on('coin_discovered', (result: { coin: string; score: number; status: string }) => {
     const coin = coinLabel(result.coin)

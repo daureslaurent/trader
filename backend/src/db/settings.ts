@@ -152,7 +152,9 @@ export function getSettings(): BotSettings {
     telegram_notify_discovery: (map.telegram_notify_discovery ?? 'true') === 'true',
     telegram_notify_trade_failed: (map.telegram_notify_trade_failed ?? 'true') === 'true',
     telegram_notify_errors: (map.telegram_notify_errors ?? 'true') === 'true',
+    telegram_notify_update: (map.telegram_notify_update ?? 'true') === 'true',
     update_enabled: map.update_enabled === 'true',
+    update_check_interval_hours: parseFloat(map.update_check_interval_hours || '1'),
   }
 }
 

@@ -1,10 +1,10 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { Sidebar } from './components/layout/Sidebar'
 import { ThemeSelector } from './components/layout/ThemeSelector'
 import { LLMActivityBadge } from './components/layout/LLMActivityBadge'
 import { EndpointStatusBadge } from './components/layout/EndpointStatusBadge'
-import { Page, Toast, ApprovalRequest } from './types'
+import { Page, Toast, ApprovalRequest, UpdateInfo } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
 import Dashboard from './pages/Dashboard'
@@ -42,7 +42,7 @@ const PAGE_TITLES: Record<Page, string> = {
   'llm-debug': 'LLM Debug',
   'llm-stats': 'LLM Stats',
   agent: 'Agent',
-  host: 'Host',
+  host: 'System',
 }
 
 let toastId = 0
@@ -92,6 +92,15 @@ function AppInner() {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [pendingCount, setPendingCount] = useState(0)
   const pendingRef = useRef(0)
+  const [updateAvailable, setUpdateAvailable] = useState(false)
+
+  // Seed the update pin from the server on load so it survives a page reload.
+  useEffect(() => {
+    fetch('/api/host/update')
+      .then(r => r.json())
+      .then((d: UpdateInfo) => setUpdateAvailable(!!d.updateAvailable))
+      .catch(() => { /* bridge not ready / feature off — no pin */ })
+  }, [])
 
   function addToast(type: Toast['type'], message: string) {
     const id = ++toastId
@@ -142,6 +151,11 @@ function AppInner() {
     } else if (event === 'adjustment_resolved') {
       pendingRef.current = Math.max(0, pendingRef.current - 1)
       setPendingCount(pendingRef.current)
+    } else if (event === 'update_available') {
+      const d = data as { updateCount?: number }
+      setUpdateAvailable(true)
+      const n = d.updateCount ?? 0
+      addToast('info', n > 0 ? `Update available — ${n} new commit${n === 1 ? '' : 's'}` : 'Update available')
     } else if (event === 'coin_discovered') {
       const d = data as { coin: string; score: number; auto_added: boolean }
       const coin = d.coin.replace('/USDC', '')
@@ -167,6 +181,7 @@ function AppInner() {
         onNavigate={setPage}
         wsConnected={wsConnected}
         pendingCount={pendingCount}
+        updateAvailable={updateAvailable}
       />
 
       {/* Main content area */}

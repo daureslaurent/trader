@@ -29,14 +29,23 @@ if [[ -z "$RUN_USER" || "$RUN_USER" == "root" ]]; then
 fi
 
 UPDATE_SCRIPT="$REPO_DIR/update_run.sh"
+CHECK_SCRIPT="$REPO_DIR/check_run.sh"
 TRIGGER_DIR="$REPO_DIR/.update"
 TRIGGER_FILE="$TRIGGER_DIR/trigger"
+CHECK_TRIGGER_FILE="$TRIGGER_DIR/check"
 LOG_FILE="$TRIGGER_DIR/update.log"
 
 if [[ ! -x "$UPDATE_SCRIPT" ]]; then
   echo "update_run.sh not found or not executable at $UPDATE_SCRIPT" >&2
   exit 1
 fi
+
+if [[ ! -f "$CHECK_SCRIPT" ]]; then
+  echo "check_run.sh not found at $CHECK_SCRIPT" >&2
+  exit 1
+fi
+# The check script ships in the repo; make sure it's executable on the host.
+chmod +x "$CHECK_SCRIPT" 2>/dev/null || true
 
 echo "==> Repo:        $REPO_DIR"
 echo "==> Run user:    $RUN_USER"
@@ -95,11 +104,51 @@ EOF
 echo "==> Wrote $SERVICE"
 echo "==> Wrote $PATH_UNIT"
 
+CHECK_SERVICE=/etc/systemd/system/cryptobot-update-check.service
+CHECK_PATH_UNIT=/etc/systemd/system/cryptobot-update-check.path
+
+# --- the oneshot service that runs a read-only update check -------------------
+# check_run.sh only does `git fetch` + writes .update/status.json — it never
+# rebuilds anything. ExecStartPre removes the trigger so the .path unit re-arms.
+cat > "$CHECK_SERVICE" <<EOF
+[Unit]
+Description=cryptoBot update check (git fetch + write status.json)
+
+[Service]
+Type=oneshot
+User=$RUN_USER
+WorkingDirectory=$REPO_DIR
+ExecStartPre=/bin/rm -f $CHECK_TRIGGER_FILE
+ExecStart=/usr/bin/env bash $CHECK_SCRIPT
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+TimeoutStartSec=120
+EOF
+
+# --- the path unit that watches for the check trigger -------------------------
+cat > "$CHECK_PATH_UNIT" <<EOF
+[Unit]
+Description=Watch for cryptoBot update-check trigger
+
+[Path]
+PathExists=$CHECK_TRIGGER_FILE
+Unit=cryptobot-update-check.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "==> Wrote $CHECK_SERVICE"
+echo "==> Wrote $CHECK_PATH_UNIT"
+
 systemctl daemon-reload
 systemctl enable --now cryptobot-update.path
+systemctl enable --now cryptobot-update-check.path
 
 echo "==> Installed and watching. Status:"
 systemctl --no-pager status cryptobot-update.path || true
+systemctl --no-pager status cryptobot-update-check.path || true
 echo
-echo "Done. Enable the toggle in Settings → System, then use 'Update app'."
+echo "Done. Enable the toggle in Settings → System; the app then checks for"
+echo "updates periodically and 'Update app' (on the System page) applies them."
 echo "Update logs: $LOG_FILE   (or: journalctl -u cryptobot-update.service)"

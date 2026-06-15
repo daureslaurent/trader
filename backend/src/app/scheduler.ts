@@ -8,6 +8,7 @@ import { runMonitor } from '../monitor/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { runPipeline } from '../pipeline/index.js'
 import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
+import { scheduleUpdateCheck, stopUpdateCheck } from '../host/index.js'
 
 let cronTask: ScheduledTask | null = null
 let discoveryCronTask: ScheduledTask | null = null
@@ -109,6 +110,9 @@ export function startSchedulers(settings: BotSettings): void {
   // Background LLM endpoint health monitor — drives the header status badge and
   // lets module routing divert away from a dead primary endpoint.
   startEndpointHealthMonitor()
+
+  // Periodic "is origin/main ahead?" check — drives the sidebar update pin.
+  scheduleUpdateCheck(settings.update_check_interval_hours)
 }
 
 /** Reschedule the affected crons when the frontend saves new settings. */
@@ -119,6 +123,8 @@ export function rescheduleFromSettings(updated: BotSettings): void {
   scheduleSummary(updated.summary_cron, updated.summary_auto_run)
   // The catalog may have changed (endpoints added/removed/re-pointed) — re-probe now.
   runEndpointHealthCheck()
+  // Update-check interval or enable flag may have changed.
+  scheduleUpdateCheck(updated.update_check_interval_hours)
 }
 
 /** Stop all recurring loops (graceful shutdown). */
@@ -129,4 +135,5 @@ export function stopSchedulers(): void {
   summaryCronTask?.stop()
   if (positionCheckInterval) clearInterval(positionCheckInterval)
   stopEndpointHealthMonitor()
+  stopUpdateCheck()
 }
