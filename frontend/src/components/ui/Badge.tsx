@@ -37,8 +37,9 @@ export function Badge({ variant = 'neutral', children, className, dot, title }: 
 }
 
 export function actionBadge(action: string) {
-  const v: Variant = action === 'BUY' ? 'buy' : action === 'SELL' ? 'sell' : 'hold'
-  return <Badge variant={v}>{action}</Badge>
+  const s = typeof action === 'string' ? action : String(action ?? '')
+  const v: Variant = s === 'BUY' ? 'buy' : s === 'SELL' ? 'sell' : 'hold'
+  return <Badge variant={v}>{s}</Badge>
 }
 
 export function statusBadge(status: string) {

@@ -65,8 +65,9 @@ function isDiscoveryEvent(pe: PipelineEvent): boolean {
 }
 
 function SentimentPill({ s }: { s: string }) {
-  const v = s === 'positive' ? 'buy' : s === 'negative' ? 'sell' : 'neutral'
-  return <Badge variant={v as any}>{s}</Badge>
+  const str = typeof s === 'string' ? s : String(s ?? '')
+  const v = str === 'positive' ? 'buy' : str === 'negative' ? 'sell' : 'neutral'
+  return <Badge variant={v as any}>{str}</Badge>
 }
 
 function StageMessage({ event }: { event: PipelineEvent }) {
@@ -123,7 +124,7 @@ function StageMessage({ event }: { event: PipelineEvent }) {
           {headlines.slice(0, 10).map((h, i) => (
             <li key={i} className="text-sm text-foreground flex items-start gap-2">
               <span className="text-muted mt-0.5 shrink-0">›</span>
-              <span>{h}</span>
+              <span>{String(h ?? '')}</span>
             </li>
           ))}
         </ul>
@@ -157,12 +158,12 @@ function StageMessage({ event }: { event: PipelineEvent }) {
                 <Badge variant="neutral" className="text-[10px] px-1.5 py-0.5 font-mono">CACHED</Badge>
               )}
             </div>
-            <p className="font-medium text-foreground">{article.title}</p>
-            {article.summary && <p className="text-xs text-muted leading-relaxed">{article.summary}</p>}
+            <p className="font-medium text-foreground">{String(article.title ?? '')}</p>
+            {article.summary && <p className="text-xs text-muted leading-relaxed">{String(article.summary)}</p>}
             {(article.key_points as string[] | undefined)?.slice(0, 3).map((kp: string, j: number) => (
               <p key={j} className="text-xs text-muted flex items-start gap-1.5">
                 <span className="text-muted/60 shrink-0 mt-0.5">→</span>
-                {kp}
+                {String(kp ?? '')}
               </p>
             ))}
           </div>
@@ -178,10 +179,10 @@ function StageMessage({ event }: { event: PipelineEvent }) {
                   {article.from_cache && (
                     <Badge variant="neutral" className="text-[10px] px-1.5 py-0.5 font-mono shrink-0">CACHED</Badge>
                   )}
-                  <span className="truncate opacity-60">{article.title || article.url}</span>
+                  <span className="truncate opacity-60">{String(article.title || article.url || '')}</span>
                 </div>
                 {article.summary && (
-                  <p className="text-[11px] text-muted/50 pl-1 leading-snug">{article.summary}</p>
+                  <p className="text-[11px] text-muted/50 pl-1 leading-snug">{String(article.summary)}</p>
                 )}
               </div>
             ))}
@@ -205,7 +206,7 @@ function StageMessage({ event }: { event: PipelineEvent }) {
             <SentimentPill s={a.sentiment} />
             {a.preliminary_signal && actionBadge(a.preliminary_signal)}
             {a.from_cache && <Badge variant="neutral" className="text-[10px] px-1.5 py-0.5 font-mono">CACHED</Badge>}
-            <span className="text-foreground truncate">{a.title}</span>
+            <span className="text-foreground truncate">{String(a.title ?? '')}</span>
           </div>
         ))}
       </div>
@@ -233,9 +234,9 @@ function StageMessage({ event }: { event: PipelineEvent }) {
             <span className="text-xs text-muted">{confPct}%</span>
           </div>
         </div>
-        {typeof data.reason === 'string' && data.reason && (
+        {data.reason && (
           <p className="text-sm text-muted leading-relaxed border-l-2 border-border pl-3">
-            {data.reason}
+            {String(data.reason)}
           </p>
         )}
       </div>
