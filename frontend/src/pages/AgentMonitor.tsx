@@ -314,7 +314,7 @@ export default function AgentMonitor() {
                                 {r.discarded && <span className="ml-1 text-[10px] text-warn">discarded</span>}
                               </td>
                               <td className="px-3 py-2 text-right font-mono text-xs text-muted">{Math.round(r.confidence * 100)}%</td>
-                              <td className="px-3 py-2 text-right font-mono text-xs text-muted" title={`${r.peak_context_tokens.toLocaleString()} tokens peak · ${r.prompt_tokens.toLocaleString()} prompt + ${r.completion_tokens.toLocaleString()} completion total`}>{fmtTok(r.peak_context_tokens)}</td>
+                              <td className="px-3 py-2 text-right font-mono text-xs text-muted" title={`${(r.peak_context_tokens ?? 0).toLocaleString()} tokens peak · ${(r.prompt_tokens ?? 0).toLocaleString()} prompt + ${(r.completion_tokens ?? 0).toLocaleString()} completion total`}>{fmtTok(r.peak_context_tokens)}</td>
                               <td className="px-3 py-2 text-xs text-foreground/70 max-w-xs truncate" title={r.reasoning}>{r.reasoning}</td>
                               <td className="px-5 py-2 text-right text-[11px] text-muted/60 whitespace-nowrap">{agoMs(r.started_at_ms)}</td>
                             </tr>
@@ -355,7 +355,7 @@ export default function AgentMonitor() {
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
                     <span className="text-muted/70">Context peak <span className="font-mono text-foreground/80" title="Largest single-request context (prompt + completion) — compare against the model's context window">{detail.peak ? detail.peak.toLocaleString() : '—'} tok</span></span>
                     {detail.verdict && (
-                      <span className="text-muted/70">Total <span className="font-mono text-foreground/80">{(detail.verdict.prompt_tokens + detail.verdict.completion_tokens).toLocaleString()} tok</span> <span className="text-muted/50">({detail.verdict.prompt_tokens.toLocaleString()} prompt + {detail.verdict.completion_tokens.toLocaleString()} completion)</span></span>
+                      <span className="text-muted/70">Total <span className="font-mono text-foreground/80">{((detail.verdict.prompt_tokens ?? 0) + (detail.verdict.completion_tokens ?? 0)).toLocaleString()} tok</span> <span className="text-muted/50">({(detail.verdict.prompt_tokens ?? 0).toLocaleString()} prompt + {(detail.verdict.completion_tokens ?? 0).toLocaleString()} completion)</span></span>
                     )}
                   </div>
 
