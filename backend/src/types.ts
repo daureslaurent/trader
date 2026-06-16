@@ -96,16 +96,19 @@ export interface BotSettings {
   discover_auto_add: boolean
   discover_min_volume_usd: number
   monitor_auto_run: boolean
-  /** Which monitor engine drives open-position review on the monitor cron:
-   *  'classic'   = the single-shot ensemble monitor (`monitor_model` slots A/B/…),
-   *  'agentic_d' = the Type D agentic per-position monitor (tool-calling loop).
-   *  The two are mutually exclusive — exactly one runs per tick. */
-  monitor_strategy: 'classic' | 'agentic_d'
-  /** Which monitor LLM configuration to use:
+  /** Which monitor configuration drives open-position review on the monitor cron:
    *  'a' = slot A only, 'b' = slot B only, 'alternate' = flip A/B each cycle,
    *  'ab' = run A and B together and keep the higher-confidence verdict (confidence-weighted),
-   *  'abc' = run A and B, then model C synthesizes the final verdict from both. */
-  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc'
+   *  'abc' = run A and B, then model C synthesizes the final verdict from both,
+   *  'd' = the Type D agentic per-position monitor (tool-calling loop, uses the Agent model).
+   *  All modes are mutually exclusive — exactly one runs per tick (same cron). */
+  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc' | 'd'
+  /** Type D only: review one position at a time (sequential) instead of all concurrently.
+   *  Keeps a single-lane local LLM from being flooded and makes the live feed readable. */
+  monitor_d_sequential: boolean
+  /** Type D only: how many of the most recent run records (per coin per cycle) to keep in
+   *  monitor_d_runs; older ones are pruned after each cycle. */
+  monitor_d_retain_runs: number
   monitor_cron: string
   monitor_adjust_sltp: boolean
   /** When true, the monitor may propose/execute partial exits (REDUCE). When false, REDUCE is
@@ -472,6 +475,37 @@ export interface PositionReview {
   market_data: string
   model: string | null
   cycle_id: string
+  created_at: string
+}
+
+// One persisted Type D (agentic monitor) review: the resolved verdict for a single
+// coin in a single cycle, plus the full transcript of the agent's tool-calling loop
+// (the same frames streamed live to the Agent Monitor page). Lets the page rehydrate
+// after a reload and power the per-run decision table + per-coin detail view.
+// A single rendered transcript line. The server computes the presentation (icon/text/
+// tone) so the live feed and the persisted/reloaded detail view render identically.
+export interface MonitorDRunFrame {
+  type: string
+  icon: string
+  text: string
+  tone: 'muted' | 'accent' | 'buy' | 'sell' | 'warn'
+  at: number
+}
+
+export interface MonitorDRun {
+  id: number
+  cycle_id: string
+  coin: string
+  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+  confidence: number
+  reasoning: string
+  /** True when the position closed mid-analysis and the verdict was not applied. */
+  discarded: boolean
+  /** Model id credited (e.g. "type-d:<model>"). */
+  model: string
+  /** The agent's loop transcript (thinking / tool_call / tool_result / decision …). */
+  frames: MonitorDRunFrame[]
+  started_at_ms: number
   created_at: string
 }
 

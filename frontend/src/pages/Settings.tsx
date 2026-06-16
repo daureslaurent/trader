@@ -21,7 +21,9 @@ interface SettingsData {
   max_open_positions: number
   cache_ttl_hours: number
   monitor_auto_run: boolean
-  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc'
+  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc' | 'd'
+  monitor_d_sequential: boolean
+  monitor_d_retain_runs: number
   monitor_cron: string
   monitor_adjust_sltp: boolean
   monitor_reduce_enabled: boolean
@@ -919,7 +921,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1263,10 +1265,11 @@ export default function Settings() {
                   </button>
                 )
               }
-              const modePills: { key: 'alternate' | 'ab' | 'abc'; badge: string; title: string; sub: string }[] = [
+              const modePills: { key: 'alternate' | 'ab' | 'abc' | 'd'; badge: string; title: string; sub: string }[] = [
                 { key: 'alternate', badge: 'Alternate', title: 'A ⇄ B each cycle', sub: 'one model per run, flips on the next' },
                 { key: 'ab', badge: 'A + B', title: 'Both run · higher-confidence wins', sub: 'A and B review every position; the more confident verdict is kept' },
                 { key: 'abc', badge: 'A + B + C', title: 'C synthesizes A + B', sub: 'A and B vote, then C weighs both and writes the final call' },
+                { key: 'd', badge: 'Agent D', title: 'Agentic per-position monitor', sub: 'a tool-calling agent investigates each position (uses the Agent model) — watch it live on the Agent Monitor page' },
               ]
               return (
                 <>
@@ -1313,6 +1316,17 @@ export default function Settings() {
               )
             })()}
           </Row>
+
+          {settings.monitor_model === 'd' && (
+            <>
+              <Row label="One position at a time" hint="Type D only: review positions sequentially (one full agent loop completes before the next starts). Disable to review all open positions concurrently.">
+                <Toggle label="Sequential review" checked={settings.monitor_d_sequential} onChange={() => toggle('monitor_d_sequential')} />
+              </Row>
+              <Row label="Run history kept" hint="Type D only: how many recent per-position run records (verdict + transcript) to keep for the Agent Monitor page. Older runs are pruned after each cycle.">
+                <UnitInput type="number" step="10" min="10" max="2000" unit="runs" value={settings.monitor_d_retain_runs} onChange={e => set('monitor_d_retain_runs', parseInt(e.target.value) || 200)} />
+              </Row>
+            </>
+          )}
 
           <Row label="Auto-run" hint="Periodically run the monitor to check positions">
             <Toggle label="Auto-run monitor" checked={settings.monitor_auto_run} onChange={() => toggle('monitor_auto_run')} />

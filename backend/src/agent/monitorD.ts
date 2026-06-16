@@ -1,54 +1,75 @@
 // Type D — the agentic position monitor.
 //
-// Where the classic monitor (monitor/service.ts) asks one model for a single-shot JSON
-// verdict, Type D runs a *native tool-calling loop* per open position: the model reads
-// candles, position history and sentiment through the shared agent tool belt, reasons
-// across up to MAX_TOOL_ROUNDS rounds, and then commits to one verdict — Hold, Adjust,
-// Close or Reduce.
+// Selected via `monitor_model === 'd'`, it runs on the SAME monitor cron as the classic
+// ensemble (a/b/alternate/ab/abc) — the scheduler's dispatchMonitorRun routes the tick
+// here when D is the chosen mode, so the two are mutually exclusive by construction.
 //
-// It deliberately reuses two things from the classic engine so the two strategies stay
-// behaviourally consistent and can't diverge on safety:
-//   1. the SAME position set + per-cycle params (getMonitorEntries / buildCycleParams), and
-//   2. the SAME post-decision safety net (finalizeReview): confidence gates, REDUCE/ADJUST
-//      downgrades, OCO half-leg seeding, adjust cooldown, persistence, and the very same
-//      monitor_close_requested / monitor_reduce_requested / position_adjustment_proposed
-//      bus events that index.ts already acts on.
+// Where the classic monitor asks one model for a single-shot JSON verdict, Type D runs a
+// native tool-calling loop per open position: the model reads candles, position history
+// and sentiment through the shared agent tool belt, reasons across up to MAX_TOOL_ROUNDS
+// rounds, then commits to one verdict — Hold, Adjust, Reduce or Close.
 //
-// Type D never executes a trade itself — exactly like the classic monitor, it only
-// proposes; the event handlers in index.ts remain the single execution choke point.
+// It reuses the classic engine's position set + per-cycle params and, crucially, the SAME
+// post-decision safety net (finalizeReview): confidence gates, REDUCE/ADJUST downgrades,
+// OCO half-leg seeding, adjust cooldown, persistence, and the same close/reduce/adjust bus
+// events index.ts acts on. Type D never executes a trade itself.
+//
+// Every coin's review is also persisted to `monitor_d_runs` (verdict + the full transcript)
+// so the Agent Monitor page survives a reload and can show a per-run decision table and a
+// per-coin transcript. Old runs are pruned to `monitor_d_retain_runs`.
 import OpenAI from 'openai'
 import { scheduleChat } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
-import { getSettings } from '../db/index.js'
+import { getSettings, nowSql, monitorDRuns } from '../db/index.js'
 import {
   getMonitorEntries, filterReviewableEntries, buildCycleParams, placeholderEnsemble,
   buildReviewContext, parseReview, finalizeReview,
 } from '../monitor/index.js'
 import type { MonitorEntry, RawReview } from '../monitor/index.js'
 import type { PositionContext } from '../monitor/prompts.js'
+import type { MonitorDRun, MonitorDRunFrame } from '../types.js'
 import { getToolSchemas, runTool, isReadOnlyTool, MONITOR_D_TOOL_NAMES } from './tools.js'
 
-// Mirrors the chat agent's safety valve: how many model↔tool round-trips a single
-// position's review may take before we stop and commit to HOLD. Generous enough for a
-// candles → history → sentiment chain, bounded so a runaway loop can't stall the cycle.
+// Safety valve mirroring the chat agent: how many model↔tool round-trips one position's
+// review may take before we stop and commit to HOLD.
 const MAX_TOOL_ROUNDS = 6
 
 let running = false
 export function isRunningD(): boolean { return running }
 
 type StoredToolCalls = OpenAI.Chat.Completions.ChatCompletionMessageToolCall[]
+type Tone = MonitorDRunFrame['tone']
 
-// Stream one progress frame to the AgentMonitor page. `source: 'monitor_d'` lets the
-// frontend tell Type D frames apart from the chat agent's (which key on conversation_id).
-function step(cycleId: string, coin: string, payload: Record<string, unknown>): void {
-  broadcast('agent_step', { source: 'monitor_d', cycle_id: cycleId, coin, ...payload })
+// Per-tool presentation, shared by the live feed and the persisted transcript so both
+// render identically. Keep in sync with the frontend's expectations (it just renders).
+const TOOL_FEED: Record<string, { icon: string; verb: string }> = {
+  get_candle_data:       { icon: '💾', verb: 'Reading candle data' },
+  get_position_history:  { icon: '📊', verb: 'Pulling P&L history' },
+  get_coin_sentiment:    { icon: '📰', verb: 'Checking news sentiment' },
+  get_market:            { icon: '📈', verb: 'Reading live indicators' },
+  list_position_reviews: { icon: '🗂️', verb: 'Reviewing prior verdicts' },
+  list_recent_trades:    { icon: '🧾', verb: 'Scanning recent trades' },
+  list_recent_signals:   { icon: '🔔', verb: 'Scanning recent signals' },
+  list_open_positions:   { icon: '📂', verb: 'Listing open positions' },
 }
 
-// The system prompt: defines Type D's job, the decision contract, and the strict JSON
-// it must end on. The percentage convention matches the classic monitor + finalizeReview
-// (SL/TP are % relative to the CURRENT price; the engine converts to absolute levels).
+// Records the transcript for one coin's review while streaming each frame live. The
+// server owns presentation (icon/text/tone) so a reloaded transcript matches the live one.
+class Recorder {
+  readonly frames: MonitorDRunFrame[] = []
+  readonly startedAt = Date.now()
+  constructor(private cycleId: string, private coin: string) {}
+
+  push(type: string, icon: string, text: string, tone: Tone, extra: Record<string, unknown> = {}): void {
+    const frame: MonitorDRunFrame = { type, icon, text, tone, at: Date.now() }
+    this.frames.push(frame)
+    // `source: 'monitor_d'` lets the page tell these apart from the chat agent's frames.
+    broadcast('agent_step', { source: 'monitor_d', cycle_id: this.cycleId, coin: this.coin, ...frame, ...extra })
+  }
+}
+
 const SYSTEM_PROMPT = `You are "Type D", an autonomous risk manager reviewing ONE open crypto position at a time.
 
 Your job: decide whether to HOLD, ADJUST (move stop-loss / take-profit), REDUCE (trim the position) or CLOSE it now.
@@ -78,9 +99,6 @@ When — and only when — you are done gathering evidence, reply with ONE JSON 
   "notes": string | null                // optional <=500 char memo to your future self about this coin
 }`
 
-// A compact briefing of the position under review, handed to the model as the opening
-// user turn. The same ctx snapshot is reused by finalizeReview, so the prompt and the
-// engine logic agree on one market view (mirrors the classic monitor's JIT discipline).
 function buildUserBriefing(ctx: PositionContext): string {
   const f = (n: number | null, d = 2) => (n == null ? 'n/a' : n.toFixed(d))
   return [
@@ -96,10 +114,9 @@ function buildUserBriefing(ctx: PositionContext): string {
   ].join('\n')
 }
 
-// Runs the tool-calling loop for one coin and returns the parsed verdict. Falls back to a
-// safe HOLD on any failure (no JSON, exhausted rounds, model/tool error) — Type D must
-// never crash a position's review into an unintended action.
-async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: string): Promise<RawReview> {
+// Runs the tool-calling loop for one coin and returns the parsed verdict, recording each
+// step. Falls back to a safe HOLD on any failure (no JSON, exhausted rounds, tool error).
+async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: string, rec: Recorder): Promise<RawReview> {
   const active = resolveLLM('agent') // the agent endpoint is the tool-calling-capable one
   const tools = getToolSchemas(MONITOR_D_TOOL_NAMES)
 
@@ -109,11 +126,9 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
   ]
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    step(cycleId, coin, { type: 'thinking', round })
+    rec.push('thinking', '🤖', 'Reasoning about the position…', 'muted', { round })
 
     const resp = await scheduleChat({
-      // Parallel lane like the classic monitor, with a small priority bump so live
-      // position reviews jump ahead of background batches contending for the endpoint.
       module: 'agent', lane: 'parallel', priority: 1, coin, cycleId,
       route: () => active,
       build: async (route) => ({
@@ -132,7 +147,7 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
 
     if (toolCalls.length > 0) {
       messages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls })
-      if (content) step(cycleId, coin, { type: 'assistant_note', content })
+      if (content) rec.push('assistant_note', '💬', content, 'muted')
 
       for (const tc of toolCalls) {
         if (!tc.function?.name) continue
@@ -140,67 +155,88 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
         let args: Record<string, unknown> = {}
         try { args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {} } catch { /* bad JSON → empty args */ }
 
-        step(cycleId, coin, { type: 'tool_call', tool: name, args, read_only: isReadOnlyTool(name) })
+        const meta = TOOL_FEED[name] ?? { icon: '🔧', verb: name }
+        rec.push('tool_call', meta.icon, `${meta.verb}…`, 'muted', { tool: name, read_only: isReadOnlyTool(name) })
+
         const result = await runTool(name, args)
-        const resultStr = JSON.stringify(result)
-        messages.push({ role: 'tool', content: resultStr, tool_call_id: tc.id })
-        step(cycleId, coin, { type: 'tool_result', tool: name, result })
+        const res = result as Record<string, unknown> | undefined
+        // Compact, consistent result line (full blobs are never persisted).
+        if (name === 'get_candle_data' && res && typeof res.count === 'number') {
+          rec.push('tool_result', '💾', `Candle data ready (${res.count} bars, cache-first)`, 'muted', { tool: name })
+        } else if (name === 'get_coin_sentiment' && res?.stub) {
+          rec.push('tool_result', '📰', 'Sentiment proxy returned (live crawl not wired)', 'warn', { tool: name })
+        } else if (res?.error) {
+          rec.push('tool_result', '⚠️', `${meta.verb} → ${String(res.error)}`, 'warn', { tool: name })
+        } else {
+          rec.push('tool_result', '✓', `${meta.verb} complete`, 'muted', { tool: name })
+        }
+
+        messages.push({ role: 'tool', content: JSON.stringify(result), tool_call_id: tc.id })
       }
       continue
     }
 
     // No tool calls → the model is committing. Try to read its JSON verdict.
     try {
-      const verdict = parseReview(content)
-      step(cycleId, coin, { type: 'assistant', content })
-      return verdict
+      return parseReview(content)
     } catch {
-      // It answered in prose instead of JSON. Nudge once and spend another round.
+      // Answered in prose instead of JSON — nudge once and spend another round.
       messages.push({ role: 'assistant', content: content || null })
       messages.push({ role: 'user', content: 'Respond now with ONLY the JSON verdict object specified — no prose, no code fences.' })
     }
   }
 
   logger.warn('Type D exhausted rounds without a JSON verdict — defaulting to HOLD', { coin, cycleId })
-  step(cycleId, coin, { type: 'assistant', content: 'No conclusive verdict — defaulting to HOLD.' })
   return { action: 'HOLD', confidence: 0, reasoning: '[Type D could not reach a conclusive verdict within the round budget]' }
 }
 
 // Reviews one position end-to-end: build the shared JIT context, run the agentic loop,
-// then route the verdict through the classic safety net (finalizeReview) which persists
-// the review and emits the close/reduce/adjust events index.ts acts on.
+// route the verdict through the classic safety net (finalizeReview), then persist the run
+// (verdict + transcript) and broadcast it so the page's table/detail update live.
 async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>): Promise<void> {
-  step(cycleId, coin, { type: 'coin_started' })
+  const rec = new Recorder(cycleId, coin)
+  rec.push('coin_started', '🔍', `Reviewing ${coin}…`, 'accent')
 
-  // Same JIT context the classic monitor builds — we only need ctx/history/horizon flag;
-  // the classic prompt strings it also returns are simply ignored here.
   const { ctx, history, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
+  const verdict = await runAgenticReview(coin, ctx, cycleId, rec)
 
-  const verdict = await runAgenticReview(coin, ctx, cycleId)
-
+  const model = `type-d:${resolveLLM('agent').model}`
   const review = await finalizeReview({
-    ctx, raw: verdict, history, effectiveUseHorizon,
-    modelName: `type-d:${resolveLLM('agent').model}`,
-    cycleId, disagreement: null,
+    ctx, raw: verdict, history, effectiveUseHorizon, modelName: model, cycleId, disagreement: null,
   }, p)
 
-  step(cycleId, coin, {
-    type: 'decision',
-    action: review?.action ?? verdict.action,
-    confidence: review?.confidence ?? verdict.confidence,
-    reasoning: review?.reasoning ?? verdict.reasoning,
-    // null review = the position closed mid-analysis (finalizeReview's race guard).
-    discarded: review == null,
-  })
+  const action = review?.action ?? verdict.action
+  const confidence = review?.confidence ?? verdict.confidence
+  const reasoning = review?.reasoning ?? verdict.reasoning
+  const discarded = review == null
+
+  const tone: Tone = action === 'CLOSE' ? 'sell' : action === 'REDUCE' ? 'warn' : action === 'ADJUST' ? 'accent' : 'buy'
+  const icon = action === 'HOLD' ? '✋' : action === 'CLOSE' ? '🚪' : action === 'REDUCE' ? '✂️' : '🎯'
+  rec.push('decision', icon, `Decision: ${action} (${Math.round(confidence * 100)}%)`, tone, { action, confidence, reasoning, discarded })
+
+  // Persist the run (verdict + full transcript) and broadcast the saved record. The
+  // repository allocates the integer id on insert; we echo it back in the broadcast.
+  const runDoc: Omit<MonitorDRun, 'id'> = {
+    cycle_id: cycleId, coin, action, confidence, reasoning, discarded,
+    model, frames: rec.frames, started_at_ms: rec.startedAt, created_at: nowSql(),
+  }
+  const id = Number(await monitorDRuns.insert(runDoc))
+  broadcast('monitor_d_run_saved', { id, ...runDoc } satisfies MonitorDRun)
 }
 
-// Cycle entrypoint. Mutually exclusive with the classic monitor: the scheduler routes the
-// monitor cron here only when monitor_strategy === 'agentic_d'. The guard below is the
-// belt-and-braces enforcement of that rule (and of the "A/B can't also be running" intent).
+// Keeps only the most recent `monitor_d_retain_runs` records (by id), pruning the rest.
+async function pruneRuns(): Promise<void> {
+  const keep = Math.max(10, getSettings().monitor_d_retain_runs || 200)
+  const cutoffRow = (await monitorDRuns.find({}, { sort: { id: -1 }, skip: keep, limit: 1, projection: { id: 1 } }))[0] as { id: number } | undefined
+  if (cutoffRow) await monitorDRuns.deleteMany({ id: { $lte: cutoffRow.id } })
+}
+
+// Cycle entrypoint. Routed here by dispatchMonitorRun only when monitor_model === 'd'; the
+// guard below is belt-and-braces enforcement of that single-engine-per-tick rule.
 export async function runMonitorD(cycleId: string): Promise<void> {
   const s = getSettings()
-  if (s.monitor_strategy !== 'agentic_d') {
-    logger.info('Type D skipped — monitor_strategy is not agentic_d', { cycleId, strategy: s.monitor_strategy })
+  if (s.monitor_model !== 'd') {
+    logger.info('Type D skipped — monitor_model is not "d"', { cycleId, mode: s.monitor_model })
     return
   }
   if (running) {
@@ -208,36 +244,42 @@ export async function runMonitorD(cycleId: string): Promise<void> {
     return
   }
   running = true
-  logger.info('Type D agentic monitor started', { cycleId })
+  const sequential = s.monitor_d_sequential
+  logger.info('Type D agentic monitor started', { cycleId, sequential })
   broadcast('monitor_started', { cycle_id: cycleId, strategy: 'agentic_d' })
 
   try {
-    const all = await getMonitorEntries()
-    const entries = await filterReviewableEntries(all)
+    const entries = await filterReviewableEntries(await getMonitorEntries())
     if (entries.length === 0) {
       logger.info('Type D: no open positions to review', { cycleId })
       broadcast('monitor_completed', { cycle_id: cycleId, reviews: [], message: 'No open positions', strategy: 'agentic_d' })
       return
     }
 
-    // Reuse the classic per-cycle params (confidence gates, horizon configs, cooldown…)
-    // with a placeholder ensemble finalizeReview never reads.
     const p = buildCycleParams(s, placeholderEnsemble())
 
-    // One independent agentic review per coin, concurrently. The LLM scheduler's
-    // per-endpoint gate still serializes calls hitting the same one-at-a-time server,
-    // so this only adds real parallelism when the agent endpoint allows it.
-    await Promise.all(entries.map(async (entry) => {
+    const reviewOne = async (entry: MonitorEntry): Promise<void> => {
       try {
         await reviewPositionD(entry.coin, entry, cycleId, p)
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         logger.error('Type D coin review failed', { coin: entry.coin, cycleId, error })
-        step(cycleId, entry.coin, { type: 'error', error })
+        broadcast('agent_step', { source: 'monitor_d', cycle_id: cycleId, coin: entry.coin, type: 'error', icon: '❌', text: `Error: ${error}`, tone: 'sell', error })
         broadcast('monitor_coin_error', { cycle_id: cycleId, coin: entry.coin, error, strategy: 'agentic_d' })
       }
-    }))
+    }
 
+    if (sequential) {
+      // One position at a time — keeps a single-lane local LLM from being flooded and the
+      // live feed readable. Each coin's full review completes before the next begins.
+      for (const entry of entries) await reviewOne(entry)
+    } else {
+      // Concurrent — only adds real parallelism when the agent endpoint allows it; the
+      // per-endpoint LLM gate still serializes calls hitting a one-at-a-time server.
+      await Promise.all(entries.map(reviewOne))
+    }
+
+    await pruneRuns()
     broadcast('monitor_completed', { cycle_id: cycleId, reviews: [], strategy: 'agentic_d' })
     logger.info('Type D agentic monitor completed', { cycleId, reviewed: entries.length })
   } catch (err) {
@@ -247,4 +289,11 @@ export async function runMonitorD(cycleId: string): Promise<void> {
   } finally {
     running = false
   }
+}
+
+// Recent persisted Type D runs (newest first), for the Agent Monitor page to rehydrate
+// after a reload. Returns the verdict + full transcript per coin per cycle.
+export async function getMonitorDRuns(limit = 100): Promise<MonitorDRun[]> {
+  const capped = Math.min(Math.max(limit, 1), 500)
+  return monitorDRuns.find({}, { sort: { id: -1 }, limit: capped, projection: { _id: 0 } }) as unknown as Promise<MonitorDRun[]>
 }

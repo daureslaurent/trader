@@ -44,11 +44,12 @@ export function scheduleDiscovery(expression: string): void {
   logger.info('Discovery pipeline scheduled', { cron: expression })
 }
 
-// Runs whichever monitor engine the user selected. The classic single-shot ensemble and
-// the Type D agentic monitor are mutually exclusive — exactly one fires per cycle. Shared
-// by the cron and the `monitor_run_requested` bus handler so manual triggers route too.
+// Runs whichever monitor engine the selected `monitor_model` resolves to. The classic
+// single-shot ensemble (a/b/alternate/ab/abc) and the Type D agentic monitor ('d') are
+// mutually exclusive — exactly one fires per cycle on the SAME monitor cron. Shared by
+// the cron and the `monitor_run_requested` bus handler so manual triggers route too.
 export function dispatchMonitorRun(cycleId: string): Promise<void> {
-  return getSettings().monitor_strategy === 'agentic_d'
+  return getSettings().monitor_model === 'd'
     ? runMonitorD(cycleId)
     : runMonitor(cycleId)
 }
