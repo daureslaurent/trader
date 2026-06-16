@@ -244,7 +244,7 @@ export default function AgentMonitor() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         {/* ── Left: live coins + decisions table ─────────────────────────── */}
-        <div className="space-y-6 lg:col-span-3">
+        <div className="space-y-6 lg:col-span-2">
           {liveList.length > 0 && (
             <Card noPad>
               <div className="border-b border-border px-5 py-3">
@@ -288,7 +288,6 @@ export default function AgentMonitor() {
                       <th className="px-3 py-2 font-medium">Decision</th>
                       <th className="px-3 py-2 font-medium text-right">Conf.</th>
                       <th className="px-3 py-2 font-medium text-right" title="Peak single-request context (prompt + completion) — compare to the model's context window">Ctx peak</th>
-                      <th className="px-3 py-2 font-medium">Reasoning</th>
                       <th className="px-5 py-2 font-medium text-right">When</th>
                     </tr>
                   </thead>
@@ -296,7 +295,7 @@ export default function AgentMonitor() {
                     {cycles.map(cycle => (
                       <Fragment key={cycle.cycle_id}>
                         <tr className="bg-surface-elevated/30">
-                          <td colSpan={6} className="px-5 py-1.5 text-[11px] font-mono text-muted/70">
+                          <td colSpan={5} className="px-5 py-1.5 text-[11px] font-mono text-muted/70">
                             run {cycle.cycle_id} · {agoMs(cycle.at)} · {cycle.runs.length} position{cycle.runs.length === 1 ? '' : 's'}
                           </td>
                         </tr>{/* keep colSpan in sync with the visible columns */}
@@ -315,7 +314,6 @@ export default function AgentMonitor() {
                               </td>
                               <td className="px-3 py-2 text-right font-mono text-xs text-muted">{Math.round(r.confidence * 100)}%</td>
                               <td className="px-3 py-2 text-right font-mono text-xs text-muted" title={`${(r.peak_context_tokens ?? 0).toLocaleString()} tokens peak · ${(r.prompt_tokens ?? 0).toLocaleString()} prompt + ${(r.completion_tokens ?? 0).toLocaleString()} completion total`}>{fmtTok(r.peak_context_tokens)}</td>
-                              <td className="px-3 py-2 text-xs text-foreground/70 max-w-xs truncate" title={r.reasoning}>{r.reasoning}</td>
                               <td className="px-5 py-2 text-right text-[11px] text-muted/60 whitespace-nowrap">{agoMs(r.started_at_ms)}</td>
                             </tr>
                           )
@@ -330,7 +328,7 @@ export default function AgentMonitor() {
         </div>
 
         {/* ── Right: full detail — verdict + transcript incl. per-call thinking ── */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-3">
           <Card className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] flex flex-col" noPad>
             {!detail ? (
               <div className="p-6 py-12 text-center">

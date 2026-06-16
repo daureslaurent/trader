@@ -29,7 +29,7 @@ import {
 } from '../monitor/index.js'
 import type { MonitorEntry, RawReview } from '../monitor/index.js'
 import type { PositionContext } from '../monitor/prompts.js'
-import type { MonitorDRun, MonitorDRunFrame } from '../types.js'
+import type { MonitorDRun, MonitorDRunFrame, PositionReview } from '../types.js'
 import { getToolSchemas, runTool, isReadOnlyTool, MONITOR_D_TOOL_NAMES } from './tools.js'
 
 // Safety valve mirroring the chat agent: how many model↔tool round-trips one position's
@@ -250,7 +250,7 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
 // Reviews one position end-to-end: build the shared JIT context, run the agentic loop,
 // route the verdict through the classic safety net (finalizeReview), then persist the run
 // (verdict + transcript) and broadcast it so the page's table/detail update live.
-async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>, rec: Recorder): Promise<void> {
+async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>, rec: Recorder): Promise<PositionReview | null> {
   rec.push('coin_started', '🔍', `Reviewing ${coin}…`, 'accent')
 
   const { ctx, history, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
@@ -281,6 +281,10 @@ async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: strin
   const id = Number(await monitorDRuns.insert(runDoc))
   broadcast('monitor_d_run_saved', { id, ...runDoc } satisfies MonitorDRun)
   rec.release() // the persisted run now supersedes the in-memory live entry
+
+  // The shared position_reviews row finalizeReview persisted — returned so the cycle can
+  // include it in monitor_completed (drives the Monitor & Portfolio pages, same as classic).
+  return review
 }
 
 // Keeps only the most recent `monitor_d_retain_runs` records (by id), pruning the rest.
@@ -318,30 +322,36 @@ export async function runMonitorD(cycleId: string): Promise<void> {
 
     const p = buildCycleParams(s, placeholderEnsemble())
 
-    const reviewOne = async (entry: MonitorEntry): Promise<void> => {
+    const reviewOne = async (entry: MonitorEntry): Promise<PositionReview | null> => {
       const rec = new Recorder(cycleId, entry.coin)
       try {
-        await reviewPositionD(entry.coin, entry, cycleId, p, rec)
+        return await reviewPositionD(entry.coin, entry, cycleId, p, rec)
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         logger.error('Type D coin review failed', { coin: entry.coin, cycleId, error })
         rec.fail(error) // records the error frame + flags the live entry, kept until next cycle
         broadcast('monitor_coin_error', { cycle_id: cycleId, coin: entry.coin, error, strategy: 'agentic_d' })
+        return null
       }
     }
 
+    let settled: (PositionReview | null)[]
     if (sequential) {
       // One position at a time — keeps a single-lane local LLM from being flooded and the
       // live feed readable. Each coin's full review completes before the next begins.
-      for (const entry of entries) await reviewOne(entry)
+      settled = []
+      for (const entry of entries) settled.push(await reviewOne(entry))
     } else {
       // Concurrent — only adds real parallelism when the agent endpoint allows it; the
       // per-endpoint LLM gate still serializes calls hitting a one-at-a-time server.
-      await Promise.all(entries.map(reviewOne))
+      settled = await Promise.all(entries.map(reviewOne))
     }
+    const reviews = settled.filter((r): r is PositionReview => r !== null)
 
     await pruneRuns()
-    broadcast('monitor_completed', { cycle_id: cycleId, reviews: [], strategy: 'agentic_d' })
+    // Same shape the classic monitor emits, so the Monitor & Portfolio pages refresh and
+    // show Agent D's verdicts (they live in the shared position_reviews collection).
+    broadcast('monitor_completed', { cycle_id: cycleId, reviews, strategy: 'agentic_d' })
     logger.info('Type D agentic monitor completed', { cycleId, reviewed: entries.length })
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)

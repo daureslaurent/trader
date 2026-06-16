@@ -28,7 +28,9 @@ router.get('/monitor', async (_req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((_req.query.limit as string) || '100', 10), 1), 500)
     const reviews = await getReviews(limit)
-    res.json({ running: isMonitorRunning(), reviews, notes: await getMonitorNotes() })
+    // `running` reflects whichever monitor engine is active — the classic ensemble OR
+    // the Type D agentic monitor (monitor_model === 'd') — since both feed position_reviews.
+    res.json({ running: isMonitorRunning() || isRunningD(), reviews, notes: await getMonitorNotes() })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
