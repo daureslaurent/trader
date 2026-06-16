@@ -212,6 +212,9 @@ export interface BotSettings {
   /** Conversational agent (Agent page). Needs a tool-calling-capable model. */
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
+  /** Type D agentic position monitor. Needs a tool-calling-capable model. */
+  llm_monitor_d_endpoint: string
+  llm_monitor_d_max_tokens: number
   /** Per-module failover endpoint selection (id into `llm_endpoints`; blank = no
    *  fallback) + max-tokens (0 = reuse the primary's effective max-tokens). Tried
    *  only if the primary LLM call throws (endpoint down, timeout, 5xx, unknown model). */
@@ -235,6 +238,8 @@ export interface BotSettings {
   llm_entry_planner_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
+  llm_monitor_d_fb_endpoint: string
+  llm_monitor_d_fb_max_tokens: number
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
    *  of the most recent (non-tool) messages — bounds the tokens spent per title. */
   agent_title_context_messages: number

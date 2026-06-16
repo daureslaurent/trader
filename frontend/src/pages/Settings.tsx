@@ -79,6 +79,8 @@ interface SettingsData {
   llm_entry_planner_max_tokens: number
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
+  llm_monitor_d_endpoint: string
+  llm_monitor_d_max_tokens: number
   llm_analyst_fb_endpoint: string
   llm_analyst_fb_max_tokens: number
   llm_extractor_fb_endpoint: string
@@ -99,6 +101,8 @@ interface SettingsData {
   llm_entry_planner_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
+  llm_monitor_d_fb_endpoint: string
+  llm_monitor_d_fb_max_tokens: number
   agent_title_context_messages: number
   summary_auto_run: boolean
   summary_cron: string
@@ -435,6 +439,7 @@ const LLM_MODULES: {
   { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', endpointKey: 'llm_summary_endpoint', maxTokensKey: 'llm_summary_max_tokens', fbEndpointKey: 'llm_summary_fb_endpoint', fbMaxTokensKey: 'llm_summary_fb_max_tokens' },
   { key: 'entryPlanner',        label: 'Entry Planner',        hint: 'Picks the per-coin entry band (pullback / invalidate / chase cap / TTL) for deferred BUYs. A small fast model is enough.', endpointKey: 'llm_entry_planner_endpoint', maxTokensKey: 'llm_entry_planner_max_tokens', fbEndpointKey: 'llm_entry_planner_fb_endpoint', fbMaxTokensKey: 'llm_entry_planner_fb_max_tokens' },
   { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
+  { key: 'monitorD',            label: 'Agent D (monitor)',    hint: 'The Type D agentic position monitor (monitor model “Agent D”). Runs a tool-calling loop per open position, so use a tool-calling-capable model.', endpointKey: 'llm_monitor_d_endpoint', maxTokensKey: 'llm_monitor_d_max_tokens', fbEndpointKey: 'llm_monitor_d_fb_endpoint', fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens' },
 ]
 
 type LLMModule = typeof LLM_MODULES[number]
@@ -1269,7 +1274,7 @@ export default function Settings() {
                 { key: 'alternate', badge: 'Alternate', title: 'A ⇄ B each cycle', sub: 'one model per run, flips on the next' },
                 { key: 'ab', badge: 'A + B', title: 'Both run · higher-confidence wins', sub: 'A and B review every position; the more confident verdict is kept' },
                 { key: 'abc', badge: 'A + B + C', title: 'C synthesizes A + B', sub: 'A and B vote, then C weighs both and writes the final call' },
-                { key: 'd', badge: 'Agent D', title: 'Agentic per-position monitor', sub: 'a tool-calling agent investigates each position (uses the Agent model) — watch it live on the Agent Monitor page' },
+                { key: 'd', badge: 'Agent D', title: 'Agentic per-position monitor', sub: 'a tool-calling agent investigates each position (configure its model under LLM Models → “Agent D”) — watch it live on the Agent Monitor page' },
               ]
               return (
                 <>

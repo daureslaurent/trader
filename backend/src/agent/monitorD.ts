@@ -148,7 +148,7 @@ function buildUserBriefing(ctx: PositionContext): string {
 // Runs the tool-calling loop for one coin and returns the parsed verdict, recording each
 // step. Falls back to a safe HOLD on any failure (no JSON, exhausted rounds, tool error).
 async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: string, rec: Recorder): Promise<RawReview> {
-  const active = resolveLLM('agent') // the agent endpoint is the tool-calling-capable one
+  const active = resolveLLM('monitorD') // dedicated, tool-calling-capable module (Settings → LLM Models)
   const tools = getToolSchemas(MONITOR_D_TOOL_NAMES)
 
   const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -157,10 +157,10 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
   ]
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    rec.push('thinking', '🤖', 'Reasoning about the position…', 'muted', { round })
+    rec.push('thinking', '🤔', `Thinking… (round ${round + 1})`, 'muted', { round })
 
     const resp = await scheduleChat({
-      module: 'agent', lane: 'parallel', priority: 1, coin, cycleId,
+      module: 'monitorD', lane: 'parallel', priority: 1, coin, cycleId,
       route: () => active,
       build: async (route) => ({
         model: route.model,
@@ -173,6 +173,11 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
     })
 
     const choice = resp.choices[0]?.message
+    // Surface the model's own chain-of-thought for this call when the endpoint returns it
+    // (llama.cpp / reasoning models expose it as `reasoning_content`). Shown in the modal.
+    const thinking = ((choice as unknown as { reasoning_content?: string | null })?.reasoning_content ?? '').trim()
+    if (thinking) rec.push('thinking', '🧠', thinking, 'accent', { round, thinking: true })
+
     const toolCalls = (choice?.tool_calls ?? []) as StoredToolCalls
     const content = choice?.content ?? ''
 
@@ -230,7 +235,7 @@ async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: strin
   const { ctx, history, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
   const verdict = await runAgenticReview(coin, ctx, cycleId, rec)
 
-  const model = `type-d:${resolveLLM('agent').model}`
+  const model = `type-d:${resolveLLM('monitorD').model}`
   const review = await finalizeReview({
     ctx, raw: verdict, history, effectiveUseHorizon, modelName: model, cycleId, disagreement: null,
   }, p)

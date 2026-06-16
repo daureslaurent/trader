@@ -429,6 +429,7 @@ export type LLMModuleKey =
   | 'summary'
   | 'entryPlanner'
   | 'agent'
+  | 'monitorD'
 
 /** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */
 export interface LLMDefault {

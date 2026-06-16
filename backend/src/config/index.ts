@@ -91,6 +91,14 @@ export const config = {
     model: opt('AGENT_MODEL', llamaModel),
     maxTokens: num('AGENT_MAX_TOKENS', 4096),
   },
+  monitorD: {
+    // Type D agentic position monitor. Also a native tool-calling loop, so it needs a
+    // tool-calling-capable model. Separate from the chat agent so the two can use
+    // different models/endpoints. Falls back to the llama defaults.
+    baseURL: opt('MONITOR_D_BASE_URL', llamaBaseURL),
+    model: opt('MONITOR_D_MODEL', llamaModel),
+    maxTokens: num('MONITOR_D_MAX_TOKENS', 4096),
+  },
   telegram: {
     botToken: opt('TELEGRAM_BOT_TOKEN', ''),
     chatId: opt('TELEGRAM_CHAT_ID', ''),
