@@ -109,6 +109,8 @@ Method — gather evidence with your tools BEFORE deciding:
 - get_candle_data: read recent price structure, momentum and volatility (try the position's horizon timeframe).
 - get_position_history: see realized P&L, fees and how this coin has been managed.
 - get_coin_sentiment: weigh recent news / narrative risk against the chart.
+- get_coin_notes: your own memory from prior reviews of this coin — use it for continuity and to avoid flip-flopping.
+- get_portfolio: overall exposure, cash and this coin's allocation % — weigh concentration risk when sizing REDUCE/CLOSE.
 - get_market / list_position_reviews / list_recent_signals: live indicators and prior verdicts for extra context.
 Call the tools you actually need; don't pad. You have at most ${MAX_TOOL_ROUNDS} tool rounds.
 

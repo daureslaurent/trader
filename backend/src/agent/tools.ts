@@ -5,7 +5,7 @@
 // it can mutate is the watchlist and kicking off the engines that already run on crons.
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
-import { getSettings, updateSetting, trades, decisions, llmCalls, entryEvents } from '../db/index.js'
+import { getSettings, updateSetting, trades, decisions, llmCalls, entryEvents, monitorNotes } from '../db/index.js'
 import { isTradeable } from '../core/tradeable.js'
 import * as priceCache from '../market/index.js'
 import { fetchMarketData } from '../trader/index.js'
@@ -457,6 +457,17 @@ async function getPositionHistory(args: Record<string, unknown>): Promise<unknow
   }
 }
 
+// The persistent per-coin monitor note — the position monitor's own memory across
+// reviews (what it decided last time and why, what it's watching for). Gives Type D
+// continuity so it doesn't re-reason from scratch or flip-flop versus its past self.
+async function getCoinNotes(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  const row = await monitorNotes.findOne({ _id: coin }, { projection: { notes: 1, updated_at: 1 } }) as { notes?: string; updated_at?: string } | null
+  if (!row?.notes) return { coin, notes: null, note: 'No stored note for this coin yet.' }
+  return { coin, notes: row.notes, updated_at: row.updated_at ?? null }
+}
+
 // Recent news / market sentiment for a coin. STUB: a full implementation would call
 // the researcher (Puppeteer/DuckDuckGo) → extractor (LLM sentiment compression) chain
 // used by the entry pipeline. That's a heavy multi-second crawl, so here we return the
@@ -723,6 +734,17 @@ export const TOOLS: AgentTool[] = [
     handler: getCoinSentiment,
   },
   {
+    name: 'get_coin_notes',
+    description: "Read the position monitor's persistent note for a coin — its own memory from prior reviews (what it decided and why, what it's watching). Use for continuity and to avoid flip-flopping against past decisions.",
+    parameters: {
+      type: 'object',
+      properties: { coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' } },
+      required: ['coin'],
+    },
+    readOnly: true,
+    handler: getCoinNotes,
+  },
+  {
     name: 'add_to_watchlist',
     description: 'Add a coin to the watchlist so the entry pipeline starts analyzing it. Safe, non-trading action.',
     parameters: {
@@ -785,8 +807,8 @@ const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]))
 // deliberately a SUBSET — Type D must never trigger engines or mutate the watchlist
 // mid-review, so the trigger_*/watchlist tools are excluded.
 export const MONITOR_D_TOOL_NAMES = [
-  'list_open_positions', 'get_market', 'get_candle_data',
-  'get_position_history', 'get_coin_sentiment', 'list_position_reviews',
+  'get_portfolio', 'list_open_positions', 'get_market', 'get_candle_data',
+  'get_position_history', 'get_coin_sentiment', 'get_coin_notes', 'list_position_reviews',
   'list_recent_trades', 'list_recent_signals',
 ] as const
 

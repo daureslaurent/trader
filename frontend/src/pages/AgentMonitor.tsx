@@ -58,19 +58,36 @@ const TONE_CLASS: Record<Tone, string> = {
 // Is this frame the model's own chain-of-thought for one call? (emitted with 🧠)
 const isThinking = (f: Frame) => f.type === 'thinking' && f.icon === '🧠'
 
+// One model-thinking frame: collapsed to a single line by default, click to expand.
+function ThinkingLine({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const oneLine = text.replace(/\s+/g, ' ').trim()
+  return (
+    <div className="my-1 rounded-lg border-l-2 border-accent/50 bg-accent/5">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
+        title={open ? 'Collapse' : 'Expand'}
+      >
+        <svg className={cn('w-3 h-3 shrink-0 text-accent/70 transition-transform', open && 'rotate-90')} fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+        <span className="text-[10px] uppercase tracking-wide text-accent/80 shrink-0">🧠 thinking</span>
+        {!open && <span className="truncate italic text-foreground/60">{oneLine}</span>}
+      </button>
+      {open && <p className="whitespace-pre-wrap italic text-foreground/70 px-3 pb-2 pl-8">{text}</p>}
+    </div>
+  )
+}
+
 // ── transcript ──────────────────────────────────────────────────────────────
-// Renders the agent loop. The model's per-call "thinking" gets a distinct block so it
-// stands out from the terse tool-call/result lines.
+// Renders the agent loop. The model's per-call "thinking" is collapsed to one line
+// (expandable); the terse tool-call/result lines render inline.
 function Transcript({ frames }: { frames: Frame[] }) {
   if (!frames.length) return <p className="text-muted font-mono text-xs">No transcript.</p>
   return (
     <div className="font-mono text-xs leading-relaxed space-y-0.5">
       {frames.map((f, i) =>
         isThinking(f) ? (
-          <div key={i} className="my-1 rounded-lg border-l-2 border-accent/50 bg-accent/5 px-3 py-2">
-            <p className="mb-1 text-[10px] uppercase tracking-wide text-accent/80">🧠 model thinking</p>
-            <p className="whitespace-pre-wrap italic text-foreground/70">{f.text}</p>
-          </div>
+          <ThinkingLine key={i} text={f.text} />
         ) : (
           <div key={i} className="flex items-start gap-2 py-0.5">
             <span className="select-none">{f.icon}</span>
@@ -92,7 +109,6 @@ export default function AgentMonitor() {
   const [mode, setMode] = useState<string>('a')
   const [running, setRunning] = useState(false)
   const [selected, setSelected] = useState<Selection>(null)
-  const [modalOpen, setModalOpen] = useState(false)
 
   // Hydrate from the API once (survives reloads, including in-flight reviews).
   useEffect(() => {
@@ -144,12 +160,9 @@ export default function AgentMonitor() {
 
   const { connected } = useWebSocket(onWs)
 
-  // Escape closes the modal first; if it's already closed, clears the side selection.
+  // Escape clears the side-panel selection.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      setModalOpen(m => { if (m) return false; setSelected(null); return m })
-    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSelected(null) }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
@@ -161,8 +174,6 @@ export default function AgentMonitor() {
       if (!res.ok) setRunning(false)
     } catch { setRunning(false) }
   }
-
-  const open = (sel: Selection) => { setSelected(sel); setModalOpen(true) }
 
   const isActive = mode === 'd'
   const liveList = Object.values(live).sort((a, b) => b.startedAt - a.startedAt)
@@ -235,14 +246,18 @@ export default function AgentMonitor() {
                   const last = lv.frames[lv.frames.length - 1]
                   const on = selected?.kind === 'live' && selected.coin === lv.coin
                   return (
-                    <div key={lv.coin} className={cn('flex items-center justify-between gap-3 px-5 py-3 transition-colors', on && 'bg-accent/10')}>
-                      <button onClick={() => setSelected({ kind: 'live', coin: lv.coin })} className="flex items-center gap-3 min-w-0 text-left">
+                    <button
+                      key={lv.coin}
+                      onClick={() => setSelected({ kind: 'live', coin: lv.coin })}
+                      className={cn('w-full flex items-center justify-between gap-3 px-5 py-3 text-left transition-colors', on ? 'bg-accent/10' : 'hover:bg-surface-elevated/40')}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
                         <span className={cn('w-2 h-2 rounded-full shrink-0', lv.status === 'error' ? 'bg-sell' : lv.status === 'done' ? 'bg-buy' : 'bg-accent animate-pulse')} />
                         <span className="font-semibold text-foreground shrink-0">{lv.coin}</span>
                         <span className="truncate font-mono text-xs text-muted">{last ? `${last.icon} ${last.text}` : '…'}</span>
-                      </button>
-                      <Button variant="ghost" size="sm" onClick={() => open({ kind: 'live', coin: lv.coin })}>Watch</Button>
-                    </div>
+                      </div>
+                      <span className="text-[10px] text-muted/60 shrink-0">{lv.frames.length} steps</span>
+                    </button>
                   )
                 })}
               </div>
@@ -263,8 +278,8 @@ export default function AgentMonitor() {
                       <th className="px-5 py-2 font-medium">Coin</th>
                       <th className="px-3 py-2 font-medium">Decision</th>
                       <th className="px-3 py-2 font-medium text-right">Conf.</th>
-                      <th className="px-3 py-2 font-medium text-right">When</th>
-                      <th className="px-5 py-2 font-medium text-right">Detail</th>
+                      <th className="px-3 py-2 font-medium">Reasoning</th>
+                      <th className="px-5 py-2 font-medium text-right">When</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -274,7 +289,7 @@ export default function AgentMonitor() {
                           <td colSpan={5} className="px-5 py-1.5 text-[11px] font-mono text-muted/70">
                             run {cycle.cycle_id} · {agoMs(cycle.at)} · {cycle.runs.length} position{cycle.runs.length === 1 ? '' : 's'}
                           </td>
-                        </tr>
+                        </tr>{/* keep colSpan in sync with the 5 visible columns */}
                         {cycle.runs.map(r => {
                           const on = selected?.kind === 'run' && selected.id === r.id
                           return (
@@ -289,10 +304,8 @@ export default function AgentMonitor() {
                                 {r.discarded && <span className="ml-1 text-[10px] text-warn">discarded</span>}
                               </td>
                               <td className="px-3 py-2 text-right font-mono text-xs text-muted">{Math.round(r.confidence * 100)}%</td>
-                              <td className="px-3 py-2 text-right text-[11px] text-muted/60 whitespace-nowrap">{agoMs(r.started_at_ms)}</td>
-                              <td className="px-5 py-2 text-right">
-                                <Button variant="ghost" size="sm" onClick={e => { e.stopPropagation(); open({ kind: 'run', id: r.id }) }}>View</Button>
-                              </td>
+                              <td className="px-3 py-2 text-xs text-foreground/70 max-w-xs truncate" title={r.reasoning}>{r.reasoning}</td>
+                              <td className="px-5 py-2 text-right text-[11px] text-muted/60 whitespace-nowrap">{agoMs(r.started_at_ms)}</td>
                             </tr>
                           )
                         })}
@@ -305,87 +318,54 @@ export default function AgentMonitor() {
           </Card>
         </div>
 
-        {/* ── Right: selection summary (the modal opens from here) ────────── */}
+        {/* ── Right: full detail — verdict + transcript incl. per-call thinking ── */}
         <div className="lg:col-span-2">
-          <Card className="lg:sticky lg:top-4">
+          <Card className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] flex flex-col" noPad>
             {!detail ? (
-              <div className="py-10 text-center">
-                <p className="text-sm text-muted">Select a position to see its verdict, then open the full agent transcript &amp; thinking.</p>
+              <div className="p-6 py-12 text-center">
+                <p className="text-sm text-muted">Select a position (row or live coin) to inspect its verdict and the full agent transcript &amp; thinking.</p>
               </div>
             ) : (
               <>
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg font-semibold text-foreground">{detail.coin}</span>
+                <div className="flex items-center justify-between gap-2 border-b border-border px-5 py-4 shrink-0">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-lg font-bold text-foreground">{detail.coin}</span>
                     {detail.verdict
                       ? <Badge variant={ACTION_VARIANT[detail.verdict.action] ?? 'neutral'}>{detail.verdict.action}</Badge>
                       : <Badge variant="accent" dot>reviewing…</Badge>}
+                    {detail.verdict && <span className="font-mono text-xs text-muted">{Math.round(detail.verdict.confidence * 100)}% conf</span>}
                   </div>
-                  {detail.verdict && (
-                    <span className="font-mono text-xs text-muted">{Math.round(detail.verdict.confidence * 100)}% conf</span>
-                  )}
+                  <button onClick={() => setSelected(null)} className="text-muted hover:text-foreground transition-colors" aria-label="Close">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
                 </div>
 
-                {detail.verdict && (
-                  <div className="mb-3 rounded-xl border border-border bg-surface-elevated/40 p-3">
-                    <p className="text-xs leading-relaxed text-foreground/90">{detail.verdict.reasoning}</p>
-                    {detail.verdict.discarded && (
-                      <p className="mt-2 text-xs text-warn">Position closed during analysis — verdict was not applied.</p>
-                    )}
-                    <p className="mt-2 text-[10px] uppercase tracking-wide text-muted/60">{detail.verdict.model} · {agoMs(detail.verdict.started_at_ms)}</p>
-                  </div>
-                )}
+                <div className="overflow-y-auto px-5 py-4 space-y-4">
+                  {detail.verdict && (
+                    <div className="rounded-xl border border-border bg-surface-elevated/40 p-4">
+                      <p className="text-[11px] uppercase tracking-wide text-muted/70 mb-1.5">Verdict reasoning</p>
+                      <p className="text-sm leading-relaxed text-foreground/90">{detail.verdict.reasoning}</p>
+                      {detail.verdict.discarded && (
+                        <p className="mt-2 text-xs text-warn">Position closed during analysis — verdict was not applied.</p>
+                      )}
+                      <p className="mt-3 text-[10px] uppercase tracking-wide text-muted/60">{detail.verdict.model} · {agoMs(detail.verdict.started_at_ms)}</p>
+                    </div>
+                  )}
 
-                <Button variant="secondary" size="sm" className="w-full" onClick={() => setModalOpen(true)}>
-                  View full transcript &amp; thinking{thinkingCount > 0 ? ` (${thinkingCount})` : ''}
-                </Button>
+                  <div>
+                    <p className="mb-2 text-[11px] uppercase tracking-wide text-muted/70">
+                      Agent transcript {thinkingCount > 0 && <span className="text-accent/80">· {thinkingCount} thinking step{thinkingCount === 1 ? '' : 's'}</span>}
+                    </p>
+                    <div className="rounded-xl border border-border bg-surface-base/40 p-3">
+                      <Transcript frames={detail.frames} />
+                    </div>
+                  </div>
+                </div>
               </>
             )}
           </Card>
         </div>
       </div>
-
-      {/* ── Detail modal: full transcript incl. per-call thinking ─────────── */}
-      {modalOpen && detail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setModalOpen(false)}>
-          <div className="relative flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-border bg-surface-card shadow-2xl animate-fade-in" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between gap-2 border-b border-border px-6 py-4 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <span className="text-lg font-bold text-foreground">{detail.coin}</span>
-                {detail.verdict
-                  ? <Badge variant={ACTION_VARIANT[detail.verdict.action] ?? 'neutral'}>{detail.verdict.action}</Badge>
-                  : <Badge variant="accent" dot>reviewing…</Badge>}
-                {detail.verdict && <span className="font-mono text-xs text-muted">{Math.round(detail.verdict.confidence * 100)}% conf</span>}
-              </div>
-              <button onClick={() => setModalOpen(false)} className="text-muted hover:text-foreground transition-colors" aria-label="Close">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
-
-            <div className="overflow-y-auto px-6 py-4 space-y-4">
-              {detail.verdict && (
-                <div className="rounded-xl border border-border bg-surface-elevated/40 p-4">
-                  <p className="text-[11px] uppercase tracking-wide text-muted/70 mb-1.5">Verdict reasoning</p>
-                  <p className="text-sm leading-relaxed text-foreground/90">{detail.verdict.reasoning}</p>
-                  {detail.verdict.discarded && (
-                    <p className="mt-2 text-xs text-warn">Position closed during analysis — verdict was not applied.</p>
-                  )}
-                  <p className="mt-3 text-[10px] uppercase tracking-wide text-muted/60">{detail.verdict.model} · {agoMs(detail.verdict.started_at_ms)}</p>
-                </div>
-              )}
-
-              <div>
-                <p className="mb-2 text-[11px] uppercase tracking-wide text-muted/70">
-                  Agent transcript {thinkingCount > 0 && <span className="text-accent/80">· {thinkingCount} thinking step{thinkingCount === 1 ? '' : 's'}</span>}
-                </p>
-                <div className="rounded-xl border border-border bg-surface-base/40 p-3">
-                  <Transcript frames={detail.frames} />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
