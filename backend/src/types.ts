@@ -96,6 +96,11 @@ export interface BotSettings {
   discover_auto_add: boolean
   discover_min_volume_usd: number
   monitor_auto_run: boolean
+  /** Which monitor engine drives open-position review on the monitor cron:
+   *  'classic'   = the single-shot ensemble monitor (`monitor_model` slots A/B/…),
+   *  'agentic_d' = the Type D agentic per-position monitor (tool-calling loop).
+   *  The two are mutually exclusive — exactly one runs per tick. */
+  monitor_strategy: 'classic' | 'agentic_d'
   /** Which monitor LLM configuration to use:
    *  'a' = slot A only, 'b' = slot B only, 'alternate' = flip A/B each cycle,
    *  'ab' = run A and B together and keep the higher-confidence verdict (confidence-weighted),

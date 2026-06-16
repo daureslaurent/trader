@@ -12,7 +12,7 @@ import * as priceCache from '../market/index.js'
 import { getOHLCV, isTimeframe } from '../market/index.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
-import { PositionReview } from '../types.js'
+import { PositionReview, BotSettings } from '../types.js'
 import { buildMonitorPrompt, buildSynthesizerUser, fmtOffsetLabel, PositionContext, HorizonConfigs, MonitorNotes } from './prompts.js'
 import { LLMError } from '../core/errors.js'
 import { resolveLLM } from '../config/llm.js'
@@ -114,7 +114,7 @@ function pickHigherConfidence(opinions: Opinion[]): Opinion {
   })[0]
 }
 
-interface RawReview {
+export interface RawReview {
   action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
   confidence: number
   reasoning: string
@@ -130,7 +130,7 @@ interface RawReview {
 // against a runaway model flooding the prompt of every future review.
 const MAX_NOTES_LENGTH = 1000
 
-function parseReview(content: string): RawReview {
+export function parseReview(content: string): RawReview {
   const stripped = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
 
   let parsed: unknown
@@ -186,11 +186,11 @@ async function pruneMonitorHistory(
 }
 
 // One OPEN portfolio entry, aggregated across multiple fills (see runMonitor).
-interface MonitorEntry { coin: string; quantity: number; avg_buy_price: number; avg_date_ms: number }
+export interface MonitorEntry { coin: string; quantity: number; avg_buy_price: number; avg_date_ms: number }
 
 // Per-cycle knobs resolved once from settings in runMonitor and shared by every
 // coin's review. These are configuration, not market data, so they don't go stale.
-interface CycleParams {
+export interface CycleParams {
   ensemble: MonitorEnsemble
   adjustEnabled: boolean
   reduceEnabled: boolean
@@ -227,7 +227,7 @@ interface ReviewContext {
 // at the moment the scheduler dispatches the call, never at cycle start. A monitor
 // run can queue many coins behind a serialized endpoint; building here keeps the
 // prompt's market/position values current rather than minutes-stale from the queue.
-async function buildReviewContext(coin: string, entry: MonitorEntry, p: CycleParams): Promise<ReviewContext> {
+export async function buildReviewContext(coin: string, entry: MonitorEntry, p: CycleParams): Promise<ReviewContext> {
   const snap = priceCache.getPrice(coin)
   const currentPrice = snap?.price ?? entry.avg_buy_price
 
@@ -450,6 +450,56 @@ async function monitorCoin(
   if (ensemble.mode === 'abc') ensembleActions.push(raw.action)
   const modelsDisagreed = ensemble.mode !== 'single' && new Set(ensembleActions).size > 1
 
+  // Package the disagreement (classic ensembles only) so finalizeReview can emit it
+  // once the resolved confidence is known. Type D passes null (no voter ensemble).
+  const disagreement: DisagreementInfo | null =
+    modelsDisagreed && (ensemble.mode === 'ab' || ensemble.mode === 'abc')
+      ? {
+          mode: ensemble.mode,
+          opinions: opinions.map(o => ({ label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence })),
+          synthesizerModel: ensemble.synthesizer ? ensemble.synthesizer.model : null,
+        }
+      : null
+
+  // Hand the resolved verdict to the shared safety net: confidence gates, REDUCE/ADJUST
+  // downgrades, OCO half-leg seeding, adjust cooldown, persistence and event emission.
+  return finalizeReview({
+    ctx, raw, history, effectiveUseHorizon, modelName: finalLlm.model, cycleId, disagreement,
+  }, p)
+}
+
+// The disagreement alert payload built by the classic ensemble path and passed into
+// finalizeReview (the agentic Type D monitor has no voter ensemble, so it passes null).
+export interface DisagreementInfo {
+  mode: 'ab' | 'abc'
+  opinions: { label: string; model: string; action: string; confidence: number }[]
+  /** Set in 'abc' mode so the synthesizer (C) shows up in the alert as its own opinion. */
+  synthesizerModel: string | null
+}
+
+// Everything finalizeReview needs about a resolved verdict, independent of HOW it was
+// produced (single-shot ensemble OR the Type D agentic loop).
+export interface FinalizeReviewInput {
+  ctx: PositionContext
+  raw: RawReview
+  history: PositionReview[]
+  /** Whether horizon guidance applied to this coin's review (see buildReviewContext). */
+  effectiveUseHorizon: boolean
+  /** The model id credited on the stored review (final voter / synthesizer / Type D agent). */
+  modelName: string
+  cycleId: string
+  disagreement: DisagreementInfo | null
+}
+
+// The shared post-decision safety net. Takes a resolved verdict + the live position
+// context and applies every guard the classic monitor enforces before it acts:
+// confidence threshold, REDUCE/ADJUST downgrades, OCO half-leg seeding, adjust cooldown,
+// then persists a position_reviews row and emits the close/reduce/adjust bus events.
+// Returns the stored review, or null if the position closed mid-analysis.
+export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams): Promise<PositionReview | null> {
+  const { ctx, history, effectiveUseHorizon: useHorizon, cycleId } = input
+  let raw = input.raw
+
   const confidence = Math.min(1, Math.max(0, raw.confidence))
   let reduceToPct = raw.action === 'REDUCE' && typeof raw.reduce_to_pct === 'number'
     ? Math.min(99, Math.max(1, Math.round(raw.reduce_to_pct)))
@@ -631,7 +681,7 @@ async function monitorCoin(
     coin: ctx.coin, action: raw.action, confidence, reasoning: raw.reasoning,
     reduce_to_pct: reduceToPct, old_stop_loss: ctx.stopLoss ?? null, old_take_profit: ctx.takeProfit ?? null,
     new_stop_loss: newStopLoss, new_take_profit: newTakeProfit, market_data: marketData,
-    model: finalLlm.model, cycle_id: cycleId, created_at: nowSql(),
+    model: input.modelName, cycle_id: cycleId, created_at: nowSql(),
   })
 
   const review: PositionReview = {
@@ -646,7 +696,7 @@ async function monitorCoin(
     new_stop_loss: newStopLoss,
     new_take_profit: newTakeProfit,
     market_data: marketData,
-    model: finalLlm.model,
+    model: input.modelName,
     cycle_id: cycleId,
     created_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
   }
@@ -656,14 +706,15 @@ async function monitorCoin(
 
   // Alert when the ensemble's models genuinely disagreed on the action. The engine
   // still executes the resolved verdict above; this only flags the contested call.
-  if (modelsDisagreed && (ensemble.mode === 'ab' || ensemble.mode === 'abc')) {
-    const opinionPayload = opinions.map(o => ({ label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence }))
-    if (ensemble.mode === 'abc' && ensemble.synthesizer) {
-      opinionPayload.push({ label: 'C', model: ensemble.synthesizer.model, action: raw.action, confidence })
+  if (input.disagreement) {
+    const d = input.disagreement
+    const opinionPayload = d.opinions.map(o => ({ label: o.label, model: o.model, action: o.action, confidence: o.confidence }))
+    if (d.mode === 'abc' && d.synthesizerModel) {
+      opinionPayload.push({ label: 'C', model: d.synthesizerModel, action: raw.action, confidence })
     }
-    logger.info('Monitor models disagreed', { coin: ctx.coin, cycleId, mode: ensemble.mode, finalAction: raw.action, opinions: opinionPayload.map(o => `${o.label}:${o.action}`) })
+    logger.info('Monitor models disagreed', { coin: ctx.coin, cycleId, mode: d.mode, finalAction: raw.action, opinions: opinionPayload.map(o => `${o.label}:${o.action}`) })
     bus.emit('monitor_disagreement', {
-      coin: ctx.coin, mode: ensemble.mode, finalAction: raw.action, finalConfidence: confidence,
+      coin: ctx.coin, mode: d.mode, finalAction: raw.action, finalConfidence: confidence,
       opinions: opinionPayload, cycleId,
     })
   }
@@ -704,7 +755,7 @@ async function monitorCoin(
       newTakeProfit: proposalToEmit.newTp,
       reasoning: raw.reasoning,
       confidence,
-      model: finalLlm.model,
+      model: input.modelName,
       cycleId,
     })
   }
@@ -722,6 +773,78 @@ export async function clearReviewsForCoin(coin: string): Promise<void> {
   logger.info('Monitor history cleared for closed position', { coin })
 }
 
+// Aggregates the OPEN portfolio into one entry per coin, using a weighted-average
+// entry timestamp (#2c: centre of mass in epoch ms, not MIN) so a position built
+// across multiple fills ages from its true cost basis. Shared by the classic monitor
+// and the Type D agentic monitor so both review exactly the same position set.
+export async function getMonitorEntries(): Promise<MonitorEntry[]> {
+  return portfolioEntries.aggregate<MonitorEntry>([
+    { $match: { status: 'OPEN', coin: { $ne: 'USDC' } } },
+    {
+      $group: {
+        _id: '$coin',
+        quantity: { $sum: '$quantity' },
+        qBuy: { $sum: { $multiply: ['$quantity', '$buy_price'] } },
+        qMs: { $sum: { $multiply: ['$quantity', { $toLong: { $dateFromString: { dateString: '$created_at', format: '%Y-%m-%d %H:%M:%S', timezone: 'UTC' } } }] } },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        coin: '$_id',
+        quantity: 1,
+        avg_buy_price: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$qBuy', '$quantity'] }, 0] },
+        avg_date_ms: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$qMs', '$quantity'] }, 0] },
+      },
+    },
+  ])
+}
+
+// Drops positions whose horizon is 'disabled' (a stable per-position config field):
+// those are skipped entirely so no LLM call is ever wasted on a position the user
+// has opted out of automated review for. Shared by both monitor engines.
+export async function filterReviewableEntries(entries: MonitorEntry[]): Promise<MonitorEntry[]> {
+  const posRows = (await positionsRepo.find(
+    { status: 'OPEN', coin: { $ne: 'USDC' } },
+    { projection: { coin: 1, horizon: 1 } },
+  )) as unknown as { coin: string; horizon: string | null }[]
+  const horizonByCoin = new Map(posRows.map(r => [r.coin, r.horizon ?? 'medium']))
+  return entries.filter(e => (horizonByCoin.get(e.coin) ?? 'medium') !== 'disabled')
+}
+
+// A no-op voter ensemble for callers (the Type D agentic monitor) that reuse
+// buildCycleParams + finalizeReview but don't run the classic A/B/C voters.
+// finalizeReview never reads `ensemble`, so this placeholder is purely structural.
+export function placeholderEnsemble(): MonitorEnsemble {
+  return { mode: 'single', voters: [], synthesizer: null }
+}
+
+// Resolves every per-cycle knob from settings once. These are configuration, not
+// market data, so they're safe to bind at cycle start and share across all coins.
+// `ensemble` is required by the classic path; Type D passes a placeholder it never reads.
+export function buildCycleParams(s: BotSettings, ensemble: MonitorEnsemble): CycleParams {
+  return {
+    ensemble,
+    adjustEnabled: s.monitor_adjust_sltp,
+    reduceEnabled: s.monitor_reduce_enabled,
+    trustLlm: s.monitor_trust_llm_sltp,
+    useHorizon: s.monitor_use_horizon,
+    utcOffsetHours: s.utc_offset_hours,
+    horizonConfigs: {
+      short:  { slPct: s.monitor_sl_pct_short,  tpPct: s.monitor_tp_pct_short  },
+      medium: { slPct: s.monitor_sl_pct_medium, tpPct: s.monitor_tp_pct_medium },
+      long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
+    },
+    historyTf: s.monitor_history_tf,
+    historyCount: s.monitor_history_count,
+    minConfidence: Math.min(1, Math.max(0, s.monitor_min_confidence)),
+    reviewIntervalMin: s.monitor_auto_run ? cronIntervalMinutes(s.monitor_cron) : null,
+    breakevenPct: s.monitor_breakeven_pct > 0 ? s.monitor_breakeven_pct : 3,
+    feeRate: s.fee_rate,
+    adjustCooldownMin: s.monitor_adjust_cooldown_min,
+  }
+}
+
 export async function runMonitor(cycleId: string): Promise<void> {
   if (running) {
     logger.warn('Monitor already running, skipping')
@@ -732,28 +855,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
   broadcast('monitor_started', { cycle_id: cycleId })
 
   try {
-    // #2c: Use a weighted-average entry timestamp (centre of mass in epoch ms)
-    // instead of MIN, to reflect a position built across multiple entries.
-    const entries = await portfolioEntries.aggregate<{ coin: string; quantity: number; avg_buy_price: number; avg_date_ms: number }>([
-      { $match: { status: 'OPEN', coin: { $ne: 'USDC' } } },
-      {
-        $group: {
-          _id: '$coin',
-          quantity: { $sum: '$quantity' },
-          qBuy: { $sum: { $multiply: ['$quantity', '$buy_price'] } },
-          qMs: { $sum: { $multiply: ['$quantity', { $toLong: { $dateFromString: { dateString: '$created_at', format: '%Y-%m-%d %H:%M:%S', timezone: 'UTC' } } }] } },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          coin: '$_id',
-          quantity: 1,
-          avg_buy_price: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$qBuy', '$quantity'] }, 0] },
-          avg_date_ms: { $cond: [{ $gt: ['$quantity', 0] }, { $divide: ['$qMs', '$quantity'] }, 0] },
-        },
-      },
-    ])
+    const entries = await getMonitorEntries()
 
     if (entries.length === 0) {
       logger.info('Position monitor: no open positions to review')
@@ -774,26 +876,7 @@ export async function runMonitor(cycleId: string): Promise<void> {
       synthesizer: ensemble.synthesizer ? `${ensemble.synthesizer.label}:${ensemble.synthesizer.model}` : null,
     })
 
-    const p: CycleParams = {
-      ensemble,
-      adjustEnabled: s.monitor_adjust_sltp,
-      reduceEnabled: s.monitor_reduce_enabled,
-      trustLlm: s.monitor_trust_llm_sltp,
-      useHorizon: s.monitor_use_horizon,
-      utcOffsetHours: s.utc_offset_hours,
-      horizonConfigs: {
-        short:  { slPct: s.monitor_sl_pct_short,  tpPct: s.monitor_tp_pct_short  },
-        medium: { slPct: s.monitor_sl_pct_medium, tpPct: s.monitor_tp_pct_medium },
-        long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
-      },
-      historyTf: s.monitor_history_tf,
-      historyCount: s.monitor_history_count,
-      minConfidence: Math.min(1, Math.max(0, s.monitor_min_confidence)),
-      reviewIntervalMin: s.monitor_auto_run ? cronIntervalMinutes(s.monitor_cron) : null,
-      breakevenPct: s.monitor_breakeven_pct > 0 ? s.monitor_breakeven_pct : 3,
-      feeRate: s.fee_rate,
-      adjustCooldownMin: s.monitor_adjust_cooldown_min,
-    }
+    const p = buildCycleParams(s, ensemble)
 
     // Decide which coins to review using only the horizon (a stable position-config
     // field): a `disabled` position is skipped entirely so no LLM call is wasted on

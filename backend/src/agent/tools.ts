@@ -387,6 +387,98 @@ async function listEntryEvents(args: Record<string, unknown>): Promise<unknown> 
   }
 }
 
+// ── Type D position-monitor tools ─────────────────────────────────────────────
+// Added for the agentic Type D monitor (agent/monitorD.ts), but registered on the
+// shared belt so the chat agent can call them too. All read-only.
+
+// Recent OHLCV candles. Cache-first by design: getOHLCV reads the local `ohlcv_cache`
+// collection and only backfills the gap from the exchange API when a bar is missing
+// or stale, then persists it — so repeated calls within a candle don't re-hit Binance.
+async function getCandleData(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  if (!isTradeable(coin)) return { error: `${coin} is not a tradeable market.` }
+
+  const tfRaw = String(args.timeframe ?? '1h')
+  const tf = priceCache.isTimeframe(tfRaw) ? tfRaw : '1h'
+  const limit = clampLimit(args.limit, 50, 200)
+
+  try {
+    // STUB-SHAPED but real: getOHLCV is the single cache-first/backfill choke point.
+    //   1. look up `ohlcv_cache` for (coin, tf) locally
+    //   2. if absent/stale → fetch the missing window from the exchange and upsert it
+    //   3. return the merged series
+    const candles = await priceCache.getOHLCV(coin, tf, limit)
+    if (!candles.length) return { coin, timeframe: tf, error: 'No candle data available yet.' }
+    return {
+      coin,
+      timeframe: tf,
+      count: candles.length,
+      // [openTime, open, high, low, close, volume] tuples, oldest → newest.
+      candles: candles.map(c => ({
+        t: c.time, o: c.open, h: c.high, l: c.low, c: c.close, v: c.volume,
+      })),
+      source: 'cache-first (local ohlcv_cache, backfilled from exchange on miss)',
+    }
+  } catch (err) {
+    return { coin, timeframe: tf, error: `Candle fetch failed: ${(err as Error).message}` }
+  }
+}
+
+// Past performance for one coin: realized PnL across executed trades plus the recent
+// monitor verdict history, so Type D can judge how this position has been managed.
+async function getPositionHistory(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+
+  const tradeRows = await trades.find(
+    { coin, status: 'EXECUTED' },
+    { sort: { created_at: -1 }, limit: 50, projection: { _id: 0, side: 1, quantity: 1, price: 1, total: 1, fee_cost: 1, created_at: 1 } },
+  ) as { side: string; quantity: number; price: number; total: number; fee_cost: number | null; created_at: string }[]
+
+  // Simple fee-aware realized tally: SELL proceeds − BUY cost − fees. A coarse proxy
+  // for "has trading this coin made money?", not the per-lot netRealizedPnl ledger.
+  let buyCost = 0, sellProceeds = 0, fees = 0
+  for (const t of tradeRows) {
+    if (t.side === 'BUY') buyCost += t.total
+    else if (t.side === 'SELL') sellProceeds += t.total
+    fees += t.fee_cost ?? 0
+  }
+  const realizedPnl = Number((sellProceeds - buyCost - fees).toFixed(2))
+
+  const reviews = (await getReviews(8)).filter(r => r.coin === coin)
+  return {
+    coin,
+    tradeCount: tradeRows.length,
+    realizedPnlUsd: realizedPnl,
+    feesPaidUsd: Number(fees.toFixed(2)),
+    recentTrades: tradeRows.slice(0, 10),
+    recentReviews: reviews.map(r => ({ action: r.action, confidence: r.confidence, reasoning: snippet(r.reasoning, 200), at: r.created_at })),
+  }
+}
+
+// Recent news / market sentiment for a coin. STUB: a full implementation would call
+// the researcher (Puppeteer/DuckDuckGo) → extractor (LLM sentiment compression) chain
+// used by the entry pipeline. That's a heavy multi-second crawl, so here we return the
+// cheap proxy already in the DB (recent analyst reasoning) and flag it as a stub.
+async function getCoinSentiment(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+
+  // TODO(typeD): wire researcher.search(coin) → extractor.summarize(articles) for live
+  // article-level sentiment. For now, surface the latest analyst signals as a proxy.
+  const signals = await decisions.find(
+    { coin },
+    { sort: { created_at: -1 }, limit: 5, projection: { _id: 0, action: 1, reason: 1, confidence: 1, created_at: 1 } },
+  )
+  return {
+    coin,
+    stub: true,
+    note: 'Live news/sentiment crawl not wired here yet — returning recent analyst reasoning as a proxy.',
+    recentAnalystViews: signals.map(s => ({ action: s.action, confidence: s.confidence, reason: snippet(s.reason, 240), at: s.created_at })),
+  }
+}
+
 // ── safe-action tools ────────────────────────────────────────────────────────
 
 async function addToWatchlist(args: Record<string, unknown>): Promise<unknown> {
@@ -594,6 +686,43 @@ export const TOOLS: AgentTool[] = [
     handler: listEntryEvents,
   },
   {
+    name: 'get_candle_data',
+    description: 'Fetch recent OHLCV candles for one coin (cache-first: reads the local candle store and only backfills missing bars from the exchange). Returns oldest→newest tuples. Use to read price structure, momentum and volatility for a position.',
+    parameters: {
+      type: 'object',
+      properties: {
+        coin: { type: 'string', description: 'Coin symbol, e.g. "BTC" or "BTC/USDC".' },
+        timeframe: { type: 'string', description: 'Candle timeframe, e.g. "5m", "15m", "1h", "4h", "1d" (default "1h").' },
+        limit: { type: 'number', description: 'How many candles (default 50, max 200).' },
+      },
+      required: ['coin'],
+    },
+    readOnly: true,
+    handler: getCandleData,
+  },
+  {
+    name: 'get_position_history',
+    description: "Get a coin's past performance: realized P&L and fees across executed trades, recent trades, and recent monitor verdicts. Use to judge how this position has been managed before deciding to hold/adjust/close.",
+    parameters: {
+      type: 'object',
+      properties: { coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' } },
+      required: ['coin'],
+    },
+    readOnly: true,
+    handler: getPositionHistory,
+  },
+  {
+    name: 'get_coin_sentiment',
+    description: 'Gather recent news and market sentiment for a coin. (Currently returns recent analyst reasoning as a proxy; flagged with stub:true.) Use to weigh narrative/news risk against the chart.',
+    parameters: {
+      type: 'object',
+      properties: { coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' } },
+      required: ['coin'],
+    },
+    readOnly: true,
+    handler: getCoinSentiment,
+  },
+  {
     name: 'add_to_watchlist',
     description: 'Add a coin to the watchlist so the entry pipeline starts analyzing it. Safe, non-trading action.',
     parameters: {
@@ -651,16 +780,28 @@ export const TOOLS: AgentTool[] = [
 
 const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]))
 
+// The curated belt the Type D agentic monitor exposes to its model: only the
+// position-evaluation reads it needs to reach a Hold/Adjust/Close verdict. It is
+// deliberately a SUBSET — Type D must never trigger engines or mutate the watchlist
+// mid-review, so the trigger_*/watchlist tools are excluded.
+export const MONITOR_D_TOOL_NAMES = [
+  'list_open_positions', 'get_market', 'get_candle_data',
+  'get_position_history', 'get_coin_sentiment', 'list_position_reviews',
+  'list_recent_trades', 'list_recent_signals',
+] as const
+
 export function isReadOnlyTool(name: string): boolean {
   return TOOL_MAP.get(name)?.readOnly ?? true
 }
 
-/** OpenAI `tools` array built from the registry. */
-export function getToolSchemas(): {
+/** OpenAI `tools` array built from the registry. Pass `only` to expose a subset
+ *  (e.g. the Type D monitor belt); omit it for the full chat-agent belt. */
+export function getToolSchemas(only?: readonly string[]): {
   type: 'function'
   function: { name: string; description: string; parameters: Record<string, unknown> }
 }[] {
-  return TOOLS.map(t => ({
+  const set = only ? new Set(only) : null
+  return TOOLS.filter(t => !set || set.has(t.name)).map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }))

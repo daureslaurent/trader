@@ -1,10 +1,11 @@
 import cron, { ScheduledTask } from 'node-cron'
 import { logger } from '../core/logger.js'
-import { runLLMRetention } from '../db/index.js'
+import { runLLMRetention, getSettings } from '../db/index.js'
 import { BotSettings } from '../types.js'
 import { checkOpenPositions } from '../portfolio/index.js'
 import { runDiscovery } from '../discoverer/index.js'
 import { runMonitor } from '../monitor/index.js'
+import { runMonitorD } from '../agent/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { runPipeline } from '../pipeline/index.js'
 import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
@@ -43,6 +44,15 @@ export function scheduleDiscovery(expression: string): void {
   logger.info('Discovery pipeline scheduled', { cron: expression })
 }
 
+// Runs whichever monitor engine the user selected. The classic single-shot ensemble and
+// the Type D agentic monitor are mutually exclusive — exactly one fires per cycle. Shared
+// by the cron and the `monitor_run_requested` bus handler so manual triggers route too.
+export function dispatchMonitorRun(cycleId: string): Promise<void> {
+  return getSettings().monitor_strategy === 'agentic_d'
+    ? runMonitorD(cycleId)
+    : runMonitor(cycleId)
+}
+
 export function scheduleMonitor(expression: string, enabled: boolean): void {
   monitorCronTask?.stop()
   monitorCronTask = null
@@ -56,7 +66,7 @@ export function scheduleMonitor(expression: string, enabled: boolean): void {
   }
   monitorCronTask = cron.schedule(expression, () => {
     const cycleId = `${Date.now().toString(36)}-monitor`
-    runMonitor(cycleId).catch(err => {
+    dispatchMonitorRun(cycleId).catch(err => {
       logger.error('Scheduled monitor run failed', { error: err instanceof Error ? err.message : String(err) })
     })
   })

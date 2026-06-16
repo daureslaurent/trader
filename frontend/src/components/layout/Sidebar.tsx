@@ -44,6 +44,11 @@ const ITEMS: Record<Page, NavItem> = {
     label: 'Monitor',
     path: 'M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
   },
+  'agent-monitor': {
+    key: 'agent-monitor',
+    label: 'Agent Monitor',
+    path: 'M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z',
+  },
   summary: {
     key: 'summary',
     label: 'Summary',
@@ -130,7 +135,7 @@ interface NavGroup {
 }
 
 const GROUPS: NavGroup[] = [
-  { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'summary', 'entry', 'trade', 'trading-state'] },
+  { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'agent-monitor', 'summary', 'entry', 'trade', 'trading-state'] },
   { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['pipeline', 'charts', 'discover'] },
   { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['control-room', 'llm-debug', 'llm-stats', 'cache'] },
   { id: 'system', label: 'Platform', icon: SECTION_ICONS.system, keys: ['host', 'logs', 'settings'] },

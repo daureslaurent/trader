@@ -10,9 +10,8 @@ import {
   runPipeline, runSingleCoinPipeline, requestCancel, logPipelineEvent, PIPELINE_TIMEOUT_MS,
 } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
-import { runMonitor } from '../monitor/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
-import { rescheduleFromSettings } from './scheduler.js'
+import { rescheduleFromSettings, dispatchMonitorRun } from './scheduler.js'
 
 const errMsg = (err: unknown) => err instanceof Error ? err.message : String(err)
 
@@ -102,7 +101,7 @@ export function registerEventHandlers(): void {
   })
 
   bus.on('monitor_run_requested', ({ cycle_id }) => {
-    runMonitor(cycle_id).catch(err => {
+    dispatchMonitorRun(cycle_id).catch(err => {
       logger.error('Monitor run failed', { error: errMsg(err) })
     })
   })

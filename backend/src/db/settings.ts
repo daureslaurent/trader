@@ -61,6 +61,7 @@ export function getSettings(): BotSettings {
     discover_auto_add: map.discover_auto_add === 'true',
     discover_min_volume_usd: parseFloat(map.discover_min_volume_usd || '5000000'),
     monitor_auto_run: map.monitor_auto_run === 'true',
+    monitor_strategy: (map.monitor_strategy === 'agentic_d' ? 'agentic_d' : 'classic') as 'classic' | 'agentic_d',
     monitor_model: (['a', 'b', 'alternate', 'ab', 'abc'].includes(map.monitor_model) ? map.monitor_model : 'a') as 'a' | 'b' | 'alternate' | 'ab' | 'abc',
     monitor_cron: map.monitor_cron || '0 */4 * * *',
     monitor_adjust_sltp: (map.monitor_adjust_sltp ?? 'true') === 'true',
