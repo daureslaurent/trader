@@ -29,15 +29,24 @@ interface MonitorDRun {
   discarded: boolean
   model: string
   frames: Frame[]
+  prompt_tokens: number
+  completion_tokens: number
+  peak_context_tokens: number
   started_at_ms: number
   created_at: string
 }
 
 // A coin currently mid-review (frames stream in before the run is persisted).
-interface LiveReview { coin: string; frames: Frame[]; status: 'reviewing' | 'done' | 'error'; startedAt: number }
+interface LiveReview { coin: string; frames: Frame[]; status: 'reviewing' | 'done' | 'error'; peakContext: number; startedAt: number }
 
 // The server's in-memory in-flight review (so a running cycle survives a page reload).
-interface ActiveReview { coin: string; cycle_id: string; status: LiveReview['status']; frames: Frame[]; started_at_ms: number }
+interface ActiveReview { coin: string; cycle_id: string; status: LiveReview['status']; frames: Frame[]; peak_context_tokens: number; started_at_ms: number }
+
+// Compact token count: 12,345 → "12.3k".
+function fmtTok(n: number): string {
+  if (!n) return '—'
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
 
 interface RunsResponse { running: boolean; mode: string; runs: MonitorDRun[]; live: ActiveReview[] }
 
@@ -118,7 +127,7 @@ export default function AgentMonitor() {
       setRunning(initial.data.running)
       const seeded: Record<string, LiveReview> = {}
       for (const a of initial.data.live ?? []) {
-        seeded[a.coin] = { coin: a.coin, frames: a.frames, status: a.status, startedAt: a.started_at_ms }
+        seeded[a.coin] = { coin: a.coin, frames: a.frames, status: a.status, peakContext: a.peak_context_tokens, startedAt: a.started_at_ms }
       }
       setLive(prev => ({ ...seeded, ...prev }))
     }
@@ -152,7 +161,7 @@ export default function AgentMonitor() {
     const frame: Frame = { type: s.type, icon: s.icon ?? '•', text: s.text ?? '', tone: (s.tone as Tone) ?? 'muted', at: s.at ?? Date.now() }
 
     setLive(prev => {
-      const cur = prev[coin] ?? { coin, frames: [], status: 'reviewing' as const, startedAt: Date.now() }
+      const cur = prev[coin] ?? { coin, frames: [], status: 'reviewing' as const, peakContext: 0, startedAt: Date.now() }
       const status: LiveReview['status'] = s.type === 'error' ? 'error' : s.type === 'decision' ? 'done' : cur.status
       return { ...prev, [coin]: { ...cur, frames: [...cur.frames, frame], status } }
     })
@@ -196,12 +205,12 @@ export default function AgentMonitor() {
     if (!selected) return null
     if (selected.kind === 'live') {
       const lv = live[selected.coin]
-      if (lv) return { coin: lv.coin, frames: lv.frames, verdict: null as MonitorDRun | null }
+      if (lv) return { coin: lv.coin, frames: lv.frames, verdict: null as MonitorDRun | null, peak: lv.peakContext }
       const saved = runs.find(r => r.coin === selected.coin)
-      return saved ? { coin: saved.coin, frames: saved.frames, verdict: saved } : null
+      return saved ? { coin: saved.coin, frames: saved.frames, verdict: saved, peak: saved.peak_context_tokens } : null
     }
     const run = runs.find(r => r.id === selected.id)
-    return run ? { coin: run.coin, frames: run.frames, verdict: run } : null
+    return run ? { coin: run.coin, frames: run.frames, verdict: run, peak: run.peak_context_tokens } : null
   }, [selected, live, runs])
 
   const thinkingCount = detail ? detail.frames.filter(isThinking).length : 0
@@ -256,7 +265,7 @@ export default function AgentMonitor() {
                         <span className="font-semibold text-foreground shrink-0">{lv.coin}</span>
                         <span className="truncate font-mono text-xs text-muted">{last ? `${last.icon} ${last.text}` : '…'}</span>
                       </div>
-                      <span className="text-[10px] text-muted/60 shrink-0">{lv.frames.length} steps</span>
+                      <span className="text-[10px] text-muted/60 shrink-0">{lv.frames.length} steps{lv.peakContext ? ` · ${fmtTok(lv.peakContext)} tok` : ''}</span>
                     </button>
                   )
                 })}
@@ -278,6 +287,7 @@ export default function AgentMonitor() {
                       <th className="px-5 py-2 font-medium">Coin</th>
                       <th className="px-3 py-2 font-medium">Decision</th>
                       <th className="px-3 py-2 font-medium text-right">Conf.</th>
+                      <th className="px-3 py-2 font-medium text-right" title="Peak single-request context (prompt + completion) — compare to the model's context window">Ctx peak</th>
                       <th className="px-3 py-2 font-medium">Reasoning</th>
                       <th className="px-5 py-2 font-medium text-right">When</th>
                     </tr>
@@ -286,10 +296,10 @@ export default function AgentMonitor() {
                     {cycles.map(cycle => (
                       <Fragment key={cycle.cycle_id}>
                         <tr className="bg-surface-elevated/30">
-                          <td colSpan={5} className="px-5 py-1.5 text-[11px] font-mono text-muted/70">
+                          <td colSpan={6} className="px-5 py-1.5 text-[11px] font-mono text-muted/70">
                             run {cycle.cycle_id} · {agoMs(cycle.at)} · {cycle.runs.length} position{cycle.runs.length === 1 ? '' : 's'}
                           </td>
-                        </tr>{/* keep colSpan in sync with the 5 visible columns */}
+                        </tr>{/* keep colSpan in sync with the visible columns */}
                         {cycle.runs.map(r => {
                           const on = selected?.kind === 'run' && selected.id === r.id
                           return (
@@ -304,6 +314,7 @@ export default function AgentMonitor() {
                                 {r.discarded && <span className="ml-1 text-[10px] text-warn">discarded</span>}
                               </td>
                               <td className="px-3 py-2 text-right font-mono text-xs text-muted">{Math.round(r.confidence * 100)}%</td>
+                              <td className="px-3 py-2 text-right font-mono text-xs text-muted" title={`${r.peak_context_tokens.toLocaleString()} tokens peak · ${r.prompt_tokens.toLocaleString()} prompt + ${r.completion_tokens.toLocaleString()} completion total`}>{fmtTok(r.peak_context_tokens)}</td>
                               <td className="px-3 py-2 text-xs text-foreground/70 max-w-xs truncate" title={r.reasoning}>{r.reasoning}</td>
                               <td className="px-5 py-2 text-right text-[11px] text-muted/60 whitespace-nowrap">{agoMs(r.started_at_ms)}</td>
                             </tr>
@@ -341,6 +352,13 @@ export default function AgentMonitor() {
                 </div>
 
                 <div className="overflow-y-auto px-5 py-4 space-y-4">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+                    <span className="text-muted/70">Context peak <span className="font-mono text-foreground/80" title="Largest single-request context (prompt + completion) — compare against the model's context window">{detail.peak ? detail.peak.toLocaleString() : '—'} tok</span></span>
+                    {detail.verdict && (
+                      <span className="text-muted/70">Total <span className="font-mono text-foreground/80">{(detail.verdict.prompt_tokens + detail.verdict.completion_tokens).toLocaleString()} tok</span> <span className="text-muted/50">({detail.verdict.prompt_tokens.toLocaleString()} prompt + {detail.verdict.completion_tokens.toLocaleString()} completion)</span></span>
+                    )}
+                  </div>
+
                   {detail.verdict && (
                     <div className="rounded-xl border border-border bg-surface-elevated/40 p-4">
                       <p className="text-[11px] uppercase tracking-wide text-muted/70 mb-1.5">Verdict reasoning</p>

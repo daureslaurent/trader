@@ -51,6 +51,8 @@ export interface ActiveReview {
   cycle_id: string
   status: 'reviewing' | 'done' | 'error'
   frames: MonitorDRunFrame[]
+  /** Running peak single-request context (prompt+completion) seen so far this review. */
+  peak_context_tokens: number
   started_at_ms: number
 }
 const activeReviews = new Map<string, ActiveReview>()
@@ -76,12 +78,27 @@ const TOOL_FEED: Record<string, { icon: string; verb: string }> = {
 // It also maintains the shared `activeReviews` entry so an in-flight review is recoverable.
 class Recorder {
   private entry: ActiveReview
+  // Token accounting across the run's LLM calls (peak = largest single request).
+  promptTokens = 0
+  completionTokens = 0
+  peakContext = 0
   constructor(private cycleId: string, private coin: string) {
-    this.entry = { coin, cycle_id: cycleId, status: 'reviewing', frames: [], started_at_ms: Date.now() }
+    this.entry = { coin, cycle_id: cycleId, status: 'reviewing', frames: [], peak_context_tokens: 0, started_at_ms: Date.now() }
     activeReviews.set(coin, this.entry)
   }
   get frames(): MonitorDRunFrame[] { return this.entry.frames }
   get startedAt(): number { return this.entry.started_at_ms }
+
+  /** Fold one call's usage into the run totals. */
+  addUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): void {
+    if (!usage) return
+    const p = usage.prompt_tokens ?? 0
+    const c = usage.completion_tokens ?? 0
+    this.promptTokens += p
+    this.completionTokens += c
+    this.peakContext = Math.max(this.peakContext, usage.total_tokens ?? p + c)
+    this.entry.peak_context_tokens = this.peakContext
+  }
 
   push(type: string, icon: string, text: string, tone: Tone, extra: Record<string, unknown> = {}): void {
     const frame: MonitorDRunFrame = { type, icon, text, tone, at: Date.now() }
@@ -174,6 +191,8 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
       }),
     })
 
+    rec.addUsage(resp.usage)
+
     const choice = resp.choices[0]?.message
     // Surface the model's own chain-of-thought for this call when the endpoint returns it
     // (llama.cpp / reasoning models expose it as `reasoning_content`). Shown in the modal.
@@ -255,7 +274,9 @@ async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: strin
   // repository allocates the integer id on insert; we echo it back in the broadcast.
   const runDoc: Omit<MonitorDRun, 'id'> = {
     cycle_id: cycleId, coin, action, confidence, reasoning, discarded,
-    model, frames: rec.frames, started_at_ms: rec.startedAt, created_at: nowSql(),
+    model, frames: rec.frames,
+    prompt_tokens: rec.promptTokens, completion_tokens: rec.completionTokens, peak_context_tokens: rec.peakContext,
+    started_at_ms: rec.startedAt, created_at: nowSql(),
   }
   const id = Number(await monitorDRuns.insert(runDoc))
   broadcast('monitor_d_run_saved', { id, ...runDoc } satisfies MonitorDRun)

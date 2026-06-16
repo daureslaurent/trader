@@ -510,6 +510,12 @@ export interface MonitorDRun {
   model: string
   /** The agent's loop transcript (thinking / tool_call / tool_result / decision …). */
   frames: MonitorDRunFrame[]
+  /** Token accounting across every LLM call in this run. `peak_context_tokens` is the
+   *  largest single request (prompt+completion) — what presses against the model's
+   *  context window; `prompt`/`completion` are summed over all the round-trips. */
+  prompt_tokens: number
+  completion_tokens: number
+  peak_context_tokens: number
   started_at_ms: number
   created_at: string
 }
