@@ -172,7 +172,9 @@ function cronIntervalMinutes(expr: string): number | null {
   return null
 }
 
-async function pruneMonitorHistory(maxCycles = 20): Promise<void> {
+async function pruneMonitorHistory(
+  maxCycles = Math.max(1, getSettings().monitor_review_retain_cycles || 20),
+): Promise<void> {
   // Keep the most recent `maxCycles` distinct cycles (by latest created_at), delete the rest.
   const recent = await positionReviews.aggregate<{ _id: string }>([
     { $group: { _id: '$cycle_id', latest: { $max: '$created_at' } } },

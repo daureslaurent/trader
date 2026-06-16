@@ -6,6 +6,7 @@ import {
 import type { Decision, Trade, SlTpEvent, PositionReview } from '../types'
 import { fmtUSD, fmt, cn } from '../lib/utils'
 import { usePrices } from '../hooks/usePrices'
+import { useApi } from '../hooks/useApi'
 
 export interface Candle {
   time: number   // epoch seconds
@@ -132,22 +133,54 @@ function Candlestick(props: any) {
   )
 }
 
-// Analyst signal marker (BUY ▲ below low, SELL ▼ above high, HOLD • on close).
+// Soft radial halo behind a marker — gives the modern "glow" without SVG filters
+// (mirrors the layered-opacity trick the live dot uses). Two stacked translucent
+// discs fade outward so the marker reads as lit from within against any candle.
+function Halo({ cx, cy, color, r = 9 }: { cx: number; cy: number; color: string; r?: number }) {
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={r} fill={color} opacity={0.12} />
+      <circle cx={cx} cy={cy} r={r * 0.6} fill={color} opacity={0.18} />
+    </g>
+  )
+}
+
+// Analyst signal marker — a glowing rounded chevron (BUY ▲ below low, SELL ▼ above
+// high) or a ringed dot for HOLD. Rounded joins + a halo read cleaner than the old
+// hard triangles, and the card-colored outline keeps it crisp over any candle.
 function SignalMarker(props: any) {
   const { cx, cy, action } = props
   if (cx == null || cy == null) return null
-  const s = 5
+  const s = 5.5
   if (action === 'BUY') {
-    const y = cy + 9
-    return <path d={`M${cx},${y - s} L${cx - s},${y + s} L${cx + s},${y + s} Z`}
-      fill="rgb(var(--buy-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
+    const y = cy + 11
+    const color = 'rgb(var(--buy-rgb))'
+    return (
+      <g>
+        <Halo cx={cx} cy={y} color={color} r={8} />
+        <path d={`M${cx},${y - s} L${cx - s},${y + s} L${cx + s},${y + s} Z`}
+          fill={color} stroke="var(--surface-card)" strokeWidth={1} strokeLinejoin="round" />
+      </g>
+    )
   }
   if (action === 'SELL') {
-    const y = cy - 9
-    return <path d={`M${cx},${y + s} L${cx - s},${y - s} L${cx + s},${y - s} Z`}
-      fill="rgb(var(--sell-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
+    const y = cy - 11
+    const color = 'rgb(var(--sell-rgb))'
+    return (
+      <g>
+        <Halo cx={cx} cy={y} color={color} r={8} />
+        <path d={`M${cx},${y + s} L${cx - s},${y - s} L${cx + s},${y - s} Z`}
+          fill={color} stroke="var(--surface-card)" strokeWidth={1} strokeLinejoin="round" />
+      </g>
+    )
   }
-  return <circle cx={cx} cy={cy} r={3} fill="rgb(var(--warn-rgb))" stroke="var(--surface-card)" strokeWidth={0.75} />
+  const color = 'rgb(var(--warn-rgb))'
+  return (
+    <g>
+      <Halo cx={cx} cy={cy} color={color} r={6} />
+      <circle cx={cx} cy={cy} r={3.5} fill={color} stroke="var(--surface-card)" strokeWidth={1} />
+    </g>
+  )
 }
 
 function reviewColor(action: ReviewMark['action']): string {
@@ -156,35 +189,44 @@ function reviewColor(action: ReviewMark['action']): string {
   return 'rgb(var(--warn-rgb))' // REDUCE / ADJUST
 }
 
-// Monitor review marker: diamond above the candle high (stacked above any SELL signal).
+// Monitor review marker: a glowing diamond above the candle (stacked above any SELL
+// signal), with a tethered count pill when a candle holds several reviews.
 function MonitorMarker(props: any) {
   const { cx, cy, reviews } = props as { cx?: number; cy?: number; reviews: ReviewMark[] }
   if (cx == null || cy == null) return null
-  const s = 4.5
-  const y = cy - 22
+  const s = 5
+  const y = cy - 24
   const color = reviewColor(reviews[reviews.length - 1].action)
+  const count = reviews.length
   return (
     <g>
+      <Halo cx={cx} cy={y} color={color} r={8} />
       <path d={`M${cx},${y - s} L${cx + s},${y} L${cx},${y + s} L${cx - s},${y} Z`}
-        fill={color} stroke="var(--surface-card)" strokeWidth={0.75} />
-      {reviews.length > 1 && (
-        <text x={cx} y={y - s - 3} textAnchor="middle" fontSize={8} fontWeight={700} fill={color}>
-          {reviews.length}
-        </text>
+        fill={color} stroke="var(--surface-card)" strokeWidth={1} strokeLinejoin="round" />
+      {count > 1 && (
+        <g>
+          <rect x={cx + s - 1} y={y - s - 9} width={count > 9 ? 17 : 13} height={12} rx={6}
+            fill={color} stroke="var(--surface-card)" strokeWidth={1} />
+          <text x={cx + s - 1 + (count > 9 ? 8.5 : 6.5)} y={y - s} textAnchor="middle"
+            fontSize={8} fontWeight={800} fill="#fff">
+            {count}
+          </text>
+        </g>
       )}
     </g>
   )
 }
 
-// Executed-trade marker: filled badge at the fill price with B / S label.
+// Executed-trade marker: a glowing badge at the fill price with a B / S label.
 function TradeMarker(props: any) {
   const { cx, cy, side } = props
   if (cx == null || cy == null) return null
   const color = side === 'BUY' ? 'rgb(var(--buy-rgb))' : 'rgb(var(--sell-rgb))'
   return (
     <g>
-      <circle cx={cx} cy={cy} r={7} fill={color} stroke="var(--surface-card)" strokeWidth={1.5} />
-      <text x={cx} y={cy + 3} textAnchor="middle" fontSize={9} fontWeight={700} fill="#fff">
+      <Halo cx={cx} cy={cy} color={color} r={12} />
+      <circle cx={cx} cy={cy} r={7.5} fill={color} stroke="var(--surface-card)" strokeWidth={1.75} />
+      <text x={cx} y={cy + 3} textAnchor="middle" fontSize={9} fontWeight={800} fill="#fff">
         {side === 'BUY' ? 'B' : 'S'}
       </text>
     </g>
@@ -327,18 +369,31 @@ export function CandleChart({ symbol, decisions = [], trades = [], levels = [], 
   const [showTp, setShowTp] = useState(true)
   const [slTpEvents, setSlTpEvents] = useState<SlTpEvent[]>([])
   const [monitorReviews, setMonitorReviews] = useState<PositionReview[]>([])
+  const [coinDecisions, setCoinDecisions] = useState<Decision[]>([])
   const reqId = useRef(0)
 
   useEffect(() => { localStorage.setItem('chart_tf', tf) }, [tf])
 
+  // Marker-retention settings (Trade-page chart). Fall back to the built-in defaults
+  // when settings haven't loaded yet so the chart always renders.
+  const { data: chartSettings } = useApi<{ chart_candle_limit?: number; chart_marker_limit?: number }>('/api/settings')
+  const candleLimit = Math.min(Math.max(chartSettings?.chart_candle_limit ?? 150, 10), 1000)
+
   const livePrices = usePrices()
   const liveSnap = livePrices.get(symbol)
 
-  // SL/TP change history + monitor review history for the coin (refetched when coin changes).
+  // SL/TP change history + monitor review history + per-coin analyst signals for the
+  // coin (refetched when coin or the marker-depth setting changes). Pulling decisions
+  // per coin — rather than relying on the global latest-50 feed passed in as a prop —
+  // is what gives the signal markers real history depth.
   useEffect(() => {
-    if (hideSlTp) { setSlTpEvents([]); setMonitorReviews([]); return }
     let cancelled = false
     const base = symbol.replace('/USDC', '')
+    fetch(`/api/decisions/${base}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setCoinDecisions(Array.isArray(d) ? d : []) })
+      .catch(() => { if (!cancelled) setCoinDecisions([]) })
+    if (hideSlTp) { setSlTpEvents([]); setMonitorReviews([]); return () => { cancelled = true } }
     fetch(`/api/sl-tp/${base}`)
       .then(r => r.json())
       .then(d => { if (!cancelled) setSlTpEvents(Array.isArray(d) ? d : []) })
@@ -348,7 +403,7 @@ export function CandleChart({ symbol, decisions = [], trades = [], levels = [], 
       .then(d => { if (!cancelled) setMonitorReviews(Array.isArray(d) ? d : []) })
       .catch(() => { if (!cancelled) setMonitorReviews([]) })
     return () => { cancelled = true }
-  }, [symbol, hideSlTp])
+  }, [symbol, hideSlTp, chartSettings?.chart_marker_limit])
 
   useEffect(() => {
     let cancelled = false
@@ -357,7 +412,7 @@ export function CandleChart({ symbol, decisions = [], trades = [], levels = [], 
 
     function load(initial: boolean) {
       if (initial) { setLoading(true); setError(null) }
-      fetch(`/api/ohlcv/${base}?tf=${tf}&limit=150`)
+      fetch(`/api/ohlcv/${base}?tf=${tf}&limit=${candleLimit}`)
         .then(r => r.json())
         .then(data => {
           if (cancelled || id !== reqId.current) return
@@ -371,7 +426,7 @@ export function CandleChart({ symbol, decisions = [], trades = [], levels = [], 
     load(true)
     const t = setInterval(() => load(false), REFRESH_MS[tf])
     return () => { cancelled = true; clearInterval(t) }
-  }, [symbol, tf])
+  }, [symbol, tf, candleLimit])
 
   // Candle data enriched with signal + trade markers (independent of live price).
   const data = useMemo<ChartDatum[]>(() => {
@@ -383,9 +438,17 @@ export function CandleChart({ symbol, decisions = [], trades = [], levels = [], 
     const inRange = (ts: number) => ts >= firstTime && ts < lastTime + step
     const candleTimeFor = (ts: number) => candles[clampIdx(Math.floor((ts - firstTime) / step), candles.length)].time
 
-    // Analyst signals — most recent decision wins per candle.
+    // Analyst signals — most recent decision wins per candle. Merge the per-coin
+    // history (deep) with whatever decisions were passed in as a prop (the global
+    // feed), deduped by id, so markers keep their full configured depth.
+    const seenIds = new Set<number>()
+    const allDecisions = [...coinDecisions, ...decisions].filter(d => {
+      if (seenIds.has(d.id)) return false
+      seenIds.add(d.id)
+      return true
+    })
     const signalByTime = new Map<number, Signal>()
-    decisions
+    allDecisions
       .filter(d => d.coin === symbol)
       .map(d => ({ ...d, ts: parseTime(d.created_at) }))
       .sort((a, b) => a.ts - b.ts)
@@ -453,7 +516,7 @@ export function CandleChart({ symbol, decisions = [], trades = [], levels = [], 
         tp,
       }
     })
-  }, [candles, decisions, trades, slTpEvents, monitorReviews, symbol])
+  }, [candles, decisions, coinDecisions, trades, slTpEvents, monitorReviews, symbol])
 
   const last = candles[candles.length - 1]
   const first = candles[0]

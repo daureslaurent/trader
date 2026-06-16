@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { decisions as decisionsRepo, pipelineEvents } from '../../db/index.js'
+import { decisions as decisionsRepo, pipelineEvents, getSettings } from '../../db/index.js'
 import { bus } from '../../core/events.js'
 import { isPipelineRunning } from '../../pipeline/index.js'
 import { isTradeable } from '../../core/tradeable.js'
@@ -9,6 +9,22 @@ export const router = Router()
 router.get('/decisions', async (_req: Request, res: Response) => {
   const decisions = await decisionsRepo.find({}, { sort: { created_at: -1 }, limit: 50 })
   res.json(decisions)
+})
+
+// Per-coin decision history for the candle-chart signal markers. Capped by the
+// chart_marker_limit setting so a single coin's signals aren't crowded out by the
+// global /decisions feed (which only returns the latest 50 across all coins).
+router.get('/decisions/:coin', async (req: Request, res: Response) => {
+  try {
+    const raw = decodeURIComponent(req.params.coin).trim().toUpperCase()
+    const coin = raw.includes('/') ? raw : `${raw}/USDC`
+    const cap = Math.max(1, getSettings().chart_marker_limit || 200)
+    const limit = Math.min(parseInt((req.query.limit as string) || String(cap), 10) || cap, 1000)
+    const rows = await decisionsRepo.find({ coin }, { sort: { created_at: -1 }, limit })
+    res.json(rows)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 router.get('/chart', async (_req: Request, res: Response) => {

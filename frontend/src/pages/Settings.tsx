@@ -39,6 +39,7 @@ interface SettingsData {
   monitor_min_confidence: number
   monitor_breakeven_pct: number
   monitor_adjust_cooldown_min: number
+  monitor_review_retain_cycles: number
   utc_offset_hours: number
   min_trade_usdc: number
   fee_rate: number
@@ -101,6 +102,8 @@ interface SettingsData {
   summary_cron: string
   summary_retain_days: number
   control_room_retain_hours: number
+  chart_candle_limit: number
+  chart_marker_limit: number
   telegram_notify_enabled: boolean
   telegram_notify_startup: boolean
   telegram_notify_position_opened: boolean
@@ -164,6 +167,7 @@ const SECTIONS = [
   { id: 'entry',      label: 'Entry Timing',     icon: 'M12 8v4l3 3M3 12a9 9 0 1018 0 9 9 0 00-18 0z' },
   { id: 'risk',       label: 'Risk Management',  icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
   { id: 'monitor',    label: 'Position Monitor', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+  { id: 'chart',      label: 'Chart Markers',    icon: 'M3 3v18h18M7 14l3-3 3 3 4-5M16 9h2v2' },
   { id: 'summary',    label: 'Portfolio Summary', icon: 'M9 17v-6h13M9 11V5h13M3 5h.01M3 11h.01M3 17h.01' },
   { id: 'models',     label: 'LLM Models',       icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z' },
   { id: 'agent',      label: 'Agent',            icon: 'M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 01.778-.332 48.294 48.294 0 005.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z' },
@@ -174,6 +178,9 @@ const SECTIONS = [
 ] as const
 
 type SectionId = typeof SECTIONS[number]['id']
+
+// Icon lookup by id so section rendering doesn't depend on array position.
+const secIcon = (id: SectionId): string => SECTIONS.find(s => s.id === id)!.icon
 
 function SectionIcon({ path, className }: { path: string; className?: string }) {
   return (
@@ -990,7 +997,7 @@ export default function Settings() {
       <form onSubmit={save} className="flex-1 min-w-0 space-y-6 pb-24">
 
         {/* Trading */}
-        <Section id="trading" title="Trading" subtitle="Core bot behavior" icon={SECTIONS[0].icon}>
+        <Section id="trading" title="Trading" subtitle="Core bot behavior" icon={secIcon('trading')}>
           <Row
             stacked
             label="Trading horizon"
@@ -1076,7 +1083,7 @@ export default function Settings() {
         </Section>
 
         {/* Entry Timing */}
-        <Section id="entry" title="Entry Timing" subtitle="Wait for a good price before filling a BUY, instead of buying at the cron tick" icon={SECTIONS[1].icon}>
+        <Section id="entry" title="Entry Timing" subtitle="Wait for a good price before filling a BUY, instead of buying at the cron tick" icon={secIcon('entry')}>
           <Row label="Smart entry timing" hint="When on, a BUY signal becomes a pending intent: the bot watches the live price and fills on a pullback (or in-band) instead of buying wherever price sits at the cron tick. Turn off to fill immediately (legacy behavior).">
             <Toggle label="Smart entry timing" checked={settings.entry_timing_enabled} onChange={() => toggle('entry_timing_enabled')} />
           </Row>
@@ -1171,7 +1178,7 @@ export default function Settings() {
         </Section>
 
         {/* Risk */}
-        <Section id="risk" title="Risk Management" subtitle="Position sizing and protection levels" icon={SECTIONS[2].icon}>
+        <Section id="risk" title="Risk Management" subtitle="Position sizing and protection levels" icon={secIcon('risk')}>
           <Row label="Min confidence" hint="Skip signals below this threshold (0–1)">
             <Input type="number" step="0.05" min="0" max="1" value={settings.min_confidence} onChange={e => set('min_confidence', parseFloat(e.target.value) || 0)} />
           </Row>
@@ -1199,7 +1206,7 @@ export default function Settings() {
         </Section>
 
         {/* Position Monitor */}
-        <Section id="monitor" title="Position Monitor" subtitle="Automatically review open positions on a schedule" icon={SECTIONS[3].icon}>
+        <Section id="monitor" title="Position Monitor" subtitle="Automatically review open positions on a schedule" icon={secIcon('monitor')}>
           <Row
             stacked
             label="Monitor model"
@@ -1456,8 +1463,54 @@ export default function Settings() {
           )}
         </Section>
 
+        {/* Chart Markers */}
+        <Section id="chart" title="Chart Markers" subtitle="How much history the Trade-page candle chart keeps for signal, trade and monitor marks" icon={secIcon('chart')}>
+          <Row
+            label="Candle window"
+            hint="Number of candles the chart loads. This sets the visible time span, so a larger value keeps signal / trade / monitor markers on screen further back in time (the actual span depends on the selected timeframe). Default 150."
+          >
+            <UnitInput
+              type="number"
+              step="10"
+              min="10"
+              max="1000"
+              unit="candles"
+              value={settings.chart_candle_limit}
+              onChange={e => set('chart_candle_limit', parseInt(e.target.value) || 150)}
+            />
+          </Row>
+          <Row
+            label="Marker history depth"
+            hint="Max number of analyst signals and monitor reviews the chart fetches per coin. Higher keeps more markers available within the candle window, independent of the global activity feed. Default 200."
+          >
+            <UnitInput
+              type="number"
+              step="10"
+              min="10"
+              max="1000"
+              unit="marks"
+              value={settings.chart_marker_limit}
+              onChange={e => set('chart_marker_limit', parseInt(e.target.value) || 200)}
+            />
+          </Row>
+          <Row
+            label="Monitor review retention"
+            hint="How many monitor cycles of position-review history to keep in the database. Older cycles are pruned after each run, so this caps how far back the diamond monitor markers can appear. Default 20."
+          >
+            <UnitInput
+              type="number"
+              step="1"
+              min="1"
+              max="500"
+              unit="cycles"
+              value={settings.monitor_review_retain_cycles}
+              onChange={e => set('monitor_review_retain_cycles', parseInt(e.target.value) || 20)}
+            />
+          </Row>
+        </Section>
+
         {/* Portfolio Summary */}
-        <Section id="summary" title="Portfolio Summary" subtitle="LLM briefing of the whole portfolio on a schedule" icon={SECTIONS[4].icon}>
+        <Section id="summary" title="Portfolio Summary" subtitle="LLM briefing of the whole portfolio on a schedule" icon={secIcon('summary')}>
           <Row label="Auto-run" hint="Periodically generate a portfolio summary (narrative + health/risk read + suggestions) from your holdings and live Binance market data. Configure the model in the LLM Models section below.">
             <Toggle label="Auto-run summary" checked={settings.summary_auto_run} onChange={() => toggle('summary_auto_run')} />
           </Row>
@@ -1482,7 +1535,7 @@ export default function Settings() {
         </Section>
 
         {/* LLM Models */}
-        <Section id="models" title="LLM Models" subtitle="Define your endpoints once, then assign one to each module. Leave a module on “Env default” (or max tokens 0) to use the env-var config. Add a Fallback to keep a module running if its primary endpoint goes down." icon={SECTIONS[5].icon}>
+        <Section id="models" title="LLM Models" subtitle="Define your endpoints once, then assign one to each module. Leave a module on “Env default” (or max tokens 0) to use the env-var config. Add a Fallback to keep a module running if its primary endpoint goes down." icon={secIcon('models')}>
           <Row
             label="Endpoint catalog"
             hint={`Your reusable URL + model entries. ${settings.llm_endpoints.length} defined.`}
@@ -1529,7 +1582,7 @@ export default function Settings() {
         </Section>
 
         {/* Agent */}
-        <Section id="agent" title="Agent" subtitle="The conversational assistant on the Agent page" icon={SECTIONS[6].icon}>
+        <Section id="agent" title="Agent" subtitle="The conversational assistant on the Agent page" icon={secIcon('agent')}>
           <Row
             label="Auto-title context"
             hint="Conversations are auto-named by the Agent model, refreshed as the chat grows. To keep that cheap, only this many of the most recent messages are summarized for the title — lower uses fewer tokens, higher captures more context. The Agent model & endpoint are configured under LLM Models."
@@ -1547,7 +1600,7 @@ export default function Settings() {
         </Section>
 
         {/* Appearance */}
-        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={SECTIONS[7].icon}>
+        <Section id="appearance" title="Appearance" subtitle="Visual theme" icon={secIcon('appearance')}>
           <div className="py-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
             {THEMES.map(t => (
               <button
@@ -1579,7 +1632,7 @@ export default function Settings() {
         </Section>
 
         {/* LLM Data */}
-        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={SECTIONS[8].icon}>
+        <Section id="llm" title="LLM Data" subtitle="Debug fetch limit and retention policy" icon={secIcon('llm')}>
           <Row
             label="Debug fetch limit"
             hint="Max LLM calls loaded in the LLM Stats and Debug pages. Higher values may slow the page."
@@ -1611,7 +1664,7 @@ export default function Settings() {
         </Section>
 
         {/* Telegram */}
-        <Section id="telegram" title="Telegram" subtitle="Choose which events get pushed to your Telegram chat" icon={SECTIONS[9].icon}>
+        <Section id="telegram" title="Telegram" subtitle="Choose which events get pushed to your Telegram chat" icon={secIcon('telegram')}>
           <Row
             label="Notifications"
             hint="Master switch for all outbound Telegram push notifications. Trade-approval prompts are always sent regardless — you reply to those to approve or reject a trade."
@@ -1634,7 +1687,7 @@ export default function Settings() {
           ))}
         </Section>
 
-        <Section id="system" title="System" subtitle="Maintenance and app lifecycle" icon={SECTIONS[10].icon}>
+        <Section id="system" title="System" subtitle="Maintenance and app lifecycle" icon={secIcon('system')}>
           <Row
             label="Enable app updates"
             hint="Turn on the in-app updater: periodic checks for new commits on main (driving the System page pin) and the one-click rebuild. Requires the host watcher (tools/updater/install-updater.sh). Off by default so the rebuild can't be triggered by accident."

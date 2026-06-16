@@ -137,6 +137,10 @@ export interface BotSettings {
   monitor_breakeven_pct: number
   /** Minimum minutes between applied SL/TP adjustments per position (×0.5 for short horizon, ×2 for long). 0 disables the cooldown. */
   monitor_adjust_cooldown_min: number
+  /** How many distinct monitor cycles of position-review history to keep in the DB.
+   *  Older cycles are pruned after each monitor run. These reviews are the diamond
+   *  markers on the candle chart, so a larger value keeps marker history further back. */
+  monitor_review_retain_cycles: number
   /** Hours to add to UTC when formatting dates in the monitor prompt (e.g. 5 for UTC+5, -3 for UTC-3). */
   utc_offset_hours: number
   /** Max rows to fetch in the LLM Debug page (default 200). */
@@ -235,6 +239,12 @@ export interface BotSettings {
   /** How many hours of LLM-scheduler activity the Control Room retains (feed + per-URL
    *  timeline). The page rebuilds this much scrollback on reload. Default 3. */
   control_room_retain_hours: number
+  /** Candle-chart marker controls (Trade page). How many candles the chart loads —
+   *  this sets the visible time window, so a larger value keeps signal/trade/monitor
+   *  markers on screen further back in time. Default 150. */
+  chart_candle_limit: number
+  /** Max per-coin signal & monitor-review markers the chart fetches. Default 200. */
+  chart_marker_limit: number
   /** Master switch for outbound Telegram push notifications. When false, no event
    *  notifications are sent. Trade-approval prompts are unaffected — they're
    *  functional (you reply to them), not notifications. */

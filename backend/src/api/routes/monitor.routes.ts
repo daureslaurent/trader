@@ -42,9 +42,10 @@ router.get('/monitor/reviews/:coin', async (req: Request, res: Response) => {
   try {
     const raw = decodeURIComponent(req.params.coin).trim().toUpperCase()
     const coin = raw.includes('/') ? raw : `${raw}/USDC`
+    const limit = Math.min(Math.max(getSettings().chart_marker_limit || 200, 1), 1000)
     const reviews = await positionReviews.find(
       { coin },
-      { sort: { created_at: -1 }, limit: 200, projection: { _id: 0, id: 1, coin: 1, action: 1, confidence: 1, reasoning: 1, created_at: 1 } },
+      { sort: { created_at: -1 }, limit, projection: { _id: 0, id: 1, coin: 1, action: 1, confidence: 1, reasoning: 1, created_at: 1 } },
     )
     res.json(reviews)
   } catch (err) {
