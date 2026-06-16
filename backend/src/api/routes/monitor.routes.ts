@@ -3,16 +3,22 @@ import { positionReviews, positionAdjustments, getSettings } from '../../db/inde
 import { bus } from '../../core/events.js'
 import { resolveLLM } from '../../config/llm.js'
 import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning, getActiveMonitorModel } from '../../monitor/index.js'
-import { getMonitorDRuns, isRunningD } from '../../agent/index.js'
+import { getMonitorDRuns, getActiveReviews, isRunningD } from '../../agent/index.js'
 
 export const router = Router()
 
 // Recent persisted Type D (agentic monitor) runs — verdict + transcript per coin per
-// cycle — so the Agent Monitor page rehydrates after a reload.
+// cycle — plus any in-flight reviews of the current cycle, so the Agent Monitor page
+// rehydrates fully after a reload (including a run that is mid-flight).
 router.get('/monitor-d/runs', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10), 1), 500)
-    res.json({ running: isRunningD(), mode: getSettings().monitor_model, runs: await getMonitorDRuns(limit) })
+    res.json({
+      running: isRunningD(),
+      mode: getSettings().monitor_model,
+      runs: await getMonitorDRuns(limit),
+      live: getActiveReviews(),
+    })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }

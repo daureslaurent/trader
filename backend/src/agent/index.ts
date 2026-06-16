@@ -5,5 +5,5 @@ export {
   renameConversation, deleteConversation, getMessages,
 } from './store.js'
 export { TOOLS } from './tools.js'
-export { runMonitorD, isRunningD, getMonitorDRuns } from './monitorD.js'
+export { runMonitorD, isRunningD, getMonitorDRuns, getActiveReviews } from './monitorD.js'
 export type { ChatTurnResult } from './service.js'

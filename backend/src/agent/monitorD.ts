@@ -42,6 +42,22 @@ export function isRunningD(): boolean { return running }
 type StoredToolCalls = OpenAI.Chat.Completions.ChatCompletionMessageToolCall[]
 type Tone = MonitorDRunFrame['tone']
 
+// In-progress reviews for the CURRENT cycle, kept in memory so the Agent Monitor page can
+// rehydrate a running cycle after a reload (live frames aren't persisted until the verdict
+// lands). Keyed by coin; cleared at the start of each cycle, and an entry is removed once
+// its run is persisted to monitor_d_runs (the saved run supersedes the live one).
+export interface ActiveReview {
+  coin: string
+  cycle_id: string
+  status: 'reviewing' | 'done' | 'error'
+  frames: MonitorDRunFrame[]
+  started_at_ms: number
+}
+const activeReviews = new Map<string, ActiveReview>()
+export function getActiveReviews(): ActiveReview[] {
+  return [...activeReviews.values()].sort((a, b) => b.started_at_ms - a.started_at_ms)
+}
+
 // Per-tool presentation, shared by the live feed and the persisted transcript so both
 // render identically. Keep in sync with the frontend's expectations (it just renders).
 const TOOL_FEED: Record<string, { icon: string; verb: string }> = {
@@ -57,16 +73,31 @@ const TOOL_FEED: Record<string, { icon: string; verb: string }> = {
 
 // Records the transcript for one coin's review while streaming each frame live. The
 // server owns presentation (icon/text/tone) so a reloaded transcript matches the live one.
+// It also maintains the shared `activeReviews` entry so an in-flight review is recoverable.
 class Recorder {
-  readonly frames: MonitorDRunFrame[] = []
-  readonly startedAt = Date.now()
-  constructor(private cycleId: string, private coin: string) {}
+  private entry: ActiveReview
+  constructor(private cycleId: string, private coin: string) {
+    this.entry = { coin, cycle_id: cycleId, status: 'reviewing', frames: [], started_at_ms: Date.now() }
+    activeReviews.set(coin, this.entry)
+  }
+  get frames(): MonitorDRunFrame[] { return this.entry.frames }
+  get startedAt(): number { return this.entry.started_at_ms }
 
   push(type: string, icon: string, text: string, tone: Tone, extra: Record<string, unknown> = {}): void {
     const frame: MonitorDRunFrame = { type, icon, text, tone, at: Date.now() }
-    this.frames.push(frame)
+    this.entry.frames.push(frame)
+    if (type === 'error') this.entry.status = 'error'
+    else if (type === 'decision') this.entry.status = 'done'
     // `source: 'monitor_d'` lets the page tell these apart from the chat agent's frames.
     broadcast('agent_step', { source: 'monitor_d', cycle_id: this.cycleId, coin: this.coin, ...frame, ...extra })
+  }
+
+  /** Drop the in-memory entry once the review is durably persisted (or abandoned). */
+  release(): void { activeReviews.delete(this.coin) }
+  /** Mark the entry failed but keep it visible until the next cycle clears it. */
+  fail(error: string): void {
+    this.entry.status = 'error'
+    this.push('error', '❌', `Error: ${error}`, 'sell', { error })
   }
 }
 
@@ -193,8 +224,7 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
 // Reviews one position end-to-end: build the shared JIT context, run the agentic loop,
 // route the verdict through the classic safety net (finalizeReview), then persist the run
 // (verdict + transcript) and broadcast it so the page's table/detail update live.
-async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>): Promise<void> {
-  const rec = new Recorder(cycleId, coin)
+async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>, rec: Recorder): Promise<void> {
   rec.push('coin_started', '🔍', `Reviewing ${coin}…`, 'accent')
 
   const { ctx, history, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
@@ -222,6 +252,7 @@ async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: strin
   }
   const id = Number(await monitorDRuns.insert(runDoc))
   broadcast('monitor_d_run_saved', { id, ...runDoc } satisfies MonitorDRun)
+  rec.release() // the persisted run now supersedes the in-memory live entry
 }
 
 // Keeps only the most recent `monitor_d_retain_runs` records (by id), pruning the rest.
@@ -245,6 +276,7 @@ export async function runMonitorD(cycleId: string): Promise<void> {
   }
   running = true
   const sequential = s.monitor_d_sequential
+  activeReviews.clear() // fresh cycle — drop any leftover live entries from the previous one
   logger.info('Type D agentic monitor started', { cycleId, sequential })
   broadcast('monitor_started', { cycle_id: cycleId, strategy: 'agentic_d' })
 
@@ -259,12 +291,13 @@ export async function runMonitorD(cycleId: string): Promise<void> {
     const p = buildCycleParams(s, placeholderEnsemble())
 
     const reviewOne = async (entry: MonitorEntry): Promise<void> => {
+      const rec = new Recorder(cycleId, entry.coin)
       try {
-        await reviewPositionD(entry.coin, entry, cycleId, p)
+        await reviewPositionD(entry.coin, entry, cycleId, p, rec)
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         logger.error('Type D coin review failed', { coin: entry.coin, cycleId, error })
-        broadcast('agent_step', { source: 'monitor_d', cycle_id: cycleId, coin: entry.coin, type: 'error', icon: '❌', text: `Error: ${error}`, tone: 'sell', error })
+        rec.fail(error) // records the error frame + flags the live entry, kept until next cycle
         broadcast('monitor_coin_error', { cycle_id: cycleId, coin: entry.coin, error, strategy: 'agentic_d' })
       }
     }
