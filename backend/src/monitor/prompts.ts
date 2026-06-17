@@ -134,8 +134,8 @@ ${behavior}
 
 ── Hard risk rules (engine-enforced) ────────────────────────────────────────
 - While the position is in profit, the engine REJECTS any SL loosening or TP lowering.
-- The engine also rejects loosening shortly after a tightening — pick ONE trailing
-  distance and stick with it; do not alternate between distances across reviews.
+- Below break-even you MAY widen the stop back toward the target distance to give the
+  trade room; in profit the stop only ratchets up.
 - Stop-loss loosening is capped at -${cfg.slPct.toFixed(1)}% from current price (the horizon floor).
   Only loosen when volatility has expanded or the original stop was structurally wrong.
   Prefer tightening (trailing) when the trend is intact.
@@ -145,8 +145,8 @@ ${behavior}
 
 ── Hard risk rules (engine-enforced) ────────────────────────────────────────
 - While the position is in profit, the engine REJECTS any SL loosening or TP lowering.
-- The engine also rejects loosening shortly after a tightening — pick ONE trailing
-  distance and stick with it; do not alternate between distances across reviews.
+- Below break-even you MAY widen the stop to give the trade room; in profit the stop
+  only ratchets up.
 - new_stop_loss_pct must be negative (below current price); new_take_profit_pct must be positive.
 - Base levels on ATR(14), SMA7, SMA25, and entry price. Skip trivial tweaks (<0.5% moves).`
 

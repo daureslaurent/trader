@@ -208,7 +208,7 @@ export interface CycleParams {
 }
 
 // Everything a coin's review acts on: the fresh position context, the prompt built
-// from it, the recent-review history (for anti-flip-flop), and the horizon-resolved
+// from it, the recent-review history (for the prompt's decision log), and the horizon-resolved
 // guidance flag. Produced JIT by buildReviewContext, then reused by the merge/validate
 // stage so the prompt and the post-LLM logic always see the SAME market snapshot.
 interface ReviewContext {
@@ -415,7 +415,7 @@ async function monitorCoin(
   )
 
   // Read back the JIT snapshot the voters reviewed (already resolved at this point).
-  const { ctx, history, effectiveUseHorizon } = await getContext()
+  const { ctx, effectiveUseHorizon } = await getContext()
   const useHorizon = effectiveUseHorizon
 
   // Resolve the voters into the single verdict the engine will act on.
@@ -464,7 +464,7 @@ async function monitorCoin(
   // Hand the resolved verdict to the shared safety net: confidence gates, REDUCE/ADJUST
   // downgrades, OCO half-leg seeding, adjust cooldown, persistence and event emission.
   return finalizeReview({
-    ctx, raw, history, effectiveUseHorizon, modelName: finalLlm.model, cycleId, disagreement,
+    ctx, raw, effectiveUseHorizon, modelName: finalLlm.model, cycleId, disagreement,
   }, p)
 }
 
@@ -482,7 +482,6 @@ export interface DisagreementInfo {
 export interface FinalizeReviewInput {
   ctx: PositionContext
   raw: RawReview
-  history: PositionReview[]
   /** Whether horizon guidance applied to this coin's review (see buildReviewContext). */
   effectiveUseHorizon: boolean
   /** The model id credited on the stored review (final voter / synthesizer / Type D agent). */
@@ -497,7 +496,7 @@ export interface FinalizeReviewInput {
 // then persists a position_reviews row and emits the close/reduce/adjust bus events.
 // Returns the stored review, or null if the position closed mid-analysis.
 export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams): Promise<PositionReview | null> {
-  const { ctx, history, effectiveUseHorizon: useHorizon, cycleId } = input
+  const { ctx, effectiveUseHorizon: useHorizon, cycleId } = input
   let raw = input.raw
 
   const confidence = Math.min(1, Math.max(0, raw.confidence))
@@ -600,12 +599,6 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
         }
       }
     } else {
-      // Anti flip-flop: a recent (≤24h, last 3 reviews) tightening blocks loosening,
-      // so the LLM can't alternate "trail to -2%" / "widen to -3%" every cycle.
-      const slRecentlyTightened = history.some(r =>
-        r.new_stop_loss != null && r.old_stop_loss != null &&
-        r.new_stop_loss > r.old_stop_loss &&
-        Date.now() - new Date(r.created_at.replace(' ', 'T') + 'Z').getTime() < 24 * 3_600_000)
       const validated = validateSlTpAdjustment({
         currentPrice: ctx.currentPrice,
         oldStopLoss: ctx.stopLoss,
@@ -615,7 +608,6 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
         // LLM horizon: no floor — the LLM decides its own risk management.
         maxSlPct: isLlmHorizon ? 100 : hcfg.slPct,
         entryPrice: ctx.entryPrice,
-        slRecentlyTightened,
         feeRoundTripPct: p.feeRate * 2 * 100,
         // Same trigger the prompt's profit-protection rule announces — the engine
         // rejects break-even stops before it instead of trusting the LLM to wait.

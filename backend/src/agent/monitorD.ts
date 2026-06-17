@@ -133,7 +133,7 @@ Call the tools you actually need; don't pad. You have at most ${MAX_TOOL_ROUNDS}
 
 Decision guidance:
 - HOLD when the thesis is intact and risk is already well-placed.
-- ADJUST to trail a stop into profit or re-target — never loosen a stop just to avoid being stopped out.
+- ADJUST to trail a stop into profit or re-target. While the position is in profit the stop only ratchets UP (never loosen a winner). When it is BELOW break-even you MAY widen the stop back toward the target distance to give the trade room — but don't loosen merely to dodge a justified, imminent exit.
 - REDUCE to de-risk a winner or a thesis that is weakening but not broken (give reduce_to_pct = the % of the position to KEEP, 1-99).
 - CLOSE when the thesis is invalidated, momentum has clearly rolled over, or risk now outweighs reward.
 - Be decisive but conservative: protecting capital beats churn. Each ADJUST costs an exchange OCO replace.
@@ -253,12 +253,12 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
 async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>, rec: Recorder): Promise<PositionReview | null> {
   rec.push('coin_started', '🔍', `Reviewing ${coin}…`, 'accent')
 
-  const { ctx, history, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
+  const { ctx, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
   const verdict = await runAgenticReview(coin, ctx, cycleId, rec)
 
   const model = `type-d:${resolveLLM('monitorD').model}`
   const review = await finalizeReview({
-    ctx, raw: verdict, history, effectiveUseHorizon, modelName: model, cycleId, disagreement: null,
+    ctx, raw: verdict, effectiveUseHorizon, modelName: model, cycleId, disagreement: null,
   }, p)
 
   const action = review?.action ?? verdict.action

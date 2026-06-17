@@ -176,10 +176,6 @@ export interface SlTpProposal {
   // Entry price of the position. When set and the position is in profit, the profit
   // ratchet applies: SL may only move up and TP may not be lowered.
   entryPrice?: number
-  // True when a recent review already tightened the SL — loosening is then refused,
-  // so the LLM can't alternate tighten/loosen every cycle (each flip costs an
-  // exchange-side OCO cancel+replace).
-  slRecentlyTightened?: boolean
   // Proposals closer than this % of current price to the existing level are treated as
   // unchanged. Defaults to 0.25 — absorbs LLM rounding and price drift between prompt
   // and reply, so "echoed" levels don't trigger an OCO cancel+replace every cycle.
@@ -216,9 +212,9 @@ export interface SlTpValidation {
 /**
  * Apply the bot's risk rules to a proposed SL/TP change for a LONG position.
  * Risk discipline takes precedence over the LLM:
- *  - Stop-loss must stay below price. Loosening is allowed only within the horizon
- *    floor (maxSlPct), never while the position is in profit (profit ratchet), and
- *    never right after a tightening (anti flip-flop).
+ *  - Stop-loss must stay below price. Loosening is allowed within the horizon floor
+ *    (maxSlPct) while the position is below break-even, but never while it is in
+ *    profit (profit ratchet) — a winner's stop only ratchets up.
  *  - Tightening must keep at least minSlGapPct below the current price, and may
  *    not park the stop at break-even or above until P&L ≥ breakevenTriggerPct —
  *    both reject the noise-distance stops that scratch positions within minutes.
@@ -247,9 +243,11 @@ export function validateSlTpAdjustment(p: SlTpProposal): SlTpValidation {
     } else if (p.oldStopLoss != null && sl < p.oldStopLoss) {
       if (inProfit) {
         notes.push('Ignored stop-loss loosening on a winning position (profit ratchet)')
-      } else if (p.slRecentlyTightened) {
-        notes.push('Ignored stop-loss loosening — SL was tightened recently (anti flip-flop)')
       } else {
+        // Below break-even: the trade is underwater, so widening the stop back toward
+        // the target distance is allowed (down to the horizon floor). This is how a
+        // position recovers room after a premature break-even tighten — without it the
+        // stop stays parked at entry and scratches the trade out flat on routine noise.
         const floor = p.maxSlPct != null ? p.currentPrice * (1 - p.maxSlPct / 100) : null
         if (floor != null && sl >= floor) {
           stopLoss = sl
