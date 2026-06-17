@@ -2,6 +2,40 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { cn } from '../lib/utils'
 
+/**
+ * Catalog of known event types, mirroring backend `core/bus.ts`'s `SystemEvent`
+ * enum + category map. Listed up front so every toggle is visible in the panel
+ * even before that event type has ever fired; any event type the backend adds
+ * later still shows up automatically (folded in from live traffic, see
+ * `knownEvents` below).
+ */
+const EVENT_CATALOG: { event: string; category: string }[] = [
+  { event: 'MARKET.KLINE_CLOSED', category: 'market' },
+  { event: 'MARKET.PRICE_TICK', category: 'market' },
+  { event: 'STRATEGY.SIGNAL_GENERATED', category: 'strategy' },
+  { event: 'STRATEGY.ENTRY_PLANNED', category: 'strategy' },
+  { event: 'EXECUTION.ORDER_SUBMITTED', category: 'execution' },
+  { event: 'EXECUTION.ORDER_FILLED', category: 'execution' },
+  { event: 'EXECUTION.ORDER_FAILED', category: 'critical' },
+  { event: 'RISK.STOP_TRIGGERED', category: 'critical' },
+  { event: 'RISK.TAKE_PROFIT', category: 'risk' },
+  { event: 'RISK.POSITION_ADJUSTED', category: 'risk' },
+  { event: 'SYSTEM.ENGINE_TICK', category: 'system' },
+  { event: 'SYSTEM.ALERT', category: 'system' },
+]
+
+const DISABLED_EVENTS_KEY = 'cb-event-stream-disabled-events'
+
+function loadDisabledEvents(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISABLED_EVENTS_KEY)
+    if (raw) return new Set(JSON.parse(raw) as string[])
+  } catch {
+    /* ignore */
+  }
+  return new Set()
+}
+
 /** Mirror of backend `BufferedEvent`. */
 interface StreamEvent {
   id: string
@@ -74,12 +108,40 @@ function summarize(payload: unknown): string {
   return parts.join('  ')
 }
 
+/** Compact on/off switch — same visual language as the Settings page Toggle. */
+function EventToggle({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onChange}
+      className={cn(
+        'group relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-200',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        checked ? 'bg-accent' : 'bg-surface-elevated border border-border',
+      )}
+    >
+      <span
+        className={cn(
+          'pointer-events-none h-[14px] w-[14px] rounded-full shadow-sm transition-all duration-200',
+          checked ? 'translate-x-[18px] bg-surface-base' : 'translate-x-[3px] bg-muted group-hover:bg-foreground/70',
+        )}
+      />
+    </button>
+  )
+}
+
 export default function EventStream() {
   const [events, setEvents] = useState<StreamEvent[]>([])
   const [active, setActive] = useState<Set<string>>(new Set(CATEGORY_ORDER))
+  const [disabledEvents, setDisabledEvents] = useState<Set<string>>(loadDisabledEvents)
+  const [eventsPanelOpen, setEventsPanelOpen] = useState(false)
   const [paused, setPaused] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
+  const eventsPanelRef = useRef<HTMLDivElement>(null)
 
   // Highest seq we've applied — the resync cursor + the monotonic dedup guard.
   const lastSeqRef = useRef(0)
@@ -129,6 +191,50 @@ export default function EventStream() {
     if (isConnected) send({ type: 'event_stream_sync', lastSeq: lastSeqRef.current })
   }, []))
 
+  // Persist per-event-type mute preferences across reloads.
+  useEffect(() => {
+    localStorage.setItem(DISABLED_EVENTS_KEY, JSON.stringify([...disabledEvents]))
+  }, [disabledEvents])
+
+  // Close the "Manage Events" panel on outside click.
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (eventsPanelRef.current && !eventsPanelRef.current.contains(e.target as Node)) setEventsPanelOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const toggleEvent = (eventType: string) => {
+    setDisabledEvents((prev) => {
+      const next = new Set(prev)
+      if (next.has(eventType)) next.delete(eventType)
+      else next.add(eventType)
+      return next
+    })
+  }
+
+  // Every event type the panel should list: the static catalog plus anything
+  // seen live that the catalog doesn't know about yet (forward-compatible with
+  // new backend SystemEvent additions).
+  const knownEvents = useMemo(() => {
+    const seen = new Map(EVENT_CATALOG.map((e) => [e.event, e.category]))
+    for (const e of events) if (!seen.has(e.event)) seen.set(e.event, e.category)
+    return [...seen.entries()].map(([event, category]) => ({ event, category }))
+  }, [events])
+
+  const eventsByCategory = useMemo(() => {
+    const grouped = new Map<string, { event: string; category: string }[]>()
+    for (const e of knownEvents) {
+      const list = grouped.get(e.category) ?? []
+      list.push(e)
+      grouped.set(e.category, list)
+    }
+    return CATEGORY_ORDER
+      .filter((cat) => grouped.has(cat))
+      .map((cat) => ({ category: cat, items: grouped.get(cat)! }))
+  }, [knownEvents])
+
   const toggleCategory = (cat: string) => {
     setActive((prev) => {
       const next = new Set(prev)
@@ -138,7 +244,10 @@ export default function EventStream() {
     })
   }
 
-  const visible = useMemo(() => events.filter((e) => active.has(e.category)), [events, active])
+  const visible = useMemo(
+    () => events.filter((e) => active.has(e.category) && !disabledEvents.has(e.event)),
+    [events, active, disabledEvents],
+  )
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {}
@@ -162,6 +271,63 @@ export default function EventStream() {
         </div>
 
         <div className="flex items-center gap-2">
+          <div ref={eventsPanelRef} className="relative">
+            <button
+              onClick={() => setEventsPanelOpen((o) => !o)}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors',
+                disabledEvents.size > 0
+                  ? 'text-accent border-accent/30 bg-accent/10'
+                  : 'text-muted border-border hover:text-foreground hover:bg-surface-hover',
+              )}
+            >
+              Events
+              {disabledEvents.size > 0 && (
+                <span className="text-[10px] font-mono opacity-80">{disabledEvents.size} muted</span>
+              )}
+              <svg className={cn('w-3 h-3 transition-transform', eventsPanelOpen && 'rotate-180')} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {eventsPanelOpen && (
+              <div className="absolute right-0 top-full mt-2 w-72 max-h-96 overflow-y-auto bg-surface-card border border-border rounded-2xl shadow-xl py-2 z-50 animate-slide-down">
+                <div className="flex items-center justify-between px-3 pb-1.5 mb-1 border-b border-border/60">
+                  <span className="text-[11px] font-semibold text-muted uppercase tracking-wide">Event types</span>
+                  <button
+                    onClick={() => setDisabledEvents(new Set())}
+                    className="text-[11px] text-accent hover:underline disabled:opacity-40 disabled:hover:no-underline"
+                    disabled={disabledEvents.size === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+                {eventsByCategory.map(({ category, items }) => {
+                  const s = styleFor(category)
+                  return (
+                    <div key={category} className="px-3 py-1.5">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className={cn('w-1.5 h-1.5 rounded-full', s.dot)} />
+                        <span className="text-[11px] font-semibold text-muted">{s.label}</span>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        {items.map(({ event }) => (
+                          <div key={event} className="flex items-center justify-between gap-2 pl-3">
+                            <span className="text-xs font-mono text-foreground/80 truncate">{event}</span>
+                            <EventToggle
+                              checked={!disabledEvents.has(event)}
+                              onChange={() => toggleEvent(event)}
+                              label={`Toggle ${event}`}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setPaused((p) => !p)}
             className={cn(
