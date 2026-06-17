@@ -115,6 +115,12 @@ const ITEMS: Record<Page, NavItem> = {
     // ECG / heartbeat — the reactive bus pulse.
     path: 'M2.25 12h3.75l1.5-4.5 3 9 2.25-6 1.5 1.5h6.75',
   },
+  routing: {
+    key: 'routing',
+    label: 'Event Routing',
+    // Connected nodes — the wiring graph.
+    path: 'M6 6.75a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zM6 6.75h6.75a3 3 0 013 3v4.5m9.75 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z',
+  },
   settings: {
     key: 'settings',
     label: 'Settings',
@@ -142,7 +148,7 @@ interface NavGroup {
 
 const GROUPS: NavGroup[] = [
   { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'agent-monitor', 'summary', 'entry', 'trade', 'trading-state'] },
-  { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['pipeline', 'charts', 'discover'] },
+  { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['routing', 'pipeline', 'charts', 'discover'] },
   { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['control-room', 'event-stream', 'llm-debug', 'llm-stats', 'cache'] },
   { id: 'system', label: 'Platform', icon: SECTION_ICONS.system, keys: ['host', 'logs', 'settings'] },
 ]

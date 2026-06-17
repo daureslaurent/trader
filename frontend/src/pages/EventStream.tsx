@@ -22,6 +22,9 @@ const EVENT_CATALOG: { event: string; category: string }[] = [
   { event: 'RISK.POSITION_ADJUSTED', category: 'risk' },
   { event: 'SYSTEM.ENGINE_TICK', category: 'system' },
   { event: 'SYSTEM.ALERT', category: 'system' },
+  { event: 'ROUTING.INPUT_FIRED', category: 'routing' },
+  { event: 'ROUTING.OUTPUT_FIRED', category: 'routing' },
+  { event: 'ROUTING.BLOCKED', category: 'routing' },
 ]
 
 const DISABLED_EVENTS_KEY = 'cb-event-stream-disabled-events'
@@ -65,10 +68,11 @@ const CATEGORY_STYLE: Record<string, { text: string; dot: string; label: string 
   risk: { text: 'text-warn', dot: 'bg-warn', label: 'Risk' },
   market: { text: 'text-accent', dot: 'bg-accent', label: 'Market' },
   strategy: { text: 'text-accent2', dot: 'bg-accent2', label: 'Strategy' },
+  routing: { text: 'text-accent2', dot: 'bg-accent2', label: 'Routing' },
   system: { text: 'text-muted', dot: 'bg-muted', label: 'System' },
 }
 
-const CATEGORY_ORDER = ['execution', 'critical', 'risk', 'market', 'strategy', 'system']
+const CATEGORY_ORDER = ['execution', 'critical', 'risk', 'market', 'strategy', 'routing', 'system']
 
 function styleFor(category: string) {
   return CATEGORY_STYLE[category] ?? CATEGORY_STYLE.system

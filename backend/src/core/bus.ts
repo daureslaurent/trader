@@ -36,6 +36,11 @@ export enum SystemEvent {
   // SYSTEM.* — engine ticks and operational alerts.
   SYSTEM_ENGINE_TICK = 'SYSTEM.ENGINE_TICK',
   SYSTEM_ALERT = 'SYSTEM.ALERT',
+
+  // ROUTING.* — the event-routing layer (inputs → processors → outputs).
+  ROUTING_INPUT_FIRED = 'ROUTING.INPUT_FIRED',
+  ROUTING_OUTPUT_FIRED = 'ROUTING.OUTPUT_FIRED',
+  ROUTING_BLOCKED = 'ROUTING.BLOCKED',
 }
 
 /**
@@ -49,6 +54,7 @@ export enum EventCategory {
   Execution = 'execution',
   Risk = 'risk',
   System = 'system',
+  Routing = 'routing',
   Critical = 'critical',
 }
 
@@ -66,6 +72,9 @@ export interface SystemEventPayloads {
   [SystemEvent.RISK_POSITION_ADJUSTED]: { symbol: string; positionId: number; stopLoss: number | null; takeProfit: number | null }
   [SystemEvent.SYSTEM_ENGINE_TICK]: { engine: string; cycleId?: string; detail?: string }
   [SystemEvent.SYSTEM_ALERT]: { level: 'info' | 'warn' | 'error'; message: string; source?: string }
+  [SystemEvent.ROUTING_INPUT_FIRED]: { nodeId: string; label: string; trigger: string }
+  [SystemEvent.ROUTING_OUTPUT_FIRED]: { nodeId: string; module: string; trigger: string }
+  [SystemEvent.ROUTING_BLOCKED]: { target: string; reason: string; detail?: string }
 }
 
 /** Static event → category map. Anything unlisted falls back to System. */
@@ -82,6 +91,9 @@ const CATEGORY_OF: Record<SystemEvent, EventCategory> = {
   [SystemEvent.RISK_POSITION_ADJUSTED]: EventCategory.Risk,
   [SystemEvent.SYSTEM_ENGINE_TICK]: EventCategory.System,
   [SystemEvent.SYSTEM_ALERT]: EventCategory.System,
+  [SystemEvent.ROUTING_INPUT_FIRED]: EventCategory.Routing,
+  [SystemEvent.ROUTING_OUTPUT_FIRED]: EventCategory.Routing,
+  [SystemEvent.ROUTING_BLOCKED]: EventCategory.Routing,
 }
 
 export function categoryOf(event: SystemEvent): EventCategory {

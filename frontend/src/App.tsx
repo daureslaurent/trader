@@ -27,6 +27,7 @@ import ControlRoom from './pages/ControlRoom'
 import Agent from './pages/Agent'
 import Host from './pages/Host'
 import EventStream from './pages/EventStream'
+import RoutingGraph from './pages/RoutingGraph'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
@@ -49,6 +50,7 @@ const PAGE_TITLES: Record<Page, string> = {
   agent: 'Agent',
   host: 'System',
   'event-stream': 'Event Stream',
+  routing: 'Event Routing',
 }
 
 let toastId = 0
@@ -230,6 +232,7 @@ function AppInner() {
           {page === 'control-room' && <ControlRoom />}
           {page === 'host' && <Host />}
           {page === 'event-stream' && <EventStream />}
+          {page === 'routing' && <RoutingGraph />}
           {page === 'settings' && <Settings />}
         </main>
       </div>

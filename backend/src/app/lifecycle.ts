@@ -11,6 +11,7 @@ import { isTradeable } from '../core/tradeable.js'
 import { closeBrowser } from '../scraper/browser.js'
 import { logPipelineEvent } from '../pipeline/index.js'
 import { startSchedulers, stopSchedulers } from './scheduler.js'
+import { initRouting, fireRoutingStartup } from '../routing/index.js'
 import { resumeDurableJobs } from '../core/llmScheduler.js'
 
 let server: ReturnType<typeof startAPI> | undefined
@@ -82,7 +83,11 @@ export async function start(): Promise<void> {
   // live market context can run. In-flight-at-crash jobs are dropped here.
   await resumeDurableJobs()
 
+  // Load/seed the routing graph and schedule its timer nodes (the engine
+  // triggers), then start the infrastructure loops.
+  await initRouting()
   startSchedulers(settings)
+  fireRoutingStartup()
 
   // One-shot reconcile on boot: attaches to existing OCOs and re-protects any
   // open position lacking one (e.g. positions opened before exchange-side OCO).
