@@ -4,11 +4,14 @@ import { fireNode, getGraph } from './engine.js'
 import { loadGraph } from './store.js'
 import { wireSources, fireStartup } from './sources.js'
 import { stopTimers } from './scheduler.js'
+import { stopBinanceStreams } from '../market/index.js'
 
 export type { RoutingGraph, RouteNode, RouteEdge, NodeKind, NodeTypeMeta, ConfigField } from './types.js'
 export { getGraph } from './engine.js'
 export { saveGraph, syncFromSettings, setGlobalEnabled } from './store.js'
 export { getCatalog } from './registry.js'
+export { refreshBinanceStreams } from './binanceSync.js'
+export { getDebugLogs, clearDebugLogs } from './debugLog.js'
 
 /** Wire live sources, then load/seed + activate the persisted graph. */
 export async function initRouting(): Promise<void> {
@@ -35,4 +38,5 @@ export async function fireManual(nodeId: string, ctx?: Partial<FireContext>): Pr
 
 export function stopRouting(): void {
   stopTimers()
+  stopBinanceStreams()
 }

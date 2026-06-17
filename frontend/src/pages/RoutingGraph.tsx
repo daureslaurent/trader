@@ -52,6 +52,19 @@ interface RoutingGraph {
   edges: RouteEdge[]
 }
 
+interface DebugRecord {
+  id: number
+  node_id: string
+  label: string
+  note: string
+  trigger: string
+  symbol: string | null
+  payload: string
+  created_at: string
+}
+
+const DEBUG_MAX = 200
+
 /* ───────────────────────────── Visual constants ───────────────────────────── */
 
 const NODE_W = 212
@@ -98,6 +111,9 @@ export default function RoutingGraph() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [pulses, setPulses] = useState<Record<string, number>>({})
+  const [debugLogs, setDebugLogs] = useState<DebugRecord[]>([])
+  const [debugOpen, setDebugOpen] = useState(true)
+  const [debugExpanded, setDebugExpanded] = useState<number | null>(null)
 
   const graphRef = useRef<RoutingGraph | null>(null)
   graphRef.current = graph
@@ -115,10 +131,19 @@ export default function RoutingGraph() {
         setCatalog(c.catalog ?? [])
       })
       .catch(() => setSaveState('error'))
+    fetch('/api/debug-logs?limit=200')
+      .then((r) => r.json())
+      .then((d: { logs: DebugRecord[] }) => setDebugLogs(d.logs ?? []))
+      .catch(() => { /* none yet */ })
   }, [])
 
   /* ── Live pulses from the routing engine ── */
   const onMessage = useCallback((event: string, data: unknown) => {
+    if (event === 'debug_log') {
+      const rec = data as DebugRecord
+      setDebugLogs((prev) => [rec, ...prev].slice(0, DEBUG_MAX))
+      return
+    }
     if (event !== 'routing_pulse') return
     const p = data as { kind: string; id: string; reason?: string }
     const key = p.kind === 'blocked' ? `blocked:${p.id}` : p.id
@@ -477,16 +502,80 @@ export default function RoutingGraph() {
           )}
         </div>
       </div>
+
+      {/* Docked debug log panel */}
+      <DebugPanel
+        logs={debugLogs}
+        open={debugOpen}
+        onToggle={() => setDebugOpen((o) => !o)}
+        expanded={debugExpanded}
+        onExpand={(id) => setDebugExpanded((cur) => cur === id ? null : id)}
+        onClear={() => { fetch('/api/debug-logs', { method: 'DELETE' }); setDebugLogs([]); setDebugExpanded(null) }}
+      />
     </div>
   )
+}
+
+function DebugPanel({ logs, open, onToggle, expanded, onExpand, onClear }: {
+  logs: DebugRecord[]; open: boolean; onToggle: () => void
+  expanded: number | null; onExpand: (id: number) => void; onClear: () => void
+}) {
+  const time = (s: string) => (s?.length >= 19 ? s.slice(11, 19) : s)
+  return (
+    <div className="rounded-2xl border border-border bg-surface-card/60 glass overflow-hidden shadow-soft">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-surface-elevated/40">
+        <button onClick={onToggle} className="flex items-center gap-2 text-xs font-semibold text-foreground">
+          <svg className={cn('w-3.5 h-3.5 text-muted transition-transform', open && 'rotate-90')} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+          Debug Log
+        </button>
+        <span className="text-[11px] text-muted font-mono">{logs.length}</span>
+        <span className="flex-1" />
+        {logs.length > 0 && (
+          <button onClick={onClear} className="text-[11px] font-semibold text-muted hover:text-sell transition-colors">Clear</button>
+        )}
+      </div>
+      {open && (
+        <div className="max-h-72 overflow-y-auto font-mono text-[12px]">
+          {logs.length === 0 ? (
+            <div className="px-4 py-10 text-center text-muted text-sm">
+              No debug records yet. Enable a <span className="text-foreground">Debug Tap</span> node and wire an input into it.
+            </div>
+          ) : logs.map((r) => {
+            const isOpen = expanded === r.id
+            return (
+              <div key={r.id} className="border-b border-border/40 last:border-0">
+                <button onClick={() => onExpand(r.id)} className="w-full flex items-center gap-3 px-4 py-1.5 text-left hover:bg-surface-hover/60 transition-colors">
+                  <span className="text-muted shrink-0 tabular-nums">{time(r.created_at)}</span>
+                  <span className="text-accent2 shrink-0 font-semibold w-32 truncate">{r.note || r.label}</span>
+                  <span className="text-muted shrink-0 w-24 truncate">{r.symbol ?? r.trigger}</span>
+                  <span className="text-foreground/80 truncate flex-1">{r.payload}</span>
+                </button>
+                {isOpen && (
+                  <pre className="px-4 pb-3 pt-1 ml-4 text-[11px] text-muted whitespace-pre-wrap break-all border-l-2 border-border/60">
+                    {prettyJson(r.payload)}
+                  </pre>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function prettyJson(s: string): string {
+  try { return JSON.stringify(JSON.parse(s), null, 2) } catch { return s }
 }
 
 // Resolve a node's category via the catalog isn't available inside SVG closure cheaply;
 // fall back to kind-based colour for the link stroke.
 function catStyleCat(node: RouteNode): string {
   if (node.kind === 'output') return 'execution'
-  if (node.kind === 'processor') return 'strategy'
-  return node.type === 'binance_price' ? 'market' : 'system'
+  if (node.kind === 'processor') return node.type === 'debug' ? 'system' : 'strategy'
+  return node.type.startsWith('binance') ? 'market' : 'system'
 }
 
 /* ───────────────────────────── Inspectors ───────────────────────────── */

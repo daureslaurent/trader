@@ -18,6 +18,9 @@ export enum SystemEvent {
   // MARKET.* — high-frequency price/candle data (coalesced on the wire).
   MARKET_KLINE_CLOSED = 'MARKET.KLINE_CLOSED',
   MARKET_PRICE_TICK = 'MARKET.PRICE_TICK',
+  MARKET_BOOK_TICKER = 'MARKET.BOOK_TICKER',
+  MARKET_AGG_TRADE = 'MARKET.AGG_TRADE',
+  MARKET_DEPTH = 'MARKET.DEPTH',
 
   // STRATEGY.* — analyst / pipeline decisions.
   STRATEGY_SIGNAL_GENERATED = 'STRATEGY.SIGNAL_GENERATED',
@@ -60,8 +63,11 @@ export enum EventCategory {
 
 /** Type-safe payload for every SystemEvent. */
 export interface SystemEventPayloads {
-  [SystemEvent.MARKET_KLINE_CLOSED]: { symbol: string; interval: string; close: number; changePct: number }
+  [SystemEvent.MARKET_KLINE_CLOSED]: { symbol: string; interval: string; open: number; high: number; low: number; close: number; volume: number; changePct: number }
   [SystemEvent.MARKET_PRICE_TICK]: { symbol: string; price: number; changePct?: number }
+  [SystemEvent.MARKET_BOOK_TICKER]: { symbol: string; bid: number; bidQty: number; ask: number; askQty: number; spread: number }
+  [SystemEvent.MARKET_AGG_TRADE]: { symbol: string; price: number; qty: number; side: 'buy' | 'sell' }
+  [SystemEvent.MARKET_DEPTH]: { symbol: string; bids: [number, number][]; asks: [number, number][] }
   [SystemEvent.STRATEGY_SIGNAL_GENERATED]: { symbol: string; action: 'BUY' | 'SELL' | 'HOLD'; confidence: number; reason?: string }
   [SystemEvent.STRATEGY_ENTRY_PLANNED]: { symbol: string; source: 'llm' | 'static'; pullbackPct: number; reason?: string }
   [SystemEvent.EXECUTION_ORDER_SUBMITTED]: { symbol: string; side: 'BUY' | 'SELL'; qty: number; price: number }
@@ -81,6 +87,9 @@ export interface SystemEventPayloads {
 const CATEGORY_OF: Record<SystemEvent, EventCategory> = {
   [SystemEvent.MARKET_KLINE_CLOSED]: EventCategory.Market,
   [SystemEvent.MARKET_PRICE_TICK]: EventCategory.Market,
+  [SystemEvent.MARKET_BOOK_TICKER]: EventCategory.Market,
+  [SystemEvent.MARKET_AGG_TRADE]: EventCategory.Market,
+  [SystemEvent.MARKET_DEPTH]: EventCategory.Market,
   [SystemEvent.STRATEGY_SIGNAL_GENERATED]: EventCategory.Strategy,
   [SystemEvent.STRATEGY_ENTRY_PLANNED]: EventCategory.Strategy,
   [SystemEvent.EXECUTION_ORDER_SUBMITTED]: EventCategory.Execution,

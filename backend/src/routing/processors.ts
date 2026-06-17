@@ -1,6 +1,7 @@
 import { logger } from '../core/logger.js'
 import { getOpenPositions } from '../portfolio/index.js'
 import { RouteNode, FireContext } from './types.js'
+import { recordDebug } from './debugLog.js'
 
 /**
  * Processor handlers — conditional gates. Each returns true to propagate the
@@ -70,6 +71,13 @@ const HANDLERS: Record<string, ProcessorHandler> = {
     if (now - last < seconds * 1000) return false
     lastPass.set(node.id, now)
     return true
+  },
+
+  // Records what flows through it. Pass-through (default) propagates onward so it
+  // can be dropped inline as a transparent tap; sink mode stops the chain here.
+  debug: async (node, ctx) => {
+    await recordDebug(node, ctx)
+    return node.config.passThrough !== false
   },
 }
 

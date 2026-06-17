@@ -18,16 +18,38 @@ function symbolMatches(node: RouteNode, symbol: string): boolean {
   return filter === '' || filter === symbol
 }
 
+function fire(type: string, symbol: string, ctx: Record<string, unknown>): void {
+  void fireInputsOfType(type, { trigger: 'binance', symbol, ...ctx }, (node) => symbolMatches(node, symbol))
+    .catch((err) => logger.warn(`${type} source fire failed`, { error: err instanceof Error ? err.message : String(err) }))
+}
+
 export function wireSources(): void {
   if (wired) return
   wired = true
 
   systemBus.onEvent(SystemEvent.MARKET_PRICE_TICK, ({ symbol, price, changePct }) => {
+    fire('binance_price', symbol, { price, changePct })
+  })
+
+  systemBus.onEvent(SystemEvent.MARKET_KLINE_CLOSED, (k) => {
+    // Kline nodes also match on the configured interval.
     void fireInputsOfType(
-      'binance_price',
-      { trigger: 'binance', symbol, price, changePct },
-      (node) => symbolMatches(node, symbol),
-    ).catch((err) => logger.warn('binance_price source fire failed', { error: err instanceof Error ? err.message : String(err) }))
+      'binance_kline',
+      { trigger: 'binance', price: k.close, ...k },
+      (node) => symbolMatches(node, k.symbol) && String(node.config.interval ?? '1m') === k.interval,
+    ).catch((err) => logger.warn('binance_kline source fire failed', { error: err instanceof Error ? err.message : String(err) }))
+  })
+
+  systemBus.onEvent(SystemEvent.MARKET_BOOK_TICKER, (b) => {
+    fire('binance_book', b.symbol, { price: (b.bid + b.ask) / 2, bid: b.bid, ask: b.ask, spread: b.spread })
+  })
+
+  systemBus.onEvent(SystemEvent.MARKET_AGG_TRADE, (t) => {
+    fire('binance_trade', t.symbol, { price: t.price, qty: t.qty, side: t.side })
+  })
+
+  systemBus.onEvent(SystemEvent.MARKET_DEPTH, (d) => {
+    fire('binance_depth', d.symbol, { bids: d.bids, asks: d.asks })
   })
 }
 

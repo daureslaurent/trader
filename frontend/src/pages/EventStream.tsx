@@ -12,6 +12,9 @@ import { cn } from '../lib/utils'
 const EVENT_CATALOG: { event: string; category: string }[] = [
   { event: 'MARKET.KLINE_CLOSED', category: 'market' },
   { event: 'MARKET.PRICE_TICK', category: 'market' },
+  { event: 'MARKET.BOOK_TICKER', category: 'market' },
+  { event: 'MARKET.AGG_TRADE', category: 'market' },
+  { event: 'MARKET.DEPTH', category: 'market' },
   { event: 'STRATEGY.SIGNAL_GENERATED', category: 'strategy' },
   { event: 'STRATEGY.ENTRY_PLANNED', category: 'strategy' },
   { event: 'EXECUTION.ORDER_SUBMITTED', category: 'execution' },

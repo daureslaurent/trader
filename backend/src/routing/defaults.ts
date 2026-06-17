@@ -21,10 +21,12 @@ export function defaultGraph(settings: BotSettings): RoutingGraph {
     // Example inputs (off by default).
     { id: 'input.manual', kind: 'input', type: 'manual', label: 'Manual trigger', enabled: true, config: {}, position: { x: 60, y: 500 } },
     { id: 'input.binance', kind: 'input', type: 'binance_price', label: 'Binance price', enabled: false, config: { symbol: '' }, position: { x: 60, y: 610 } },
-    { id: 'input.startup', kind: 'input', type: 'system_startup', label: 'On startup', enabled: false, config: {}, position: { x: 60, y: 720 } },
+    { id: 'input.kline', kind: 'input', type: 'binance_kline', label: 'Binance 1m kline', enabled: false, config: { symbol: '', interval: '1m' }, position: { x: 60, y: 720 } },
+    { id: 'input.startup', kind: 'input', type: 'system_startup', label: 'On startup', enabled: false, config: {}, position: { x: 60, y: 830 } },
 
-    // Example processor (off by default).
+    // Example processors (off by default).
     { id: 'proc.pricemove', kind: 'processor', type: 'price_move', label: 'Price move > 2%', enabled: false, config: { pct: 2, windowSec: 300, direction: 'any' }, position: { x: 440, y: 610 } },
+    { id: 'proc.debug', kind: 'processor', type: 'debug', label: 'Debug tap', enabled: false, config: { note: '', sampleN: 1, passThrough: true }, position: { x: 440, y: 760 } },
 
     // Engine outputs.
     { id: 'out.pipeline', kind: 'output', type: 'module_pipeline', label: 'Run Pipeline', enabled: true, managed: true, config: {}, position: { x: 820, y: 60 } },
@@ -41,6 +43,8 @@ export function defaultGraph(settings: BotSettings): RoutingGraph {
     // Example route: Binance tick → price-move gate → monitor (all off until enabled).
     { id: 'e.binance_pricemove', from: 'input.binance', to: 'proc.pricemove', enabled: true },
     { id: 'e.pricemove_monitor', from: 'proc.pricemove', to: 'out.monitor', enabled: true, cooldownSec: 300 },
+    // Example tap: kline closes → debug log (enable both nodes to see records).
+    { id: 'e.kline_debug', from: 'input.kline', to: 'proc.debug', enabled: true },
   ]
 
   return { enabled: true, nodes, edges }

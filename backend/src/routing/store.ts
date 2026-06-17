@@ -5,6 +5,7 @@ import { RoutingGraph, RouteNode, RouteEdge } from './types.js'
 import { defaultGraph, MANAGED_TIMERS } from './defaults.js'
 import { setGraph, getGraph } from './engine.js'
 import { rescheduleTimers } from './scheduler.js'
+import { syncBinanceStreams } from './binanceSync.js'
 
 const SETTING_KEY = 'routing_graph'
 
@@ -53,6 +54,7 @@ async function persist(graph: RoutingGraph): Promise<void> {
 function apply(graph: RoutingGraph): void {
   setGraph(graph)
   rescheduleTimers(graph)
+  syncBinanceStreams(graph)
 }
 
 /** Load (or seed) the graph at startup and activate it. */

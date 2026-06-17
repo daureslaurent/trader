@@ -69,5 +69,11 @@ export async function ensureIndexes(): Promise<void> {
     { name: 'idx_llm_stats_unique', unique: true },
   )
 
+  // Routing debug processor capture log
+  await db.collection('debug_logs').createIndexes([
+    { key: { id: -1 }, name: 'idx_debug_logs_id' },
+    { key: { created_at: -1 }, name: 'idx_debug_logs_created' },
+  ])
+
   logger.info('MongoDB indexes ensured')
 }

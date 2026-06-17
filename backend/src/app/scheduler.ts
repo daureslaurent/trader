@@ -7,7 +7,7 @@ import { runMonitor } from '../monitor/index.js'
 import { runMonitorD } from '../agent/index.js'
 import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
 import { scheduleUpdateCheck, stopUpdateCheck } from '../host/index.js'
-import { syncFromSettings, stopRouting } from '../routing/index.js'
+import { syncFromSettings, stopRouting, refreshBinanceStreams } from '../routing/index.js'
 
 // The four engine triggers (pipeline / discovery / monitor / summary) are no
 // longer scheduled here — they're timer input nodes owned by the routing engine
@@ -47,6 +47,8 @@ export function startSchedulers(settings: BotSettings): void {
     try { await checkOpenPositions() } catch (err) {
       logger.warn('Position check failed', { error: err instanceof Error ? err.message : String(err) })
     }
+    // Keep blank-filter Binance input subscriptions aligned with the watched set.
+    try { refreshBinanceStreams() } catch { /* best-effort */ }
   }, POSITION_CHECK_INTERVAL_MS)
 
   // Background LLM endpoint health monitor — drives the header status badge and

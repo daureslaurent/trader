@@ -35,6 +35,10 @@ export const coinDiscoveries    = new Repository<Row>('coin_discoveries')
 export const llmCalls           = new Repository<Row>('llm_calls')
 export const llmStatsSnapshots  = new Repository<Row>('llm_stats_snapshots')
 
+// Records captured by `debug` processor nodes in the routing graph (what flowed
+// through them). Append-only, pruned by count — see routing/debugLog.
+export const debugLogs          = new Repository<Row>('debug_logs')
+
 // Durable LLM scheduler jobs (natural string key = job id). Only jobs flagged
 // `durable` persist here; rows are deleted on completion. On startup, rows still
 // `queued` are resumed via the builder registry — `running` rows were in flight at
@@ -53,5 +57,6 @@ export const ALL_REPOS: Record<string, Repository<Row>> = {
   pipeline_events: pipelineEvents, extraction_cache: extractionCache,
   ohlcv_cache: ohlcvCache, coin_discoveries: coinDiscoveries,
   llm_calls: llmCalls, llm_stats_snapshots: llmStatsSnapshots,
+  debug_logs: debugLogs,
   llm_jobs: llmJobs,
 }

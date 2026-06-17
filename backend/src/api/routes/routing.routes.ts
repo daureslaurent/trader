@@ -2,9 +2,21 @@ import { Router, Request, Response } from 'express'
 import { logger } from '../../core/logger.js'
 import {
   getGraph, saveGraph, setGlobalEnabled, getCatalog, fireManual, RoutingGraph,
+  getDebugLogs, clearDebugLogs,
 } from '../../routing/index.js'
 
 export const router = Router()
+
+// Recent debug-tap records for the docked log panel on the Routing page.
+router.get('/debug-logs', async (req: Request, res: Response) => {
+  const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200))
+  res.json({ logs: await getDebugLogs(limit) })
+})
+
+router.delete('/debug-logs', async (_req: Request, res: Response) => {
+  await clearDebugLogs()
+  res.json({ ok: true })
+})
 
 // The node-type palette (serializable metadata) the flow-graph UI renders.
 router.get('/routing/catalog', (_req: Request, res: Response) => {

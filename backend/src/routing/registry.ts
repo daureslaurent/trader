@@ -22,10 +22,58 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     type: 'binance_price',
     kind: 'input',
     label: 'Binance Price',
-    description: 'Fires on each live price update from Binance for the matched symbol(s).',
+    description: 'Fires on each live miniTicker price update from Binance for the matched symbol(s).',
     category: 'market',
     configFields: [
       { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all', help: 'e.g. BTC/USDC. Blank matches every subscribed symbol.' },
+    ],
+    defaultConfig: { symbol: '' },
+  },
+  binance_kline: {
+    type: 'binance_kline',
+    kind: 'input',
+    label: 'Binance Kline Close',
+    description: 'Fires when a candle closes on Binance for the chosen interval.',
+    category: 'market',
+    configFields: [
+      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
+      { key: 'interval', label: 'Interval', type: 'select', options: [
+        { value: '1m', label: '1m' }, { value: '3m', label: '3m' }, { value: '5m', label: '5m' },
+        { value: '15m', label: '15m' }, { value: '1h', label: '1h' }, { value: '4h', label: '4h' }, { value: '1d', label: '1d' },
+      ] },
+    ],
+    defaultConfig: { symbol: '', interval: '1m' },
+  },
+  binance_book: {
+    type: 'binance_book',
+    kind: 'input',
+    label: 'Binance Best Bid/Ask',
+    description: 'Fires on every top-of-book change (bookTicker). High frequency — gate it before an output.',
+    category: 'market',
+    configFields: [
+      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
+    ],
+    defaultConfig: { symbol: '' },
+  },
+  binance_trade: {
+    type: 'binance_trade',
+    kind: 'input',
+    label: 'Binance Trades',
+    description: 'Fires on each aggregate market trade (price/size/side). High frequency.',
+    category: 'market',
+    configFields: [
+      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
+    ],
+    defaultConfig: { symbol: '' },
+  },
+  binance_depth: {
+    type: 'binance_depth',
+    kind: 'input',
+    label: 'Binance Depth (L2)',
+    description: 'Streams top-of-book partial depth. Very high volume — use sparingly.',
+    category: 'market',
+    configFields: [
+      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
     ],
     defaultConfig: { symbol: '' },
   },
@@ -89,6 +137,19 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
       { key: 'seconds', label: 'Min interval (sec)', type: 'number', placeholder: '60' },
     ],
     defaultConfig: { seconds: 60 },
+  },
+  debug: {
+    type: 'debug',
+    kind: 'processor',
+    label: 'Debug Tap',
+    description: 'Records every event that reaches it to the debug log (sampled). Pass-through by default — drop it inline anywhere to inspect what is flowing.',
+    category: 'system',
+    configFields: [
+      { key: 'note', label: 'Note', type: 'text', placeholder: 'optional label for these records' },
+      { key: 'sampleN', label: 'Sample 1 in N', type: 'number', placeholder: '1', help: 'Log only 1 of every N events (1 = log all). Useful for high-frequency Binance streams.' },
+      { key: 'passThrough', label: 'Pass-through', type: 'boolean', help: 'On: log then propagate downstream. Off: terminal sink (logs only).' },
+    ],
+    defaultConfig: { note: '', sampleN: 1, passThrough: true },
   },
 
   // ── Outputs (engine triggers) ───────────────────────────────────────────────
