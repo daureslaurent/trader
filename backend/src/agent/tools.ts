@@ -14,6 +14,8 @@ import {
   getMarketContext, classifyRegime,
 } from '../portfolio/index.js'
 import { getDiscoveries } from '../discoverer/index.js'
+import { researchCoin } from '../researcher/index.js'
+import { extractResearch } from '../extractor/index.js'
 import { getReviews } from '../monitor/index.js'
 import { getLatestSummary } from '../summary/index.js'
 import { getActiveIntents } from '../entry/index.js'
@@ -468,25 +470,42 @@ async function getCoinNotes(args: Record<string, unknown>): Promise<unknown> {
   return { coin, notes: row.notes, updated_at: row.updated_at ?? null }
 }
 
-// Recent news / market sentiment for a coin. STUB: a full implementation would call
-// the researcher (Puppeteer/DuckDuckGo) → extractor (LLM sentiment compression) chain
-// used by the entry pipeline. That's a heavy multi-second crawl, so here we return the
-// cheap proxy already in the DB (recent analyst reasoning) and flag it as a stub.
+// Recent news / market sentiment for a coin. Runs the SAME researcher (Puppeteer/
+// DuckDuckGo) → extractor (LLM sentiment compression) chain the entry pipeline uses, so
+// the agent gets live, article-level sentiment. This is a heavy multi-second crawl + LLM
+// pass (per-URL extraction is cached in extraction_cache, so repeats are cheaper).
 async function getCoinSentiment(args: Record<string, unknown>): Promise<unknown> {
   const coin = normalizeCoin(args.coin)
   if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  if (!isTradeable(coin)) return { error: `${coin} is a fiat/stablecoin, not a tradeable market.` }
 
-  // TODO(typeD): wire researcher.search(coin) → extractor.summarize(articles) for live
-  // article-level sentiment. For now, surface the latest analyst signals as a proxy.
-  const signals = await decisions.find(
-    { coin },
-    { sort: { created_at: -1 }, limit: 5, projection: { _id: 0, action: 1, reason: 1, confidence: 1, created_at: 1 } },
-  )
-  return {
-    coin,
-    stub: true,
-    note: 'Live news/sentiment crawl not wired here yet — returning recent analyst reasoning as a proxy.',
-    recentAnalystViews: signals.map(s => ({ action: s.action, confidence: s.confidence, reason: snippet(s.reason, 240), at: s.created_at })),
+  try {
+    const raw = await researchCoin(coin)
+    const extracted = await extractResearch(raw)
+    const articles = extracted.articles.filter(a => !a.skip_reason)
+    if (!articles.length) {
+      return { coin, aggregated_sentiment: extracted.aggregated_sentiment, article_count: 0, note: 'No usable articles found in this crawl.' }
+    }
+    return {
+      coin,
+      aggregated_sentiment: extracted.aggregated_sentiment,
+      article_count: articles.length,
+      top_headlines: extracted.top_headlines.slice(0, 8),
+      articles: articles
+        .sort((a, b) => b.relevance_score - a.relevance_score)
+        .slice(0, 6)
+        .map(a => ({
+          title: a.title,
+          sentiment: a.sentiment,
+          relevance: a.relevance_score,
+          signal: a.preliminary_signal ?? null,
+          summary: snippet(a.summary, 240),
+          key_points: (a.key_points ?? []).slice(0, 3),
+        })),
+    }
+  } catch (err) {
+    logger.warn('Agent get_coin_sentiment crawl failed', { coin, error: (err as Error).message })
+    return { coin, error: `Sentiment crawl failed: ${(err as Error).message}` }
   }
 }
 
@@ -724,7 +743,7 @@ export const TOOLS: AgentTool[] = [
   },
   {
     name: 'get_coin_sentiment',
-    description: 'Gather recent news and market sentiment for a coin. (Currently returns recent analyst reasoning as a proxy; flagged with stub:true.) Use to weigh narrative/news risk against the chart.',
+    description: 'Gather LIVE news & market sentiment for a coin: crawls the web (DuckDuckGo) and runs LLM extraction to return an aggregated sentiment, top headlines, and per-article sentiment/relevance/summary. Heavy (several seconds); call once per coin. Use to weigh narrative/news risk against the chart.',
     parameters: {
       type: 'object',
       properties: { coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' } },

@@ -220,8 +220,8 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
         // Compact, consistent result line (full blobs are never persisted).
         if (name === 'get_candle_data' && res && typeof res.count === 'number') {
           rec.push('tool_result', '💾', `Candle data ready (${res.count} bars, cache-first)`, 'muted', { tool: name })
-        } else if (name === 'get_coin_sentiment' && res?.stub) {
-          rec.push('tool_result', '📰', 'Sentiment proxy returned (live crawl not wired)', 'warn', { tool: name })
+        } else if (name === 'get_coin_sentiment' && res && typeof res.article_count === 'number') {
+          rec.push('tool_result', '📰', `Sentiment: ${res.aggregated_sentiment ?? 'n/a'} (${res.article_count} article${res.article_count === 1 ? '' : 's'})`, 'muted', { tool: name })
         } else if (res?.error) {
           rec.push('tool_result', '⚠️', `${meta.verb} → ${String(res.error)}`, 'warn', { tool: name })
         } else {
