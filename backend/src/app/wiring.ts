@@ -1,4 +1,5 @@
 import { bus } from '../core/events.js'
+import { systemBus, SystemEvent } from '../core/bus.js'
 import { logger } from '../core/logger.js'
 import {
   approveTrade, rejectTrade,
@@ -121,6 +122,40 @@ export function registerEventHandlers(): void {
       const stage = isTimeout ? 'pipeline_timeout' : 'pipeline_failed'
       logPipelineEvent(stage, symbol, cycle_id, { error: errMsg(err) })
       logger.error(isTimeout ? 'Manual pipeline timed out' : 'Manual pipeline failed', { symbol, error: String(err) })
+    })
+  })
+
+  registerTelemetryBridge()
+}
+
+/**
+ * Mirror selected command-bus events into the reactive telemetry bus that backs
+ * the Event Stream page. This is a one-way tap: it only reads events and emits
+ * facts — it never executes trades — so the observability stream can never
+ * affect execution. Order-fill/fail and market ticks are emitted at their source
+ * (submitTrade / priceCache); the rest are bridged here.
+ */
+function registerTelemetryBridge(): void {
+  bus.on('signal_generated', (s) => {
+    systemBus.emitEvent(SystemEvent.STRATEGY_SIGNAL_GENERATED, {
+      symbol: s.coin,
+      action: s.action,
+      confidence: s.confidence,
+      reason: s.reason,
+    })
+  })
+
+  bus.on('stop_loss_hit', ({ positionId, coin, price }) => {
+    systemBus.emitEvent(SystemEvent.RISK_STOP_TRIGGERED, { symbol: coin, positionId, price })
+  })
+
+  bus.on('take_profit_hit', ({ positionId, coin, price }) => {
+    systemBus.emitEvent(SystemEvent.RISK_TAKE_PROFIT, { symbol: coin, positionId, price })
+  })
+
+  bus.on('sl_tp_adjusted', ({ coin, positionId, newStopLoss, newTakeProfit }) => {
+    systemBus.emitEvent(SystemEvent.RISK_POSITION_ADJUSTED, {
+      symbol: coin, positionId, stopLoss: newStopLoss, takeProfit: newTakeProfit,
     })
   })
 }

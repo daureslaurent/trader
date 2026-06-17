@@ -1,6 +1,7 @@
 import WebSocket from 'ws'
 import { logger } from '../core/logger.js'
 import { broadcast } from '../api/ws.js'
+import { systemBus, SystemEvent } from '../core/bus.js'
 
 export interface PriceSnapshot {
   price: number
@@ -63,6 +64,9 @@ function handleMiniTicker(msg: Record<string, string>): void {
   const snap: PriceSnapshot = { price, change24h, volume: parseFloat(msg.q), updatedAt: Date.now() }
   cache.set(symbol, snap)
   broadcast('price_update', { symbol, price, change24h })
+  // Telemetry: feed the reactive Event Stream. High-frequency, so it's coalesced
+  // per-symbol on the WebSocket bridge before reaching the UI.
+  systemBus.emitEvent(SystemEvent.MARKET_PRICE_TICK, { symbol, price, changePct: change24h })
 }
 
 function connect(): void {

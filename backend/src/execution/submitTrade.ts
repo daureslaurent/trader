@@ -1,6 +1,7 @@
 import { trades, positions as positionsRepo, portfolioEntries, withTransaction, nowSql, getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import { bus } from '../core/events.js'
+import { systemBus, SystemEvent } from '../core/bus.js'
 import { broadcast } from '../api/ws.js'
 import { executeTrade } from '../trader/index.js'
 import {
@@ -118,6 +119,13 @@ export async function submitTrade(signal: Signal, estimatedPrice: number, tradeI
     const trade = await trades.findOne({}, { sort: { id: -1 } })
     bus.emit('trade_executed', trade as any)
     broadcast('trade_executed', trade)
+    systemBus.emitEvent(SystemEvent.EXECUTION_ORDER_FILLED, {
+      symbol: signal.coin,
+      side: signal.action as 'BUY' | 'SELL',
+      qty: result.quantity,
+      price: result.price,
+      notionalUsd: result.quantity * result.price,
+    })
 
     if (newPositionId !== undefined) {
       logger.info('Position opened', { coin: signal.coin, price: result.price })
@@ -146,6 +154,11 @@ export async function submitTrade(signal: Signal, estimatedPrice: number, tradeI
       : null
     broadcast('trade_failed', failedTrade)
     bus.emit('trade_failed', { coin: signal.coin, side: signal.action, error: errMsg })
+    systemBus.emitEvent(SystemEvent.EXECUTION_ORDER_FAILED, {
+      symbol: signal.coin,
+      side: signal.action as 'BUY' | 'SELL',
+      error: errMsg,
+    })
     return { ok: false, error: errMsg }
   } finally {
     if (claimedPositionId !== undefined) releaseExit(claimedPositionId)

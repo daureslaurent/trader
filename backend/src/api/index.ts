@@ -6,6 +6,7 @@ import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { router } from './routes.js'
 import { initWS } from './ws.js'
+import { initEventStream } from './eventStream.js'
 
 export function startAPI() {
   const app = express()
@@ -30,6 +31,7 @@ export function startAPI() {
 
   const server = createServer(app)
   initWS(server)
+  initEventStream()
 
   server.listen(config.port, () => {
     logger.info(`API server running on port ${config.port}`)

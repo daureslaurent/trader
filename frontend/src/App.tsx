@@ -26,6 +26,7 @@ import LLMStats from './pages/LLMStats'
 import ControlRoom from './pages/ControlRoom'
 import Agent from './pages/Agent'
 import Host from './pages/Host'
+import EventStream from './pages/EventStream'
 
 const PAGE_TITLES: Record<Page, string> = {
   dashboard: 'Dashboard',
@@ -47,6 +48,7 @@ const PAGE_TITLES: Record<Page, string> = {
   'control-room': 'Inference Control Room',
   agent: 'Agent',
   host: 'System',
+  'event-stream': 'Event Stream',
 }
 
 let toastId = 0
@@ -227,6 +229,7 @@ function AppInner() {
           {page === 'llm-stats' && <LLMStats />}
           {page === 'control-room' && <ControlRoom />}
           {page === 'host' && <Host />}
+          {page === 'event-stream' && <EventStream />}
           {page === 'settings' && <Settings />}
         </main>
       </div>
