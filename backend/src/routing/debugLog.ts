@@ -38,6 +38,7 @@ export async function recordDebug(node: RouteNode, ctx: FireContext): Promise<vo
   if (seen % sampleN !== 0) return // sampled out
 
   // Strip the noisy `trigger` key out of the captured payload (it's a column).
+  // When `logData` is off, record only metadata and omit the payload entirely.
   const { trigger: _t, ...payload } = ctx
   const record = {
     node_id: node.id,
@@ -45,7 +46,7 @@ export async function recordDebug(node: RouteNode, ctx: FireContext): Promise<vo
     note: String(node.config.note ?? ''),
     trigger: ctx.trigger,
     symbol: ctx.symbol ?? null,
-    payload: JSON.stringify(payload),
+    payload: node.config.logData === false ? '' : JSON.stringify(payload),
     created_at: nowSql(),
   }
   try {

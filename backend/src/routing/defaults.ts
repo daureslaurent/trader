@@ -26,7 +26,7 @@ export function defaultGraph(settings: BotSettings): RoutingGraph {
 
     // Example processors (off by default).
     { id: 'proc.pricemove', kind: 'processor', type: 'price_move', label: 'Price move > 2%', enabled: false, config: { pct: 2, windowSec: 300, direction: 'any' }, position: { x: 440, y: 610 } },
-    { id: 'proc.debug', kind: 'processor', type: 'debug', label: 'Debug tap', enabled: false, config: { note: '', sampleN: 1, passThrough: true }, position: { x: 440, y: 760 } },
+    { id: 'proc.debug', kind: 'processor', type: 'debug', label: 'Debug tap', enabled: false, config: { note: '', sampleN: 1, logData: true, passThrough: true }, position: { x: 440, y: 760 } },
 
     // Engine outputs.
     { id: 'out.pipeline', kind: 'output', type: 'module_pipeline', label: 'Run Pipeline', enabled: true, managed: true, config: {}, position: { x: 820, y: 60 } },

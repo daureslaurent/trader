@@ -1,7 +1,9 @@
 import { logger } from '../core/logger.js'
 import { systemBus, SystemEvent } from '../core/bus.js'
+import { bus } from '../core/events.js'
 import { fireInputsOfType } from './engine.js'
 import { RouteNode } from './types.js'
+import { isHeld, noteOpened, noteClosed } from './heldCoins.js'
 
 /**
  * Non-timer input sources: live Binance price ticks and the one-shot startup
@@ -13,13 +15,17 @@ import { RouteNode } from './types.js'
 
 let wired = false
 
-function symbolMatches(node: RouteNode, symbol: string): boolean {
+// A binance input node fires for a symbol when its symbol filter matches AND,
+// if `heldOnly` is set, the coin is currently held in the portfolio.
+function inputMatches(node: RouteNode, symbol: string): boolean {
   const filter = String(node.config.symbol ?? '').trim()
-  return filter === '' || filter === symbol
+  if (filter !== '' && filter !== symbol) return false
+  if (node.config.heldOnly === true && !isHeld(symbol)) return false
+  return true
 }
 
 function fire(type: string, symbol: string, ctx: Record<string, unknown>): void {
-  void fireInputsOfType(type, { trigger: 'binance', symbol, ...ctx }, (node) => symbolMatches(node, symbol))
+  void fireInputsOfType(type, { trigger: 'binance', symbol, ...ctx }, (node) => inputMatches(node, symbol))
     .catch((err) => logger.warn(`${type} source fire failed`, { error: err instanceof Error ? err.message : String(err) }))
 }
 
@@ -36,9 +42,13 @@ export function wireSources(): void {
     void fireInputsOfType(
       'binance_kline',
       { trigger: 'binance', price: k.close, ...k },
-      (node) => symbolMatches(node, k.symbol) && String(node.config.interval ?? '1m') === k.interval,
+      (node) => inputMatches(node, k.symbol) && String(node.config.interval ?? '1m') === k.interval,
     ).catch((err) => logger.warn('binance_kline source fire failed', { error: err instanceof Error ? err.message : String(err) }))
   })
+
+  // Keep the held-coins cache live for the `heldOnly` toggle.
+  bus.on('position_opened', (pos) => noteOpened((pos as { coin: string }).coin))
+  bus.on('position_closed', ({ coin }) => noteClosed(coin))
 
   systemBus.onEvent(SystemEvent.MARKET_BOOK_TICKER, (b) => {
     fire('binance_book', b.symbol, { price: (b.bid + b.ask) / 2, bid: b.bid, ask: b.ask, spread: b.spread })

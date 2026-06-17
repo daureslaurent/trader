@@ -26,8 +26,9 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     category: 'market',
     configFields: [
       { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all', help: 'e.g. BTC/USDC. Blank matches every subscribed symbol.' },
+      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
     ],
-    defaultConfig: { symbol: '' },
+    defaultConfig: { symbol: '', heldOnly: false },
   },
   binance_kline: {
     type: 'binance_kline',
@@ -41,8 +42,9 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
         { value: '1m', label: '1m' }, { value: '3m', label: '3m' }, { value: '5m', label: '5m' },
         { value: '15m', label: '15m' }, { value: '1h', label: '1h' }, { value: '4h', label: '4h' }, { value: '1d', label: '1d' },
       ] },
+      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
     ],
-    defaultConfig: { symbol: '', interval: '1m' },
+    defaultConfig: { symbol: '', interval: '1m', heldOnly: false },
   },
   binance_book: {
     type: 'binance_book',
@@ -52,8 +54,9 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     category: 'market',
     configFields: [
       { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
+      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
     ],
-    defaultConfig: { symbol: '' },
+    defaultConfig: { symbol: '', heldOnly: false },
   },
   binance_trade: {
     type: 'binance_trade',
@@ -63,8 +66,9 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     category: 'market',
     configFields: [
       { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
+      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
     ],
-    defaultConfig: { symbol: '' },
+    defaultConfig: { symbol: '', heldOnly: false },
   },
   binance_depth: {
     type: 'binance_depth',
@@ -74,8 +78,9 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     category: 'market',
     configFields: [
       { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
+      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
     ],
-    defaultConfig: { symbol: '' },
+    defaultConfig: { symbol: '', heldOnly: false },
   },
   manual: {
     type: 'manual',
@@ -147,9 +152,10 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     configFields: [
       { key: 'note', label: 'Note', type: 'text', placeholder: 'optional label for these records' },
       { key: 'sampleN', label: 'Sample 1 in N', type: 'number', placeholder: '1', help: 'Log only 1 of every N events (1 = log all). Useful for high-frequency Binance streams.' },
+      { key: 'logData', label: 'Log event data', type: 'boolean', help: 'On: record the full event payload. Off: record only metadata (node, symbol, time).' },
       { key: 'passThrough', label: 'Pass-through', type: 'boolean', help: 'On: log then propagate downstream. Off: terminal sink (logs only).' },
     ],
-    defaultConfig: { note: '', sampleN: 1, passThrough: true },
+    defaultConfig: { note: '', sampleN: 1, logData: true, passThrough: true },
   },
 
   // ── Outputs (engine triggers) ───────────────────────────────────────────────
