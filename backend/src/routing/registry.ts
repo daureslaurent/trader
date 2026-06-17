@@ -143,6 +143,104 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     ],
     defaultConfig: { seconds: 60 },
   },
+  change_24h: {
+    type: 'change_24h',
+    kind: 'processor',
+    label: '24h Change %',
+    description: "Passes when the symbol's 24h price change clears a threshold (live Binance ticker).",
+    category: 'market',
+    configFields: [
+      { key: 'pct', label: 'Threshold %', type: 'number', placeholder: '5' },
+      { key: 'direction', label: 'Direction', type: 'select', options: [
+        { value: 'any', label: 'Any' }, { value: 'up', label: 'Up only' }, { value: 'down', label: 'Down only' },
+      ] },
+    ],
+    defaultConfig: { pct: 5, direction: 'any' },
+  },
+  spread_filter: {
+    type: 'spread_filter',
+    kind: 'processor',
+    label: 'Spread Filter',
+    description: 'Passes only when the bid/ask spread is tight enough (use after a Best Bid/Ask input). Avoids acting in illiquid moments.',
+    category: 'market',
+    configFields: [
+      { key: 'maxSpreadPct', label: 'Max spread %', type: 'number', placeholder: '0.1' },
+    ],
+    defaultConfig: { maxSpreadPct: 0.1 },
+  },
+  trade_size: {
+    type: 'trade_size',
+    kind: 'processor',
+    label: 'Trade Size',
+    description: 'Passes large trades (whale prints) by notional USD and aggressor side. Use after a Trades input.',
+    category: 'market',
+    configFields: [
+      { key: 'minUsd', label: 'Min notional $', type: 'number', placeholder: '10000' },
+      { key: 'side', label: 'Aggressor side', type: 'select', options: [
+        { value: 'any', label: 'Any' }, { value: 'buy', label: 'Buys only' }, { value: 'sell', label: 'Sells only' },
+      ] },
+    ],
+    defaultConfig: { minUsd: 10000, side: 'any' },
+  },
+  rsi_gate: {
+    type: 'rsi_gate',
+    kind: 'processor',
+    label: 'RSI Gate',
+    description: 'Passes when RSI is below (oversold) / above (overbought) a level. Fetches candles — wire after a low-frequency input like a kline close.',
+    category: 'strategy',
+    configFields: [
+      { key: 'tf', label: 'Timeframe', type: 'select', options: [
+        { value: '1m', label: '1m' }, { value: '5m', label: '5m' }, { value: '15m', label: '15m' },
+        { value: '1h', label: '1h' }, { value: '4h', label: '4h' }, { value: '1d', label: '1d' },
+      ] },
+      { key: 'period', label: 'Period', type: 'number', placeholder: '14' },
+      { key: 'op', label: 'Pass when RSI is', type: 'select', options: [
+        { value: 'below', label: 'Below (oversold)' }, { value: 'above', label: 'Above (overbought)' },
+      ] },
+      { key: 'value', label: 'Level', type: 'number', placeholder: '30' },
+    ],
+    defaultConfig: { tf: '1h', period: 14, op: 'below', value: 30 },
+  },
+  price_cross: {
+    type: 'price_cross',
+    kind: 'processor',
+    label: 'Price Level Cross',
+    description: 'Fires once when the live price crosses a configured level (edge-triggered, per symbol).',
+    category: 'strategy',
+    configFields: [
+      { key: 'level', label: 'Price level', type: 'number', placeholder: '65000' },
+      { key: 'direction', label: 'Cross', type: 'select', options: [
+        { value: 'above', label: 'Crossing up' }, { value: 'below', label: 'Crossing down' }, { value: 'any', label: 'Either way' },
+      ] },
+    ],
+    defaultConfig: { level: 0, direction: 'above' },
+  },
+  pnl_gate: {
+    type: 'pnl_gate',
+    kind: 'processor',
+    label: 'Position PnL %',
+    description: 'Passes based on the unrealized PnL of the held position for this symbol. Pair with a portfolio-only input → monitor.',
+    category: 'risk',
+    configFields: [
+      { key: 'pct', label: 'Threshold %', type: 'number', placeholder: '5' },
+      { key: 'direction', label: 'Pass when PnL is', type: 'select', options: [
+        { value: 'above', label: 'At/above (in profit)' }, { value: 'below', label: 'At/below (in loss)' },
+      ] },
+    ],
+    defaultConfig: { pct: 5, direction: 'above' },
+  },
+  time_window: {
+    type: 'time_window',
+    kind: 'processor',
+    label: 'Time Window',
+    description: 'Passes only during an hour-of-day window (uses your configured UTC offset). Restrict automation to active sessions.',
+    category: 'system',
+    configFields: [
+      { key: 'startHour', label: 'Start hour (0–24)', type: 'number', placeholder: '8' },
+      { key: 'endHour', label: 'End hour (0–24)', type: 'number', placeholder: '22' },
+    ],
+    defaultConfig: { startHour: 8, endHour: 22 },
+  },
   debug: {
     type: 'debug',
     kind: 'processor',
