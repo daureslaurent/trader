@@ -39,6 +39,11 @@ export async function ensureIndexes(): Promise<void> {
     { key: { cycle_id: 1 }, name: 'idx_agent_signal_runs_cycle' },
     { key: { coin: 1 }, name: 'idx_agent_signal_runs_coin' },
   ])
+  await db.collection('entry_agent_runs').createIndexes([
+    { key: { id: -1 }, name: 'idx_entry_agent_runs_id' },
+    { key: { cycle_id: 1 }, name: 'idx_entry_agent_runs_cycle' },
+    { key: { coin: 1 }, name: 'idx_entry_agent_runs_coin' },
+  ])
   await db.collection('position_adjustments').createIndexes([
     { key: { status: 1 }, name: 'idx_position_adjustments_status' },
     { key: { coin: 1, created_at: 1 }, name: 'idx_position_adjustments_coin' },

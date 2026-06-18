@@ -1,3 +1,3 @@
-export { start, stop, register, cancel, replan, fireNow, updateIntent, hasActiveIntent, getActiveIntents, getRecentEvents } from './service.js'
-export type { ReplanResult, IntentEdit } from './service.js'
-export type { EntryIntent, EntryEvent, BandSnapshot, CancelReason, FillTrigger } from './types.js'
+export { start, stop, register, cancel, applyAgentBand, fireNow, updateIntent, hasActiveIntent, getActiveIntents, getRecentEvents } from './service.js'
+export type { ApplyBandResult, IntentEdit } from './service.js'
+export type { EntryBand, EntryIntent, EntryEvent, BandSnapshot, BandSource, CancelReason, FillTrigger } from './types.js'

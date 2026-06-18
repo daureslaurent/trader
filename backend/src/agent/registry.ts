@@ -15,7 +15,7 @@ import { getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import type { AgentToolPermission } from '../types.js'
 import {
-  TOOLS, AgentTool, MONITOR_D_TOOL_NAMES, AGENT_SIGNAL_TOOL_NAMES,
+  TOOLS, AgentTool, MONITOR_D_TOOL_NAMES, AGENT_SIGNAL_TOOL_NAMES, ENTRY_AGENT_TOOL_NAMES,
   getToolSchemas, runTool, isReadOnlyTool,
 } from './tools.js'
 
@@ -33,6 +33,7 @@ export interface AgentDef {
 
 const MONITOR_D_SET = new Set<string>(MONITOR_D_TOOL_NAMES)
 const AGENT_SIGNAL_SET = new Set<string>(AGENT_SIGNAL_TOOL_NAMES)
+const ENTRY_AGENT_SET = new Set<string>(ENTRY_AGENT_TOOL_NAMES)
 
 // The tool-calling agents. Order is the display order in the settings UI.
 export const AGENTS: AgentDef[] = [
@@ -56,6 +57,13 @@ export const AGENTS: AgentDef[] = [
     description: 'The agentic, single-coin entry engine. One agent per watchlist coin investigates with read tools + live news and keeps long-term per-coin memory before committing to a BUY or HOLD signal. Its memory tool is read-write; it never triggers engines or edits the watchlist mid-review.',
     // Curated coin-scoped belt: reads stay read-only, the memory write tool is fully enabled.
     defaultGrant: t => (AGENT_SIGNAL_SET.has(t.name) ? (t.readOnly ? 'read' : 'readwrite') : 'off'),
+  },
+  {
+    id: 'entryAgent',
+    label: 'Entry Agent',
+    description: 'The agentic, per-coin entry-position engine. One agent per active entry intent reads live market structure + the BUY thesis / Agent Signal memory and drives the deferred BUY — adjusting the entry band, firing now, or cancelling via its action tools. Coin-scoped; it never triggers engines or edits the watchlist mid-pass.',
+    // Curated belt: reads read-only, the three entry action tools (set band / fire / cancel) fully enabled.
+    defaultGrant: t => (ENTRY_AGENT_SET.has(t.name) ? (t.readOnly ? 'read' : 'readwrite') : 'off'),
   },
 ]
 

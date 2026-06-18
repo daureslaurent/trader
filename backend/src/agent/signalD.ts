@@ -32,7 +32,7 @@ import { prepareBuyOrder, deferToEntryDesk, logPipelineEvent } from '../pipeline
 import { handleTradeSignal } from '../execution/index.js'
 import * as entry from '../entry/index.js'
 import { isTradeable } from '../core/tradeable.js'
-import type { EntryBand } from '../entryPlanner/types.js'
+import type { EntryBand } from '../entry/index.js'
 import type { MarketContext, MarketData, Signal, SignalRun, SignalRunFrame } from '../types.js'
 import { isReadOnlyTool, upsertSignalMemory } from './tools.js'
 import { getAgentToolSchemas, getAgentToolPrompt, runAgentTool } from './registry.js'
@@ -217,7 +217,7 @@ function bandFromVerdict(v: SignalVerdict): EntryBand | undefined {
     invalidatePct: e.invalidatePct,
     chaseCapPct: e.chaseCapPct,
     ttlMinutes: e.ttlMinutes,
-    source: 'llm',
+    source: 'agent',
     reason: v.thesis ? v.thesis.slice(0, 200) : 'Agent Signal entry band',
   }
 }

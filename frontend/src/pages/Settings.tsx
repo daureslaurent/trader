@@ -58,9 +58,11 @@ interface SettingsData {
   entry_ttl_minutes: number
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
-  entry_planner_enabled: boolean
-  entry_planner_candle_tf: string
-  entry_planner_candle_count: number
+  entry_model: 'static' | 'agent'
+  entry_agent_cron: string
+  entry_agent_candle_tf: string
+  entry_agent_candle_count: number
+  entry_agent_retain_runs: number
   llm_endpoints: LLMEndpoint[]
   llm_analyst_endpoint: string
   llm_analyst_max_tokens: number
@@ -78,8 +80,8 @@ interface SettingsData {
   llm_monitor_c_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
-  llm_entry_planner_endpoint: string
-  llm_entry_planner_max_tokens: number
+  llm_entryAgent_endpoint: string
+  llm_entryAgent_max_tokens: number
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
   llm_monitor_d_endpoint: string
@@ -102,8 +104,8 @@ interface SettingsData {
   llm_monitor_c_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
-  llm_entry_planner_fb_endpoint: string
-  llm_entry_planner_fb_max_tokens: number
+  llm_entryAgent_fb_endpoint: string
+  llm_entryAgent_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
   llm_monitor_d_fb_endpoint: string
@@ -445,7 +447,7 @@ const LLM_MODULES: {
   { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — second model for the position monitor (used in B / Alternate / A+B / A+B+C modes).', endpointKey: 'llm_monitor_b_endpoint', maxTokensKey: 'llm_monitor_b_max_tokens', fbEndpointKey: 'llm_monitor_b_fb_endpoint', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens' },
   { key: 'monitorC',            label: 'Monitor C',            hint: 'Slot C — the synthesizer in A+B+C mode. Sees A and B’s verdicts and writes the final decision. Use a strong, well-reasoned model.', endpointKey: 'llm_monitor_c_endpoint', maxTokensKey: 'llm_monitor_c_max_tokens', fbEndpointKey: 'llm_monitor_c_fb_endpoint', fbMaxTokensKey: 'llm_monitor_c_fb_max_tokens' },
   { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', endpointKey: 'llm_summary_endpoint', maxTokensKey: 'llm_summary_max_tokens', fbEndpointKey: 'llm_summary_fb_endpoint', fbMaxTokensKey: 'llm_summary_fb_max_tokens' },
-  { key: 'entryPlanner',        label: 'Entry Planner',        hint: 'Picks the per-coin entry band (pullback / invalidate / chase cap / TTL) for deferred BUYs. A small fast model is enough.', endpointKey: 'llm_entry_planner_endpoint', maxTokensKey: 'llm_entry_planner_max_tokens', fbEndpointKey: 'llm_entry_planner_fb_endpoint', fbMaxTokensKey: 'llm_entry_planner_fb_max_tokens' },
+  { key: 'entryAgent',          label: 'Entry Agent',          hint: 'The agentic per-coin entry engine: drives each deferred BUY (adjusts the band / fires / cancels) via tool calls. Use a tool-calling-capable model.', endpointKey: 'llm_entryAgent_endpoint', maxTokensKey: 'llm_entryAgent_max_tokens', fbEndpointKey: 'llm_entryAgent_fb_endpoint', fbMaxTokensKey: 'llm_entryAgent_fb_max_tokens' },
   { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
   { key: 'monitorD',            label: 'Agent D (monitor)',    hint: 'The Type D agentic position monitor (monitor model “Agent D”). Runs a tool-calling loop per open position, so use a tool-calling-capable model.', endpointKey: 'llm_monitor_d_endpoint', maxTokensKey: 'llm_monitor_d_max_tokens', fbEndpointKey: 'llm_monitor_d_fb_endpoint', fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens' },
   { key: 'agentSignal',         label: 'Agent Signal',         hint: 'The agentic entry engine (entry model “Agent Signal”). Runs a tool-calling loop per watchlist coin, so use a tool-calling-capable model.', endpointKey: 'llm_agentSignal_endpoint', maxTokensKey: 'llm_agentSignal_max_tokens', fbEndpointKey: 'llm_agentSignal_fb_endpoint', fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens' },
@@ -1152,7 +1154,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1364,71 +1366,86 @@ export default function Settings() {
           {settings.entry_timing_enabled && (
             <>
               <Row
-                label="LLM-decided entry levels"
-                hint="When on, the Entry Planner LLM picks the pullback, invalidate, chase-cap and lifetime per coin from live market data + the analyst's thesis — so the entry window fits each setup. The values below become the fallback used if the planner is off or its call fails. Configure its model under LLM Models → Entry Planner."
+                label="Entry model"
+                hint="Who decides the per-coin entry band. Static = the fixed levels below (no LLM). Entry Agent = a per-coin tool-calling agent that reasons about the best entry and adapts the band / fires / cancels as the market moves; the static levels below become the safe fallback. Configure its model under LLM Models → Entry Agent; watch it on the Entry Agent page."
               >
-                <Toggle label="LLM-decided entry levels" checked={settings.entry_planner_enabled} onChange={() => toggle('entry_planner_enabled')} />
+                <select
+                  value={settings.entry_model}
+                  onChange={e => set('entry_model', e.target.value as 'static' | 'agent')}
+                  className="w-full text-sm bg-surface-elevated border border-border rounded-xl px-2.5 py-2 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+                >
+                  <option value="static">Static (fixed levels)</option>
+                  <option value="agent">Entry Agent (agentic)</option>
+                </select>
               </Row>
 
-              {settings.entry_planner_enabled && (
+              {settings.entry_model === 'agent' && (
                 <div className="flex items-start gap-2.5 rounded-xl border border-accent/25 bg-accent/5 px-3.5 py-3 text-xs text-muted leading-relaxed">
                   <svg className="h-4 w-4 shrink-0 mt-0.5 text-accent" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <span>
-                    The <span className="font-medium text-foreground">Entry Planner</span> chooses these four levels per coin. The values below are used only as a
-                    <span className="font-medium text-foreground"> fallback</span> when the planner is disabled or unavailable. Each pick is logged to LLM Debug and shown on the Entry Desk.
+                    The <span className="font-medium text-foreground">Entry Agent</span> drives each deferred BUY — adjusting the band, firing, or cancelling per coin. The values below are the
+                    <span className="font-medium text-foreground"> fallback</span> band used at registration and whenever the agent errors. Each pass is shown on the Entry Agent page.
                   </span>
                 </div>
               )}
 
-              {settings.entry_planner_enabled && (
-                <Row label="Price history" hint="Candle timeframe and count fed to the Entry Planner as price-action context so it can anchor the band on recent swing lows and ranges. A shorter timeframe than the monitor's suits entry timing, since the band fires within minutes.">
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={settings.entry_planner_candle_tf}
-                      onChange={e => set('entry_planner_candle_tf', e.target.value)}
-                      className="text-sm bg-surface-elevated border border-border rounded-xl px-2.5 py-2 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
-                    >
-                      {['1m', '5m', '15m', '1h', '4h', '1d'].map(tf => (
-                        <option key={tf} value={tf}>{tf}</option>
-                      ))}
-                    </select>
-                    <span className="text-xs text-muted">×</span>
-                    <UnitInput
-                      type="number"
-                      step="1"
-                      min="1"
-                      max="100"
-                      unit="candles"
-                      value={settings.entry_planner_candle_count}
-                      onChange={e => set('entry_planner_candle_count', parseInt(e.target.value) || 24)}
-                      className="w-28"
-                    />
-                  </div>
-                </Row>
+              {settings.entry_model === 'agent' && (
+                <>
+                  <Row label="Re-evaluation cron" hint="How often the routing graph re-fires the Entry Agent to re-evaluate every active intent. The fast static gates still fire urgently between passes. A freshly deferred BUY also gets an immediate first pass.">
+                    <Input value={settings.entry_agent_cron} onChange={e => set('entry_agent_cron', e.target.value)} className="w-40 font-mono" placeholder="*/1 * * * *" />
+                  </Row>
+                  <Row label="Price history" hint="Candle timeframe and count fed to the Entry Agent as price-action context so it can anchor the band on recent structure. A shorter timeframe suits entry timing, since the band fires within minutes.">
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={settings.entry_agent_candle_tf}
+                        onChange={e => set('entry_agent_candle_tf', e.target.value)}
+                        className="text-sm bg-surface-elevated border border-border rounded-xl px-2.5 py-2 text-foreground cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+                      >
+                        {['1m', '5m', '15m', '1h', '4h', '1d'].map(tf => (
+                          <option key={tf} value={tf}>{tf}</option>
+                        ))}
+                      </select>
+                      <span className="text-xs text-muted">×</span>
+                      <UnitInput
+                        type="number"
+                        step="1"
+                        min="1"
+                        max="100"
+                        unit="candles"
+                        value={settings.entry_agent_candle_count}
+                        onChange={e => set('entry_agent_candle_count', parseInt(e.target.value) || 24)}
+                        className="w-28"
+                      />
+                    </div>
+                  </Row>
+                  <Row label="Retain passes" hint="How many of the most recent Entry Agent run records to keep (older ones are pruned). These back the Entry Agent page's pass history.">
+                    <UnitInput type="number" step="10" min="10" max="2000" unit="runs" value={settings.entry_agent_retain_runs} onChange={e => set('entry_agent_retain_runs', parseInt(e.target.value) || 200)} />
+                  </Row>
+                </>
               )}
 
               <Row
-                label={settings.entry_planner_enabled ? 'Pullback target (fallback)' : 'Pullback target'}
+                label={settings.entry_model === 'agent' ? 'Pullback target (fallback)' : 'Pullback target'}
                 hint="Aim to buy this % below the signal price (the dip). Fires as soon as price reaches the target."
               >
                 <UnitInput type="number" step="0.1" min="0" max="10" unit="%" value={settings.entry_pullback_pct} onChange={e => set('entry_pullback_pct', parseFloat(e.target.value) || 0)} />
               </Row>
               <Row
-                label={settings.entry_planner_enabled ? 'Invalidate / falling knife (fallback)' : 'Invalidate (falling knife)'}
+                label={settings.entry_model === 'agent' ? 'Invalidate / falling knife (fallback)' : 'Invalidate (falling knife)'}
                 hint="Abandon the intent if price drops this % below the signal price before filling — likely a breakdown, not a dip."
               >
                 <UnitInput type="number" step="0.5" min="0.5" max="50" unit="%" value={settings.entry_invalidate_pct} onChange={e => set('entry_invalidate_pct', parseFloat(e.target.value) || 0)} />
               </Row>
               <Row
-                label={settings.entry_planner_enabled ? 'Chase cap (fallback)' : 'Chase cap'}
+                label={settings.entry_model === 'agent' ? 'Chase cap (fallback)' : 'Chase cap'}
                 hint="Abandon the intent if price runs this % above the signal price — the move got away; wait for the next cycle rather than chasing."
               >
                 <UnitInput type="number" step="0.5" min="0.5" max="50" unit="%" value={settings.entry_max_chase_pct} onChange={e => set('entry_max_chase_pct', parseFloat(e.target.value) || 0)} />
               </Row>
               <Row
-                label={settings.entry_planner_enabled ? 'Intent lifetime (fallback)' : 'Intent lifetime'}
+                label={settings.entry_model === 'agent' ? 'Intent lifetime (fallback)' : 'Intent lifetime'}
                 hint="How long to wait for a good entry before the intent expires."
               >
                 <UnitInput type="number" step="1" min="1" max="240" unit="min" value={settings.entry_ttl_minutes} onChange={e => set('entry_ttl_minutes', parseFloat(e.target.value) || 0)} />

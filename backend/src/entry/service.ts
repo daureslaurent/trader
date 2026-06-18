@@ -5,8 +5,7 @@ import * as priceCache from '../market/index.js'
 import { getSettings } from '../db/index.js'
 import { getMarketContext } from '../portfolio/index.js'
 import { Signal, BotSettings, MarketContext } from '../types.js'
-import { EntryBand, planEntry, resolveEntryBand } from '../entryPlanner/index.js'
-import { EntryIntent, EntryEvent, BandSnapshot, CancelReason, FillTrigger } from './types.js'
+import { EntryBand, EntryIntent, EntryEvent, BandSnapshot, CancelReason, FillTrigger } from './types.js'
 import * as store from './store.js'
 
 // One active intent per coin. Short-lived (≤ entry_ttl_minutes). Mirrored to the
@@ -49,7 +48,8 @@ interface RegisterParams {
   signalPrice: number
   notionalUsdc: number
   atr: number
-  /** The resolved entry band (LLM plan or static settings) — see resolveEntryBand. */
+  /** The initial entry band — the static settings band (or an Agent-Signal-seeded band). The
+   *  Entry Agent re-anchors this on its first/subsequent passes via applyAgentBand. */
   band: EntryBand
   /** Market context the band decision was made from, kept on the intent for the Entry Desk detail view. */
   market: MarketContext
@@ -97,28 +97,34 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band, market 
   broadcastIntents()
 }
 
-export interface ReplanResult {
+export interface ApplyBandResult {
   ok: boolean
   error?: string
   intent?: EntryIntent
 }
 
 /**
- * Re-run the Entry Planner LLM for an active intent and re-materialize its band
- * on the *current live price* (the Entry Desk "Refresh LLM" button). The new plan
- * fully replaces the window — levels are re-anchored to the live price and the
- * TTL is reset. On any failure (planner disabled, no live price, market-data or
- * LLM error, unusable output) the existing intent is left untouched and an error
- * is returned, so a refresh can never degrade a good band into the static one.
+ * Apply an Entry-Agent-chosen band to an active intent, re-materializing its window
+ * on the *current live price*. Used by the `set_entry_band` agent tool: the band's
+ * percentages are re-anchored to the live price, ATR + TTL are refreshed, and a
+ * `BandSnapshot` (source 'agent') is appended to the history. On any failure (no
+ * active intent, no live price, market-data error) the intent is left untouched and
+ * an error is returned, so a bad pass can never degrade a good band.
+ *
+ * Pass only the four percentages + a reason; this re-anchors to the live price (the
+ * agent reasons in % relative to "now", exactly like the static band at registration).
  */
-export async function replan(coin: string): Promise<ReplanResult> {
+export async function applyAgentBand(
+  coin: string,
+  band: { pullbackPct: number; invalidatePct: number; chaseCapPct: number; ttlMinutes: number; reason?: string },
+): Promise<ApplyBandResult> {
   const intent = intents.get(coin)
   if (!intent) return { ok: false, error: 'No active entry intent for this coin' }
 
-  const settings = getSettings()
-  if (!settings.entry_planner_enabled) {
-    return { ok: false, error: 'Entry Planner is disabled — enable LLM-decided entry levels in Settings' }
-  }
+  if (!(band.pullbackPct >= 0)) return { ok: false, error: 'pullback_pct must be >= 0' }
+  if (!(band.invalidatePct > band.pullbackPct)) return { ok: false, error: 'invalidate_pct must be greater than pullback_pct' }
+  if (!(band.chaseCapPct > 0)) return { ok: false, error: 'chase_cap_pct must be > 0' }
+  if (!(band.ttlMinutes > 0)) return { ok: false, error: 'ttl_minutes must be > 0' }
 
   const snap = priceCache.getPrice(coin)
   if (!snap || !(snap.price > 0)) {
@@ -126,32 +132,23 @@ export async function replan(coin: string): Promise<ReplanResult> {
   }
   const livePrice = snap.price
 
-  let market
+  let market: MarketContext
   try {
     market = await getMarketContext(coin, livePrice)
   } catch (err) {
-    logger.warn('Entry replan: failed to build market context', { coin, error: (err as Error).message })
+    logger.warn('Entry applyAgentBand: failed to build market context', { coin, error: (err as Error).message })
     return { ok: false, error: 'Failed to fetch live market data' }
   }
 
-  const plan = await planEntry({
-    coin, price: livePrice, market, signal: intent.signal,
-    candleTf: settings.entry_planner_candle_tf, candleCount: settings.entry_planner_candle_count,
-  })
-  if (!plan) {
-    return { ok: false, error: 'Entry Planner returned no usable levels — try again' }
-  }
-
-  // plan is non-null, so resolveEntryBand yields an 'llm' band.
-  const band = resolveEntryBand(plan, settings)
   const now = Date.now()
+  const reason = band.reason?.slice(0, 200) || 'Entry Agent band'
   const targetPrice = livePrice * (1 - band.pullbackPct / 100)
   const invalidatePrice = livePrice * (1 - band.invalidatePct / 100)
   const chaseCapPrice = livePrice * (1 + band.chaseCapPct / 100)
   const snapshot: BandSnapshot = {
-    at: now, source: band.source, signalPrice: livePrice,
+    at: now, source: 'agent', signalPrice: livePrice,
     targetPrice, invalidatePrice, chaseCapPrice,
-    ttlMinutes: band.ttlMinutes, reason: band.reason, market,
+    ttlMinutes: band.ttlMinutes, reason, market,
   }
   const updated: EntryIntent = {
     ...intent,
@@ -160,18 +157,18 @@ export async function replan(coin: string): Promise<ReplanResult> {
     invalidatePrice,
     chaseCapPrice,
     atr: market.atr14, // refresh ATR too — it feeds SL/TP sizing at fill
-    bandSource: band.source,
-    planReason: band.reason,
+    bandSource: 'agent',
+    planReason: reason,
     expiresAt: now + band.ttlMinutes * 60_000,
     bandHistory: [...intent.bandHistory, snapshot].slice(-MAX_BAND_HISTORY),
   }
 
   intents.set(coin, updated)
   store.saveIntent(updated)
-  logger.info('Entry intent re-planned by user', {
+  logger.info('Entry intent band set by agent', {
     coin, signalPrice: livePrice, target: updated.targetPrice,
     invalidate: updated.invalidatePrice, chaseCap: updated.chaseCapPrice,
-    ttlMinutes: band.ttlMinutes, planReason: band.reason,
+    ttlMinutes: band.ttlMinutes, reason,
   })
   broadcastIntents()
   return { ok: true, intent: updated }

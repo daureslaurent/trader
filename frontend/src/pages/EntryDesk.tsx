@@ -3,7 +3,7 @@ import { useWebSocket } from '../hooks/useWebSocket'
 import { usePrices } from '../hooks/usePrices'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
-import { CandleChart, type ChartLevel, type ChartZone } from '../components/CandleChart'
+import { EntryBandChart } from '../components/EntryBandChart'
 import { CancelEntryModal } from '../components/CancelEntryModal'
 import { ManualEntryModal } from '../components/ManualEntryModal'
 import { ValidateEntryModal } from '../components/ValidateEntryModal'
@@ -61,9 +61,9 @@ export default function EntryDesk() {
   const [signalDataTarget, setSignalDataTarget] = useState<SignalDataTarget | null>(null)
   const [approvalRequired, setApprovalRequired] = useState(false)
   const [now, setNow] = useState(Date.now())
-  // The "Refresh LLM" button only makes sense when the Entry Planner is on —
-  // otherwise bands come from the static settings and there's no LLM to re-run.
-  const [plannerEnabled, setPlannerEnabled] = useState(false)
+  // The "Re-run agent" button only makes sense when the Entry Agent drives bands —
+  // otherwise bands come from the static settings and there's no agent to re-run.
+  const [agentEnabled, setAgentEnabled] = useState(false)
   const [watchlist, setWatchlist] = useState<string[]>([])
   const [addOpen, setAddOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -77,8 +77,8 @@ export default function EntryDesk() {
     fetch('/api/entry-events').then(r => r.json()).then((d: EntryEvent[]) => {
       if (Array.isArray(d)) setEvents(d)
     }).catch(() => {})
-    fetch('/api/settings').then(r => r.json()).then((s: { entry_planner_enabled?: boolean; watchlist?: string[]; approval_required?: boolean }) => {
-      if (s && typeof s.entry_planner_enabled === 'boolean') setPlannerEnabled(s.entry_planner_enabled)
+    fetch('/api/settings').then(r => r.json()).then((s: { entry_model?: string; watchlist?: string[]; approval_required?: boolean }) => {
+      if (s && typeof s.entry_model === 'string') setAgentEnabled(s.entry_model === 'agent')
       if (s && Array.isArray(s.watchlist)) setWatchlist(s.watchlist)
       if (s && typeof s.approval_required === 'boolean') setApprovalRequired(s.approval_required)
     }).catch(() => {})
@@ -109,10 +109,10 @@ export default function EntryDesk() {
     if (selectedIntent && selectedIntent.coin !== selected) setSelected(selectedIntent.coin)
   }, [selectedIntent, selected])
 
-  // Re-run the Entry Planner LLM for the selected intent. On success the new band
-  // arrives via the entry_intent_update broadcast, so the chart/levels update on
-  // their own — we only surface failures here.
-  const onRefreshLlm = useCallback(async (coin: string) => {
+  // Re-run the Entry Agent for the selected intent. It runs in the background; the new
+  // band arrives via the entry_intent_update broadcast, so the chart/levels update on
+  // their own — we only surface a failure to dispatch here.
+  const onRerunAgent = useCallback(async (coin: string) => {
     setRefreshError(null)
     setRefreshing(true)
     try {
@@ -148,16 +148,6 @@ export default function EntryDesk() {
   const resolved = fills.length + cancels.length
   const fillRate = resolved > 0 ? (fills.length / resolved) * 100 : null
 
-  const levels: ChartLevel[] = selectedIntent ? [
-    { price: selectedIntent.chaseCapPrice, label: 'Chase cap', color: 'rgb(var(--warn-rgb))', dash: '5 3' },
-    { price: selectedIntent.signalPrice, label: 'Signal', color: 'var(--muted-fg)', dash: '2 2' },
-    { price: selectedIntent.targetPrice, label: 'Buy ≤', color: 'rgb(var(--accent-rgb))' },
-    { price: selectedIntent.invalidatePrice, label: 'Invalidate', color: 'rgb(var(--sell-rgb))', dash: '5 3' },
-  ] : []
-  const zones: ChartZone[] = selectedIntent
-    ? [{ y1: selectedIntent.invalidatePrice, y2: selectedIntent.targetPrice, color: 'rgb(var(--buy-rgb))' }]
-    : []
-
   return (
     <div className="space-y-6 animate-fade-in">
 
@@ -185,7 +175,7 @@ export default function EntryDesk() {
             size="md"
             onClick={() => setAddOpen(true)}
             className="shrink-0"
-            title="Manually stage a coin onto the Entry Desk (uses the LLM entry planner)"
+            title="Manually stage a coin onto the Entry Desk (the Entry Agent then manages its entry)"
           >
             <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -220,8 +210,8 @@ export default function EntryDesk() {
                   subtitle={`Signal ${fmtUSD(selectedIntent.signalPrice)} · expires in ${fmtCountdown(selectedIntent.expiresAt - now)}`}
                 />
                 <div className="flex items-center gap-2 shrink-0">
-                  {selectedIntent.bandSource === 'llm' && (
-                    <Badge variant="accent" title={selectedIntent.planReason || 'Levels chosen by the Entry Planner'}>AI levels</Badge>
+                  {selectedIntent.bandSource === 'agent' && (
+                    <Badge variant="accent" title={selectedIntent.planReason || 'Levels chosen by the Entry Agent'}>Agent levels</Badge>
                   )}
                   {selectedIntent.bandSource === 'manual' && (
                     <Badge variant="warning" title="Levels set manually">Manual levels</Badge>
@@ -242,18 +232,18 @@ export default function EntryDesk() {
                     variant="secondary"
                     size="sm"
                     loading={refreshing}
-                    disabled={!plannerEnabled || refreshing}
-                    onClick={() => onRefreshLlm(selectedIntent.coin)}
-                    title={plannerEnabled
-                      ? 'Re-run the Entry Planner LLM and re-anchor these levels to the live price'
-                      : 'Enable “LLM-decided entry levels” in Settings to use this'}
+                    disabled={!agentEnabled || refreshing}
+                    onClick={() => onRerunAgent(selectedIntent.coin)}
+                    title={agentEnabled
+                      ? 'Re-run the Entry Agent for this coin — it re-reads the setup and adapts the band / fires / cancels'
+                      : 'Set Entry Model to “Entry Agent” in Settings to use this'}
                   >
                     {!refreshing && (
                       <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
                       </svg>
                     )}
-                    Refresh LLM
+                    Re-run agent
                   </Button>
                   <Button
                     variant="secondary"
@@ -290,9 +280,9 @@ export default function EntryDesk() {
                   </Button>
                 </div>
               </div>
-              {selectedIntent.bandSource === 'llm' && selectedIntent.planReason && (
+              {selectedIntent.bandSource === 'agent' && selectedIntent.planReason && (
                 <p className="px-5 pb-1 text-xs text-muted leading-relaxed">
-                  <span className="font-medium text-foreground">Entry Planner:</span> {selectedIntent.planReason}
+                  <span className="font-medium text-foreground">Entry Agent:</span> {selectedIntent.planReason}
                 </p>
               )}
               {refreshError && (
@@ -303,7 +293,7 @@ export default function EntryDesk() {
                   {refreshError}
                 </div>
               )}
-              <CandleChart symbol={selectedIntent.coin} levels={levels} zones={zones} hideSlTp />
+              <EntryBandChart intent={selectedIntent} />
             </>
           ) : (
             <div className="flex flex-col items-center justify-center text-center h-[420px] px-6">
@@ -437,7 +427,7 @@ export default function EntryDesk() {
       <ManualEntryModal
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        plannerEnabled={plannerEnabled}
+        agentEnabled={agentEnabled}
         suggestions={watchlist}
         onStaged={(coin) => setSelected(coin)}
       />
@@ -492,15 +482,15 @@ function IntentCard({ intent, now, currentPrice, selected, onSelect, onCancel }:
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 min-w-0">
           <span className="text-sm font-semibold text-foreground">{coin}</span>
-          {intent.bandSource === 'llm' && (
+          {intent.bandSource === 'agent' && (
             <span
-              title={intent.planReason || 'Levels chosen by the Entry Planner'}
+              title={intent.planReason || 'Levels chosen by the Entry Agent'}
               className="inline-flex items-center gap-1 rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-accent"
             >
               <svg className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.4 6.6L22 12l-6.6 2.4L13 21l-2.4-6.6L4 12l6.6-2.4L13 3z" />
               </svg>
-              AI
+              Agent
             </span>
           )}
           {intent.bandSource === 'manual' && (
@@ -531,7 +521,7 @@ function IntentCard({ intent, now, currentPrice, selected, onSelect, onCancel }:
         </span>
       </div>
 
-      {intent.bandSource === 'llm' && intent.planReason && (
+      {intent.bandSource === 'agent' && intent.planReason && (
         <p className="text-[11px] text-muted leading-snug line-clamp-2">{intent.planReason}</p>
       )}
 

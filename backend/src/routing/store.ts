@@ -76,6 +76,9 @@ export async function loadGraph(): Promise<void> {
     // The cron text of managed engine timers stays authoritative from settings
     // (.env seeds those), so refresh it on load without touching user wiring.
     refreshManagedCron(graph, settings)
+    // Inject any managed default nodes a previously-persisted graph predates (e.g. a new
+    // engine output added in an upgrade) so the graph stays complete without a reset.
+    if (ensureManagedDefaults(graph, settings)) await persist(graph)
   }
   apply(graph)
 }
@@ -85,6 +88,33 @@ function refreshManagedCron(graph: RoutingGraph, settings: BotSettings): void {
     const node = graph.nodes.find((n) => n.id === m.id)
     if (node) node.config = { ...node.config, cron: String(settings[m.cronKey]) }
   }
+}
+
+/**
+ * Add managed default nodes (and the edges wiring them) that an older persisted graph is
+ * missing — so an upgrade that introduces a new engine timer/output appears automatically.
+ * Only ever ADDS managed default nodes and edges whose endpoints we just added; never
+ * resurrects user-deleted example wiring or touches existing nodes. Returns true if changed.
+ */
+function ensureManagedDefaults(graph: RoutingGraph, settings: BotSettings): boolean {
+  const def = defaultGraph(settings)
+  const haveNodes = new Set(graph.nodes.map((n) => n.id))
+  const addedNodeIds = new Set<string>()
+  for (const n of def.nodes) {
+    if (n.managed && !haveNodes.has(n.id)) {
+      graph.nodes.push(n)
+      addedNodeIds.add(n.id)
+    }
+  }
+  const haveEdges = new Set(graph.edges.map((e) => e.id))
+  for (const e of def.edges) {
+    // Only wire an edge we don't have when it touches a node we just added — so we never
+    // re-create wiring the user intentionally removed between pre-existing managed nodes.
+    if (!haveEdges.has(e.id) && (addedNodeIds.has(e.from) || addedNodeIds.has(e.to))) {
+      graph.edges.push(e)
+    }
+  }
+  return addedNodeIds.size > 0
 }
 
 /** Persist + activate a user-edited graph (from the flow-graph UI). */

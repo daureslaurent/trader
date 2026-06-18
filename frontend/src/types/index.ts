@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'agent-monitor' | 'summary' | 'trade' | 'entry' | 'pipeline' | 'agent-signal' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'control-room' | 'agent' | 'host' | 'event-stream' | 'routing'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'agent-monitor' | 'summary' | 'trade' | 'entry' | 'entry-agent' | 'pipeline' | 'agent-signal' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'control-room' | 'agent' | 'host' | 'event-stream' | 'routing'
 
 export interface HostStats {
   timestamp: number
@@ -264,10 +264,13 @@ export interface EntryMarketContext {
   volatility: 'high' | 'normal' | 'low'
 }
 
-/** A point-in-time band assignment (creation, "Refresh LLM", or manual edit), oldest first on the intent. */
+/** How a band's levels were chosen: static settings, the Entry Agent, or a user edit. */
+export type BandSource = 'static' | 'agent' | 'manual'
+
+/** A point-in-time band assignment (creation, Entry Agent pass, or manual edit), oldest first on the intent. */
 export interface BandSnapshot {
   at: number
-  source: 'llm' | 'static' | 'manual'
+  source: BandSource
   signalPrice: number
   targetPrice: number
   invalidatePrice: number
@@ -286,9 +289,9 @@ export interface EntryIntent {
   invalidatePrice: number
   chaseCapPrice: number
   notionalUsdc: number
-  /** How the band levels were set: the Entry Planner LLM, the static settings, or a user edit. */
-  bandSource?: 'llm' | 'static' | 'manual'
-  /** The LLM's one-line rationale for these levels (present only when bandSource === 'llm'). */
+  /** How the band levels were set: the static settings, the Entry Agent, or a user edit. */
+  bandSource?: BandSource
+  /** The agent's one-line rationale for these levels (present only when bandSource === 'agent'). */
   planReason?: string
   createdAt: number
   expiresAt: number
@@ -473,7 +476,7 @@ export type LLMModuleKey =
   | 'monitorB'
   | 'monitorC'
   | 'summary'
-  | 'entryPlanner'
+  | 'entryAgent'
   | 'agent'
   | 'monitorD'
   | 'agentSignal'

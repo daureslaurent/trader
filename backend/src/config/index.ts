@@ -74,13 +74,14 @@ export const config = {
     model: opt('SUMMARY_MODEL', llamaModel),
     maxTokens: num('SUMMARY_MAX_TOKENS', 3072),
   },
-  entryPlanner: {
-    // Entry Planner — decides the per-coin entry-timing band (pullback / invalidate /
-    // chase cap / TTL) for a deferred BUY. A small, fast model is plenty; it returns
-    // a tiny JSON object. Falls back to the llama defaults.
-    baseURL: opt('ENTRY_PLANNER_BASE_URL', llamaBaseURL),
-    model: opt('ENTRY_PLANNER_MODEL', llamaModel),
-    maxTokens: num('ENTRY_PLANNER_MAX_TOKENS', 1024),
+  entryAgent: {
+    // Entry Agent — the agentic, per-coin entry-position engine. A native tool-calling loop
+    // (one agent per active entry intent) that reads market context + the BUY thesis and
+    // adapts the entry band / fires / cancels, so it needs a tool-calling-capable model.
+    // Env ENTRY_AGENT_* falls back to the llama defaults.
+    baseURL: opt('ENTRY_AGENT_BASE_URL', llamaBaseURL),
+    model: opt('ENTRY_AGENT_MODEL', llamaModel),
+    maxTokens: num('ENTRY_AGENT_MAX_TOKENS', 4096),
   },
   agent: {
     // Conversational agent (the Agent page). Drives a native tool-calling loop, so

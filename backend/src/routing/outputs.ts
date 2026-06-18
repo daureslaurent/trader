@@ -3,7 +3,7 @@ import { getSettings } from '../db/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
 import { runMonitor } from '../monitor/index.js'
-import { runMonitorD, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
+import { runMonitorD, runAgentSignal, runAgentSignalCoin, runEntryAgent } from '../agent/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { RouteNode, FireContext } from './types.js'
 
@@ -88,6 +88,9 @@ const HANDLERS: Record<string, OutputHandler> = {
 
   module_summary: () =>
     result(guarded('module_summary', () => runPortfolioSummary(cycle('summary')))),
+
+  module_entry_agent: () =>
+    result(guarded('module_entry_agent', () => runEntryAgent(cycle('entry')))),
 }
 
 export function runOutput(node: RouteNode, ctx: FireContext): OutputResult {

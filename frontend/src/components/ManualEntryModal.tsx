@@ -5,15 +5,15 @@ import { Input } from './ui/Input'
 interface ManualEntryModalProps {
   open: boolean
   onClose: () => void
-  /** Whether the Entry Planner is on — drives the "AI levels" note in the dialog. */
-  plannerEnabled?: boolean
+  /** Whether the Entry Agent drives bands — tweaks the note in the dialog. */
+  agentEnabled?: boolean
   /** Coins already on the watchlist, offered as a datalist for quick entry. */
   suggestions?: string[]
   /** Fired with the staged coin on success so the caller can select it. */
   onStaged?: (coin: string) => void
 }
 
-export function ManualEntryModal({ open, onClose, plannerEnabled, suggestions = [], onStaged }: ManualEntryModalProps) {
+export function ManualEntryModal({ open, onClose, agentEnabled, suggestions = [], onStaged }: ManualEntryModalProps) {
   const [coin, setCoin] = useState('')
   const [notional, setNotional] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -84,8 +84,8 @@ export function ManualEntryModal({ open, onClose, plannerEnabled, suggestions = 
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold text-foreground">Add coin to Entry Desk</h2>
             <p className="text-xs text-muted mt-0.5 leading-relaxed">
-              Stages a deferred BUY without the research pipeline. {plannerEnabled
-                ? 'The Entry Planner LLM picks the entry window'
+              Stages a deferred BUY without the research pipeline. {agentEnabled
+                ? 'The Entry Agent then manages the entry window'
                 : 'The static entry band is used'} and the engine waits for a good fill — just like a pipeline BUY.
             </p>
           </div>

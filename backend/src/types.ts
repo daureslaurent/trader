@@ -196,16 +196,23 @@ export interface BotSettings {
   entry_on_expiry: 'market' | 'cancel'
   /** How often the entry engine evaluates intents against the live price, in seconds. */
   entry_poll_seconds: number
-  /** When true, the Entry Planner LLM decides the per-coin entry band (pullback /
-   *  invalidate / chase cap / TTL) for each deferred BUY. When off (or on LLM
-   *  failure/invalid output) the static entry_* values above are used. Only takes
-   *  effect when entry_timing_enabled is on. */
-  entry_planner_enabled: boolean
-  /** Candle timeframe for the price-history table shown in the Entry Planner prompt (e.g. '15m').
+  /** Who decides the per-coin entry band (pullback / invalidate / chase cap / TTL) for a
+   *  deferred BUY: 'static' = the fixed entry_* values above (no LLM); 'agent' = the Entry
+   *  Agent — a per-coin tool-calling loop that reasons about the best entry and can adjust
+   *  the band, fire now, or cancel as the market moves. On any agent error the static band
+   *  is the safe fallback. Only takes effect when entry_timing_enabled is on. */
+  entry_model: 'static' | 'agent'
+  /** Cron driving the periodic Entry Agent re-evaluation pass over all active intents
+   *  (mirrors the managed engine timers; surfaced in the routing graph). */
+  entry_agent_cron: string
+  /** Candle timeframe for the price-history table shown in the Entry Agent's context (e.g. '15m').
    *  Shorter than the monitor's default since the entry band fires within minutes. */
-  entry_planner_candle_tf: string
-  /** Number of candles to include in the Entry Planner prompt (1–100). */
-  entry_planner_candle_count: number
+  entry_agent_candle_tf: string
+  /** Number of candles to include in the Entry Agent's context (1–100). */
+  entry_agent_candle_count: number
+  /** How many of the most recent Entry Agent run records to keep in entry_agent_runs;
+   *  older ones are pruned after each pass. */
+  entry_agent_retain_runs: number
   /** Shared catalog of named LLM endpoints. Each module references one by id via
    *  `llm_<module>_endpoint`; a blank id falls back to the module's env-var config. */
   llm_endpoints: LLMEndpoint[]
@@ -229,9 +236,9 @@ export interface BotSettings {
   llm_monitor_c_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
-  /** Entry Planner — picks the per-coin entry band for deferred BUYs. */
-  llm_entry_planner_endpoint: string
-  llm_entry_planner_max_tokens: number
+  /** Entry Agent — the agentic per-coin entry engine. Needs a tool-calling-capable model. */
+  llm_entryAgent_endpoint: string
+  llm_entryAgent_max_tokens: number
   /** Conversational agent (Agent page). Needs a tool-calling-capable model. */
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
@@ -259,8 +266,8 @@ export interface BotSettings {
   llm_monitor_c_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
-  llm_entry_planner_fb_endpoint: string
-  llm_entry_planner_fb_max_tokens: number
+  llm_entryAgent_fb_endpoint: string
+  llm_entryAgent_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
   llm_monitor_d_fb_endpoint: string
@@ -602,6 +609,30 @@ export interface SignalMemory {
   /** Appended running log of short memos to the agent's future self (newest last). */
   notes: { at: string; text: string }[]
   updated_at: string
+}
+
+// ── Entry Agent (the agentic, per-coin entry-position engine) ────────────────
+// One agent per active entry intent reasons with the shared tool belt + the original
+// BUY thesis / Agent Signal memory, then adapts the entry band, fires, waits, or cancels
+// via action tools. The transcript reuses the Type-D frame shape so the page renders it
+// identically to Agent Signal / Type D.
+export interface EntryAgentRun {
+  id: number
+  cycle_id: string
+  coin: string
+  /** What the agent did this pass. */
+  action: 'ADJUST' | 'FIRE' | 'CANCEL' | 'WAIT'
+  confidence: number
+  reasoning: string
+  /** Model id credited (e.g. "entry-agent:<model>"). */
+  model: string
+  /** The agent's loop transcript (thinking / tool_call / tool_result / decision …). */
+  frames: SignalRunFrame[]
+  prompt_tokens: number
+  completion_tokens: number
+  peak_context_tokens: number
+  started_at_ms: number
+  created_at: string
 }
 
 export interface PositionAdjustment {

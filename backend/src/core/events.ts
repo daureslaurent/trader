@@ -26,6 +26,9 @@ interface EventMap {
   monitor_reduce_requested: [{ positionId: number; coin: string; currentPrice: number; reduceToPct: number; reasoning: string; confidence: number; cycleId: string }]
   coin_discovered: [{ id: number; coin: string; score: number; reasoning: string; market_data: string; status: string; cycle_id: string; created_at: string }]
   entry_fire: [{ signal: Signal; price: number; atr: number }]
+  /** A deferred BUY was just registered on the Entry Desk — the Entry Agent does an
+   *  immediate first pass for this coin (no-op when entry_model !== 'agent'). */
+  entry_intent_registered: [{ coin: string; cycle_id: string }]
   trade_failed: [{ coin: string; side: string; error: string }]
   trade_result: [{ tradeId: number; success: boolean; error?: string }]
   pipeline_completed: [{ total_value_usd: number; trades_initiated: number; holdings: Record<string, number> }]

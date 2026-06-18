@@ -4,7 +4,8 @@ import { bus } from '../../core/events.js'
 import { logger } from '../../core/logger.js'
 import { Signal, PortfolioEntry } from '../../types.js'
 import { getPendingApprovals } from '../../execution/index.js'
-import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent, replan as replanEntryIntent, fireNow as fireEntryIntent, updateIntent as updateEntryIntent } from '../../entry/index.js'
+import { getActiveIntents, getRecentEvents, hasActiveIntent, cancel as cancelEntryIntent, fireNow as fireEntryIntent, updateIntent as updateEntryIntent } from '../../entry/index.js'
+import { runEntryAgentCoin } from '../../agent/index.js'
 import { stageManualEntry } from '../../pipeline/index.js'
 import { executeTrade, executeCoinTrade, fetchBalance } from '../../trader/index.js'
 import {
@@ -62,20 +63,19 @@ router.post('/entry-intents/cancel', (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
-// Re-run the Entry Planner LLM for an active intent, re-anchoring its band on the
-// current live price and resetting the TTL. Leaves the intent untouched on any
-// failure (returns the reason). Like cancel, the slashed coin goes in the body.
-router.post('/entry-intents/replan', async (req: Request, res: Response) => {
+// Re-run the Entry Agent for an active intent now (the Entry Desk "Re-run agent" button):
+// the per-coin agent re-reads the live setup and adapts the band / fires / cancels. Runs in
+// the background; progress streams to the Entry Agent page. Like cancel, the slashed coin
+// goes in the body. No-ops in the engine unless entry_model === 'agent'.
+router.post('/entry-intents/replan', (req: Request, res: Response) => {
   const { coin } = req.body
   if (!coin || typeof coin !== 'string') {
     return res.status(400).json({ error: 'coin required' })
   }
-  const result = await replanEntryIntent(coin)
-  if (!result.ok) {
-    const status = result.error?.startsWith('No active entry intent') ? 404 : 400
-    return res.status(status).json({ error: result.error })
-  }
-  res.json({ ok: true, intent: result.intent })
+  if (!hasActiveIntent(coin)) return res.status(404).json({ error: 'No active entry intent for this coin' })
+  const cycleId = `${Date.now().toString(36)}-entry-manual`
+  runEntryAgentCoin(coin, cycleId).catch(err => logger.error('Entry Agent re-run failed', { coin, error: err instanceof Error ? err.message : String(err) }))
+  res.json({ ok: true })
 })
 
 // "Validate & open position" on the Entry Desk: fire the deferred BUY now at the

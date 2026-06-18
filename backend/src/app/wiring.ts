@@ -12,6 +12,8 @@ import {
 } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
+import { runEntryAgentCoin } from '../agent/index.js'
+import { getSettings } from '../db/index.js'
 import { rescheduleFromSettings, dispatchMonitorRun, dispatchPipelineRun, dispatchSingleCoinPipeline } from './scheduler.js'
 
 const errMsg = (err: unknown) => err instanceof Error ? err.message : String(err)
@@ -33,6 +35,14 @@ export function registerEventHandlers(): void {
 
   bus.on('trade_rejected', (tradeId) => {
     rejectTrade(tradeId).catch(err => logger.error('Trade reject handler error', { tradeId, error: errMsg(err) }))
+  })
+
+  // ── Entry Agent first pass on a freshly deferred BUY ────────────────────────
+  // No-op unless entry_model === 'agent' (the engine also guards). Gives a new intent
+  // smart levels within seconds instead of waiting for the next routing tick.
+  bus.on('entry_intent_registered', ({ coin, cycle_id }) => {
+    if (getSettings().entry_model !== 'agent') return
+    runEntryAgentCoin(coin, cycle_id).catch(err => logger.error('Entry Agent first-pass handler error', { coin, error: errMsg(err) }))
   })
 
   // ── Position SL/TP adjustments (from the Position Monitor) ──────────────────

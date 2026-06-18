@@ -19,7 +19,7 @@ import { researchCoin } from '../researcher/index.js'
 import { extractResearch } from '../extractor/index.js'
 import { getReviews } from '../monitor/index.js'
 import { getLatestSummary } from '../summary/index.js'
-import { getActiveIntents } from '../entry/index.js'
+import { getActiveIntents, applyAgentBand, fireNow as fireEntryIntent, cancel as cancelEntryIntent } from '../entry/index.js'
 
 export interface AgentTool {
   name: string
@@ -388,6 +388,99 @@ async function listEntryEvents(args: Record<string, unknown>): Promise<unknown> 
       at: new Date(r.created_at as number).toISOString(),
     })),
   }
+}
+
+// ── Entry Agent tools ─────────────────────────────────────────────────────────
+// Read + action tools for the agentic per-coin entry engine (agent/entryAgent.ts). The
+// read gives the agent its current intent state; the three action tools let it adapt the
+// band, fire, or cancel. Registered on the shared belt but granted only to `entryAgent`.
+
+// The single active entry intent for a coin, in the agent's reasoning frame: current band
+// (target/invalidate/chase-cap as both prices and % from the live price), the original BUY
+// thesis, age/TTL, current band source, and the full band-change history.
+function getEntryIntent(args: Record<string, unknown>): unknown {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  const intent = getActiveIntents().find(i => i.coin === coin)
+  if (!intent) return { coin, active: false, note: 'No active entry intent for this coin.' }
+
+  priceCache.subscribe([coin])
+  const now = Date.now()
+  const current = priceFor(coin)
+  return {
+    coin,
+    active: true,
+    notionalUsdc: intent.notionalUsdc,
+    signalPrice: intent.signalPrice,
+    currentPrice: current,
+    bandSource: intent.bandSource,
+    planReason: intent.planReason ?? null,
+    targetPrice: intent.targetPrice,
+    invalidatePrice: intent.invalidatePrice,
+    chaseCapPrice: intent.chaseCapPrice,
+    // % the live price must still move to reach each level (negative = below current).
+    toTargetPct: current != null ? pctDiff(current, intent.targetPrice) : null,
+    toInvalidatePct: current != null ? pctDiff(current, intent.invalidatePrice) : null,
+    toChaseCapPct: current != null ? pctDiff(current, intent.chaseCapPrice) : null,
+    ageMinutes: Number(((now - intent.createdAt) / 60000).toFixed(1)),
+    ttlMinutesLeft: Number(Math.max(0, (intent.expiresAt - now) / 60000).toFixed(1)),
+    signal: {
+      action: intent.signal.action,
+      reason: intent.signal.reason,
+      confidence: intent.signal.confidence ?? null,
+      stop_loss_pct: intent.signal.stop_loss_pct ?? null,
+      take_profit_pct: intent.signal.take_profit_pct ?? null,
+    },
+    bandHistory: intent.bandHistory.map(b => ({
+      at: new Date(b.at).toISOString(), source: b.source, reason: b.reason ?? null,
+      signalPrice: b.signalPrice, targetPrice: b.targetPrice,
+      invalidatePrice: b.invalidatePrice, chaseCapPrice: b.chaseCapPrice, ttlMinutes: b.ttlMinutes,
+    })),
+  }
+}
+
+// Set/replace the entry band for an active intent. Percentages are relative to the LIVE
+// price at apply time (re-anchored), and the TTL clock resets. This is how the agent
+// "waits for a better price" or widens/tightens the window as the setup evolves.
+async function setEntryBand(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  const n = (v: unknown) => (typeof v === 'number' ? v : parseFloat(String(v ?? '')))
+  const res = await applyAgentBand(coin, {
+    pullbackPct: n(args.pullback_pct),
+    invalidatePct: n(args.invalidate_pct),
+    chaseCapPct: n(args.chase_cap_pct),
+    ttlMinutes: n(args.ttl_minutes),
+    reason: typeof args.reason === 'string' ? args.reason : undefined,
+  })
+  if (!res.ok) return { ok: false, error: res.error }
+  const i = res.intent!
+  return {
+    ok: true, coin,
+    band: { targetPrice: i.targetPrice, invalidatePrice: i.invalidatePrice, chaseCapPrice: i.chaseCapPrice, signalPrice: i.signalPrice },
+    note: 'Band re-anchored to the live price; the watch loop now fires/cancels against these levels.',
+  }
+}
+
+// Fire the deferred BUY NOW at the live price, skipping the pullback wait. Still flows
+// through the normal entry_fire path, so the live gates (already-held, max positions,
+// min/available USDC, fee-edge) and the approval setting are re-checked.
+function fireEntryNow(args: Record<string, unknown>): unknown {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  const res = fireEntryIntent(coin)
+  if (!res.ok) return { ok: false, error: res.error }
+  return { ok: true, coin, note: 'Entry fired at market — execution re-checks all live gates and honors the approval setting.' }
+}
+
+// Abandon the deferred BUY: drop the intent and stop watching. Use when the thesis is
+// broken or the setup is no longer attractive.
+function cancelEntry(args: Record<string, unknown>): unknown {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  if (!getActiveIntents().some(i => i.coin === coin)) return { ok: false, error: 'No active entry intent for this coin' }
+  cancelEntryIntent(coin, 'agent')
+  return { ok: true, coin, note: 'Entry intent cancelled.' }
 }
 
 // ── Type D position-monitor tools ─────────────────────────────────────────────
@@ -820,6 +913,63 @@ export const TOOLS: AgentTool[] = [
     handler: listEntryEvents,
   },
   {
+    name: 'get_entry_intent',
+    description: "Get the single active entry intent for a coin in the Entry Agent's working frame: the current band (target/invalidate/chase-cap as prices AND % from the live price), the original BUY thesis, notional, age, TTL remaining, current band source, and the full band-change history. Call this FIRST so you adapt the existing window instead of starting blind.",
+    parameters: {
+      type: 'object',
+      properties: { coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' } },
+      required: ['coin'],
+    },
+    readOnly: true,
+    handler: getEntryIntent,
+  },
+  {
+    name: 'set_entry_band',
+    description: 'Set/replace the entry band for an active intent. All four percentages are relative to the LIVE price at apply time (the levels re-anchor to "now") and the TTL clock resets. invalidate_pct must be greater than pullback_pct. Use to wait for a deeper dip, tighten/loosen the window, or extend the TTL as the setup evolves. Returns the resolved prices.',
+    parameters: {
+      type: 'object',
+      properties: {
+        coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' },
+        pullback_pct: { type: 'number', description: 'Buy target as % BELOW the live price (0 = buy at market).' },
+        invalidate_pct: { type: 'number', description: 'Cancel if price drops this % below the live price (must be > pullback_pct).' },
+        chase_cap_pct: { type: 'number', description: 'Cancel if price runs this % above the live price.' },
+        ttl_minutes: { type: 'number', description: 'How long the intent stays live before expiry, in minutes.' },
+        reason: { type: 'string', description: 'One-line rationale for these levels (shown on the Entry Desk).' },
+      },
+      required: ['coin', 'pullback_pct', 'invalidate_pct', 'chase_cap_pct', 'ttl_minutes'],
+    },
+    readOnly: false,
+    handler: setEntryBand,
+  },
+  {
+    name: 'fire_entry_now',
+    description: 'Fire the deferred BUY NOW at the live price, skipping the pullback wait. Use when the entry is good right now (e.g. a strong breakout you should not wait to dip-buy). Execution re-checks all live gates and honors the approval setting. This consumes the intent.',
+    parameters: {
+      type: 'object',
+      properties: {
+        coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' },
+        reason: { type: 'string', description: 'Why fire now (for the transcript).' },
+      },
+      required: ['coin'],
+    },
+    readOnly: false,
+    handler: fireEntryNow,
+  },
+  {
+    name: 'cancel_entry',
+    description: 'Abandon the deferred BUY: drop the intent and stop watching. Use when the thesis is broken or the setup is no longer attractive (don\'t force a trade). This consumes the intent.',
+    parameters: {
+      type: 'object',
+      properties: {
+        coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' },
+        reason: { type: 'string', description: 'Why cancel (for the transcript).' },
+      },
+      required: ['coin'],
+    },
+    readOnly: false,
+    handler: cancelEntry,
+  },
+  {
     name: 'get_candle_data',
     description: 'Fetch recent OHLCV candles for one coin (cache-first: reads the local candle store and only backfills missing bars from the exchange). Returns oldest→newest tuples. Use to read price structure, momentum and volatility for a position.',
     parameters: {
@@ -984,6 +1134,16 @@ export const MONITOR_D_TOOL_NAMES = [
 export const AGENT_SIGNAL_TOOL_NAMES = [
   'get_market', 'get_candle_data', 'get_coin_sentiment', 'get_position_history',
   'list_recent_signals', 'recall_signal_memory', 'remember_signal', 'get_coin_signal_history',
+] as const
+
+// The curated belt the Entry Agent exposes per active intent: the live-market reads it needs
+// to time an entry, the Agent Signal thesis/memory for the coin, this intent's own state — plus
+// the three ACTION tools (set band / fire / cancel) that let it drive the deferred BUY. It must
+// never trigger engines or mutate the watchlist mid-pass, so those tools are excluded.
+export const ENTRY_AGENT_TOOL_NAMES = [
+  'get_entry_intent', 'get_market', 'get_candle_data', 'get_coin_sentiment',
+  'recall_signal_memory', 'get_coin_signal_history', 'list_recent_signals', 'list_entry_events',
+  'set_entry_band', 'fire_entry_now', 'cancel_entry',
 ] as const
 
 export function isReadOnlyTool(name: string): boolean {

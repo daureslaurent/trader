@@ -14,6 +14,7 @@ export const portfolioSnapshots = new Repository<Row>('portfolio_snapshots')
 export const positionReviews    = new Repository<Row>('position_reviews')
 export const monitorDRuns       = new Repository<Row>('monitor_d_runs')
 export const agentSignalRuns    = new Repository<Row>('agent_signal_runs')
+export const entryAgentRuns     = new Repository<Row>('entry_agent_runs')
 export const positionAdjustments = new Repository<Row>('position_adjustments')
 export const slTpHistory        = new Repository<Row>('sl_tp_history')
 export const portfolioSummaries = new Repository<Row>('portfolio_summaries')
@@ -52,6 +53,7 @@ export const ALL_REPOS: Record<string, Repository<Row>> = {
   trades, decisions, positions, portfolio_entries: portfolioEntries,
   portfolio_snapshots: portfolioSnapshots, position_reviews: positionReviews,
   monitor_d_runs: monitorDRuns, agent_signal_runs: agentSignalRuns,
+  entry_agent_runs: entryAgentRuns,
   position_adjustments: positionAdjustments, sl_tp_history: slTpHistory,
   portfolio_summaries: portfolioSummaries, agent_conversations: agentConversations,
   agent_messages: agentMessages, monitor_notes: monitorNotes,

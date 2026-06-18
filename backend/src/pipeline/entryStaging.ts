@@ -1,24 +1,37 @@
 import { getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
+import { bus } from '../core/events.js'
 import { fetchMarketData } from '../trader/index.js'
 import * as priceCache from '../market/index.js'
 import * as entry from '../entry/index.js'
-import { planEntry, resolveEntryBand } from '../entryPlanner/index.js'
-import { EntryBand } from '../entryPlanner/types.js'
+import { EntryBand } from '../entry/index.js'
 import { getPortfolioState, getUsdcEntry, getMarketContext } from '../portfolio/index.js'
 import { isTradeable } from '../core/tradeable.js'
 import { Signal, MarketContext, BotSettings } from '../types.js'
 import { prepareBuyOrder } from './buyEvaluation.js'
 import { logPipelineEvent } from './events.js'
 
+/** The static entry band materialized straight from settings — the safe baseline used at
+ *  registration and the fallback whenever the Entry Agent is off or errors. */
+function staticBand(settings: BotSettings): EntryBand {
+  return {
+    pullbackPct: settings.entry_pullback_pct,
+    invalidatePct: settings.entry_invalidate_pct,
+    chaseCapPct: settings.entry_max_chase_pct,
+    ttlMinutes: settings.entry_ttl_minutes,
+    source: 'static',
+  }
+}
+
 /**
- * Register an already-sized BUY as a deferred entry intent on the Entry Desk. The
- * entry band is the per-coin Entry Planner LLM plan (when `entry_planner_enabled`)
- * or — on a disabled planner / LLM failure / unusable output — the static `entry_*`
- * settings, via `resolveEntryBand`. The band tracks the LIVE price at registration
- * (not the decision-time price, which may be stale); sizing stays on the analyzed
- * price. Shared by the pipeline BUY path (`runner.handleBuySignal`) and the manual
- * "Add to Entry Desk" action so the two can't drift.
+ * Register an already-sized BUY as a deferred entry intent on the Entry Desk. The intent
+ * is registered immediately with the static `entry_*` band (a safe baseline); when
+ * `entry_model === 'agent'` an `entry_intent_registered` event then triggers the Entry
+ * Agent's first pass, which re-anchors the band to the live price. A caller may pass a
+ * pre-resolved `band` (the Agent Signal engine seeds its own) to use instead of the static
+ * one. The band tracks the LIVE price at registration (not the decision-time price, which
+ * may be stale); sizing stays on the analyzed price. Shared by the pipeline BUY path
+ * (`runner.handleBuySignal`) and the manual "Add to Entry Desk" action so the two can't drift.
  */
 export async function deferToEntryDesk(args: {
   /** The BUY signal with `quantity` already set by the gauntlet/override. */
@@ -39,18 +52,7 @@ export async function deferToEntryDesk(args: {
 
   const entryBasis = priceCache.getPrice(symbol)?.price ?? analyzedPrice
 
-  let band: EntryBand
-  if (args.band) {
-    band = args.band
-  } else {
-    const plan = settings.entry_planner_enabled
-      ? await planEntry({
-          coin: symbol, price: analyzedPrice, market: marketCtx, signal: buySignal,
-          candleTf: settings.entry_planner_candle_tf, candleCount: settings.entry_planner_candle_count,
-        })
-      : null
-    band = resolveEntryBand(plan, settings)
-  }
+  const band: EntryBand = args.band ?? staticBand(settings)
 
   entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * analyzedPrice, atr: marketCtx.atr14, band, market: marketCtx })
   logPipelineEvent('entry_intent_created', symbol, cycleId, {
@@ -62,6 +64,10 @@ export async function deferToEntryDesk(args: {
     band_source: band.source,
     plan_reason: band.reason,
   })
+
+  // Hand off to the Entry Agent for its first pass (it re-anchors the band to the live
+  // price and may fire/cancel). No-op when entry_model !== 'agent' (the wiring handler guards).
+  bus.emit('entry_intent_registered', { coin: symbol, cycle_id: cycleId })
 }
 
 export interface ManualEntryResult {

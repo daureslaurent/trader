@@ -20,7 +20,7 @@ export async function render(_ctx: any) {
     lines[0] = `🎯 <b>Entry Desk</b> — ${intents.length} watching`
     for (const it of intents) {
       const coin = coinLabel(it.coin)
-      const srcBadge = it.bandSource === 'llm' ? '🧠 AI levels' : '⚙️ static'
+      const srcBadge = it.bandSource === 'agent' ? '🧠 Agent levels' : it.bandSource === 'manual' ? '✏️ manual' : '⚙️ static'
       lines.push(
         `<b>${coin}</b>  ·  ${srcBadge}`,
         `  Signal      ${formatCurrency(it.signalPrice)}`,

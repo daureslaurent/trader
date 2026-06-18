@@ -14,7 +14,7 @@ interface SignalDataModalProps {
 }
 
 const SOURCE_STYLE: Record<BandSnapshot['source'], { label: string; cls: string; dot: string }> = {
-  llm:    { label: 'AI replan', cls: 'bg-accent/10 text-accent border-accent/20', dot: 'bg-accent' },
+  agent:  { label: 'Entry Agent', cls: 'bg-accent/10 text-accent border-accent/20', dot: 'bg-accent' },
   static: { label: 'Static settings', cls: 'bg-surface-elevated text-muted border-border', dot: 'bg-muted' },
   manual: { label: 'Manual edit', cls: 'bg-warn/10 text-warn border-warn/20', dot: 'bg-warn' },
 }
@@ -59,7 +59,7 @@ function MarketTile({ label, value, tone }: { label: string; value: string; tone
 /**
  * Shows what fed an entry-band decision (the analyst/agent's BUY thesis + the live
  * market context at the time) and a timeline of every band assignment since
- * registration — the initial plan, each "Refresh LLM" re-plan, and manual edits —
+ * registration — the initial band, each Entry Agent pass, and manual edits —
  * so a re-run's effect on the levels is visible as a diff, not just the latest state.
  */
 export function SignalDataModal({ target, onClose }: SignalDataModalProps) {

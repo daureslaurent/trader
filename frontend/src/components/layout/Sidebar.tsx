@@ -64,6 +64,11 @@ const ITEMS: Record<Page, NavItem> = {
     label: 'Entry Desk',
     path: 'M12 21a9 9 0 100-18 9 9 0 000 18zm0-4.5a4.5 4.5 0 100-9 4.5 4.5 0 000 9zm0-3a1.5 1.5 0 100-3 1.5 1.5 0 000 3z',
   },
+  'entry-agent': {
+    key: 'entry-agent',
+    label: 'Entry Agent',
+    path: 'M15.59 14.37a6 6 0 01-5.84 7.38v-4.8m5.84-2.58a14.98 14.98 0 006.16-12.12A14.98 14.98 0 009.631 8.41m5.96 5.96a14.926 14.926 0 01-5.841 2.58m-.119-8.54a6 6 0 00-7.381 5.84h4.8m2.581-5.84a14.927 14.927 0 00-2.58 5.84m2.699 2.7c-.103.021-.207.041-.311.06a15.09 15.09 0 01-2.448-2.448 14.9 14.9 0 01.06-.312m-2.24 2.39a4.493 4.493 0 00-1.757 4.306 4.493 4.493 0 004.306-1.758M16.5 9a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z',
+  },
   pipeline: {
     key: 'pipeline',
     label: 'Pipeline',
@@ -142,7 +147,7 @@ interface NavGroup {
 }
 
 const GROUPS: NavGroup[] = [
-  { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'agent-monitor', 'summary', 'entry', 'trade', 'trading-state'] },
+  { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'agent-monitor', 'summary', 'entry', 'entry-agent', 'trade', 'trading-state'] },
   { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['routing', 'pipeline', 'agent-signal', 'discover'] },
   { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['control-room', 'event-stream', 'llm-debug', 'llm-stats', 'cache'] },
   { id: 'system', label: 'Platform', icon: SECTION_ICONS.system, keys: ['host', 'settings'] },

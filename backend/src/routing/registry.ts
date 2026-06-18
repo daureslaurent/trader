@@ -327,6 +327,16 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     defaultConfig: {},
     singleton: true,
   },
+  module_entry_agent: {
+    type: 'module_entry_agent',
+    kind: 'output',
+    label: 'Run Entry Agent',
+    description: 'Re-evaluates every active entry intent — the per-coin agent adapts the band, fires, or cancels each deferred BUY.',
+    category: 'execution',
+    configFields: [],
+    defaultConfig: {},
+    singleton: true,
+  },
 }
 
 export function getNodeType(type: string): NodeTypeMeta | undefined {

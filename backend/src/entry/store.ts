@@ -21,8 +21,8 @@ function rowToIntent(r: Record<string, unknown>): EntryIntent {
     chaseCapPrice: r.chase_cap_price as number,
     notionalUsdc: r.notional_usdc as number,
     atr: r.atr as number,
-    // Older persisted intents predate the planner — default to 'static'.
-    bandSource: (r.band_source === 'llm' ? 'llm' : 'static'),
+    // Normalize the persisted source; legacy 'llm' rows map to 'agent', anything else to 'static'.
+    bandSource: (r.band_source === 'agent' || r.band_source === 'llm' ? 'agent' : r.band_source === 'manual' ? 'manual' : 'static'),
     planReason: (r.plan_reason as string) || undefined,
     createdAt: r.created_at as number,
     expiresAt: r.expires_at as number,

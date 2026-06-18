@@ -1,6 +1,31 @@
 import { Signal, MarketContext } from '../types.js'
 
 /**
+ * The entry band actually applied to an intent — the pullback / invalidate /
+ * chase-cap / TTL window the price-watch loop fires against. Lives here (not in a
+ * separate planner module) because the band is a core entry concept: it is set
+ * either from the static `entry_*` settings, by the Entry Agent, or by a manual
+ * edit. `source` records which, so the Entry Desk can badge the levels.
+ */
+export interface EntryBand {
+  /** Buy target as % below the signal price (the dip to wait for). */
+  pullbackPct: number
+  /** Falling-knife cancel: abandon if price drops this % below the signal price. */
+  invalidatePct: number
+  /** Chase cap: abandon if price rises this % above the signal price. */
+  chaseCapPct: number
+  /** How long the intent stays live before expiring, in minutes. */
+  ttlMinutes: number
+  /** How the levels were chosen. */
+  source: BandSource
+  /** One-line rationale (present for an Entry Agent band). */
+  reason?: string
+}
+
+/** How a band's levels were chosen: static settings, the Entry Agent, or a user edit. */
+export type BandSource = 'static' | 'agent' | 'manual'
+
+/**
  * A deferred BUY: the analyst has decided direction/size, but instead of firing
  * at the cron-tick price we wait for a *good* entry. The engine watches the live
  * price feed and fires (or cancels) per the pullback / invalidate / chase-cap /
@@ -23,9 +48,9 @@ export interface EntryIntent {
   notionalUsdc: number
   /** ATR at analysis time — passed through so SL/TP are computed at the fill price. */
   atr: number
-  /** How the band levels were set: the Entry Planner LLM, the static settings, or a user edit. */
-  bandSource: 'llm' | 'static' | 'manual'
-  /** The LLM's one-line rationale for these levels (present only when bandSource === 'llm'). */
+  /** How the band levels were set: the static settings, the Entry Agent, or a user edit. */
+  bandSource: BandSource
+  /** The agent's one-line rationale for these levels (present only when bandSource === 'agent'). */
   planReason?: string
   createdAt: number
   expiresAt: number
@@ -40,18 +65,18 @@ export interface EntryIntent {
  */
 export interface BandSnapshot {
   at: number
-  source: 'llm' | 'static' | 'manual'
+  source: BandSource
   signalPrice: number
   targetPrice: number
   invalidatePrice: number
   chaseCapPrice: number
   ttlMinutes: number
   reason?: string
-  /** Market context the planner/agent saw when this band was set (absent for a manual edit). */
+  /** Market context the agent saw when this band was set (absent for a manual edit). */
   market?: MarketContext
 }
 
-export type CancelReason = 'falling_knife' | 'ran_away' | 'expired' | 'manual'
+export type CancelReason = 'falling_knife' | 'ran_away' | 'expired' | 'manual' | 'agent'
 export type FillTrigger = 'pullback' | 'expiry-market' | 'manual'
 
 /**

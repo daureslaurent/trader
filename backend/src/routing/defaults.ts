@@ -17,6 +17,7 @@ export function defaultGraph(settings: BotSettings): RoutingGraph {
     { id: 'timer.discovery', kind: 'input', type: 'timer', label: 'Discovery timer', enabled: true, managed: true, config: { cron: settings.discover_cron }, position: { x: 60, y: 170 } },
     { id: 'timer.monitor', kind: 'input', type: 'timer', label: 'Monitor timer', enabled: settings.monitor_auto_run, managed: true, config: { cron: settings.monitor_cron }, position: { x: 60, y: 280 } },
     { id: 'timer.summary', kind: 'input', type: 'timer', label: 'Summary timer', enabled: settings.summary_auto_run, managed: true, config: { cron: settings.summary_cron }, position: { x: 60, y: 390 } },
+    { id: 'timer.entryagent', kind: 'input', type: 'timer', label: 'Entry Agent timer', enabled: true, managed: true, config: { cron: settings.entry_agent_cron }, position: { x: 60, y: 940 } },
 
     // Example inputs (off by default).
     { id: 'input.manual', kind: 'input', type: 'manual', label: 'Manual trigger', enabled: true, config: {}, position: { x: 60, y: 500 } },
@@ -33,6 +34,7 @@ export function defaultGraph(settings: BotSettings): RoutingGraph {
     { id: 'out.discovery', kind: 'output', type: 'module_discovery', label: 'Run Discovery', enabled: true, managed: true, config: {}, position: { x: 820, y: 200 } },
     { id: 'out.monitor', kind: 'output', type: 'module_monitor', label: 'Run Monitor', enabled: true, managed: true, config: {}, position: { x: 820, y: 340 } },
     { id: 'out.summary', kind: 'output', type: 'module_summary', label: 'Run Summary', enabled: true, managed: true, config: {}, position: { x: 820, y: 480 } },
+    { id: 'out.entryagent', kind: 'output', type: 'module_entry_agent', label: 'Run Entry Agent', enabled: true, managed: true, config: {}, position: { x: 820, y: 620 } },
   ]
 
   const edges: RouteEdge[] = [
@@ -40,6 +42,7 @@ export function defaultGraph(settings: BotSettings): RoutingGraph {
     { id: 'e.discovery', from: 'timer.discovery', to: 'out.discovery', enabled: true },
     { id: 'e.monitor', from: 'timer.monitor', to: 'out.monitor', enabled: true },
     { id: 'e.summary', from: 'timer.summary', to: 'out.summary', enabled: true },
+    { id: 'e.entryagent', from: 'timer.entryagent', to: 'out.entryagent', enabled: true },
     // Example route: Binance tick → price-move gate → monitor (all off until enabled).
     { id: 'e.binance_pricemove', from: 'input.binance', to: 'proc.pricemove', enabled: true },
     { id: 'e.pricemove_monitor', from: 'proc.pricemove', to: 'out.monitor', enabled: true, cooldownSec: 300 },
@@ -56,4 +59,5 @@ export const MANAGED_TIMERS: { id: string; cronKey: keyof BotSettings; enabledKe
   { id: 'timer.discovery', cronKey: 'discover_cron' },
   { id: 'timer.monitor', cronKey: 'monitor_cron', enabledKey: 'monitor_auto_run' },
   { id: 'timer.summary', cronKey: 'summary_cron', enabledKey: 'summary_auto_run' },
+  { id: 'timer.entryagent', cronKey: 'entry_agent_cron' },
 ]
