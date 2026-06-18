@@ -53,6 +53,16 @@ interface RoutingGraph {
   edges: RouteEdge[]
 }
 
+// Live guardrail snapshot from /api/routing/state. `now` is the server clock at
+// fetch time; we correct for client/server skew locally to drive countdowns.
+interface RoutingState {
+  now: number
+  fetchedAt: number
+  nodeCooldowns: Record<string, number>
+  edgeCooldowns: Record<string, number>
+  edgeHourly: Record<string, number>
+}
+
 interface DebugRecord {
   id: number
   node_id: string
@@ -150,6 +160,77 @@ function Toggle({ checked, onChange, label, danger }: { checked: boolean; onChan
   )
 }
 
+/* ───────────────────────────── Node icons ───────────────────────────── */
+
+// One small line-icon per node type, drawn in the node's category colour. Shared
+// by the canvas node header and the catalogue cards. Pure stroke paths on a
+// 24×24 grid so they inherit `currentColor` + sizing from the wrapper.
+const ICON: Record<string, React.ReactElement> = {
+  timer: <><circle cx="12" cy="13" r="8" /><path d="M12 9.5V13l2.5 1.5" /><path d="M9.5 2.5h5" /><path d="M19 5.5l1.5-1.5" /></>,
+  binance_price: <><path d="M3 17l5-5 4 3 6-7" /><path d="M15 8h4v4" /></>,
+  binance_kline: <><path d="M8 4v3M8 14v3" /><rect x="6.5" y="7" width="3" height="7" rx="1" /><path d="M16 6v3M16 16v2" /><rect x="14.5" y="9" width="3" height="7" rx="1" /></>,
+  binance_book: <path d="M4 6h9M4 10h6M4 14h8M4 18h4" />,
+  binance_trade: <path d="M4 9h12l-3-3M20 15H8l3 3" />,
+  binance_depth: <><path d="M12 3l9 5-9 5-9-5 9-5z" /><path d="M3 13l9 5 9-5" /></>,
+  manual: <path d="M6 3l13 7-5.5 1.6L11 17z" />,
+  system_startup: <><path d="M12 4v8" /><path d="M7.5 7.2a7 7 0 109 0" /></>,
+  price_move: <><path d="M7 21V5M7 5L4 8M7 5l3 3" /><path d="M17 3v16M17 19l3-3M17 19l-3-3" /></>,
+  holding_filter: <><rect x="3.5" y="8" width="17" height="11" rx="2" /><path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2" /><path d="M3.5 13h17" /></>,
+  cooldown_gate: <><path d="M7 3h10M7 21h10" /><path d="M7 3c0 4.5 5 5 5 9s-5 4.5-5 9" /><path d="M17 3c0 4.5-5 5-5 9s5 4.5 5 9" /></>,
+  change_24h: <><path d="M4.5 12a7.5 7.5 0 0112.8-5.3L20 9" /><path d="M19.5 12a7.5 7.5 0 01-12.8 5.3L4 15" /><path d="M20 4.5v4.5h-4.5M4 19.5V15h4.5" /></>,
+  spread_filter: <><path d="M3 12h18" /><path d="M7 8l-4 4 4 4" /><path d="M17 8l4 4-4 4" /></>,
+  trade_size: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v10" /><path d="M14.5 9.3c0-1.3-1.1-1.8-2.5-1.8s-2.5.6-2.5 1.9 1.1 1.6 2.5 1.6 2.5.4 2.5 1.7-1.1 1.8-2.5 1.8-2.5-.6-2.5-1.8" /></>,
+  rsi_gate: <><path d="M3 9h18M3 15h18" opacity="0.4" /><path d="M4 12c2-4 4 4 6 0s4-4 6 0 4 2 4 2" /></>,
+  price_cross: <><path d="M3 15h18" opacity="0.4" /><path d="M4 19l5-8 4 4 7-10" /></>,
+  pnl_gate: <><path d="M19 5L5 19" /><circle cx="7.5" cy="7.5" r="2" /><circle cx="16.5" cy="16.5" r="2" /></>,
+  time_window: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19" /></>,
+  minute_window: <><circle cx="12" cy="12" r="8.5" /><path d="M12 12V6.5" /><path d="M12 12l4.5 2.5" /><path d="M12 6.5a5.5 5.5 0 014.8 2.8" opacity="0.5" /></>,
+  debug: <><rect x="8" y="8" width="8" height="11" rx="4" /><path d="M12 8V5" /><path d="M9 5a3 3 0 016 0" /><path d="M8 11H4M16 11h4M8 15H4.5M16 15h3.5M8.5 18l-2.5 2M15.5 18l2.5 2" /></>,
+  module_pipeline: <path d="M6 4l13 8-13 8z" />,
+  module_pipeline_coin: <><path d="M5 4l11 6.5L5 17z" /><circle cx="18.5" cy="6.5" r="2.5" /></>,
+  module_monitor: <><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" /><circle cx="12" cy="12" r="2.5" /></>,
+  module_discovery: <><circle cx="11" cy="11" r="6.5" /><path d="M20 20l-4.5-4.5" /></>,
+  module_summary: <><path d="M6.5 3h7L18 7.5V21H6.5z" /><path d="M13 3v5h5" /><path d="M9.5 13h5M9.5 16.5h5" /></>,
+}
+const ICON_FALLBACK = <circle cx="12" cy="12" r="7" />
+
+function NodeIcon({ type, className }: { type: string; className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7}
+      strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+      {ICON[type] ?? ICON_FALLBACK}
+    </svg>
+  )
+}
+
+/* ── Cooldown maths ──
+ * A node/edge is "cooling" when its last-fire + window is still in the future.
+ * Returns null when not cooling, else the remaining + total span for the bar. */
+interface Cooldown { remainingMs: number; totalMs: number }
+function cooldownOf(last: number | undefined, windowSec: number, serverNow: number): Cooldown | null {
+  if (!last || !(windowSec > 0)) return null
+  const totalMs = windowSec * 1000
+  const remainingMs = last + totalMs - serverNow
+  return remainingMs > 0 ? { remainingMs, totalMs } : null
+}
+const fmtCountdown = (ms: number): string => {
+  const s = Math.ceil(ms / 1000)
+  return s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`
+}
+
+/** A compact depleting progress bar used for cooldown countdowns. */
+function CooldownBar({ cd, className }: { cd: Cooldown; className?: string }) {
+  const pct = Math.max(0, Math.min(100, (cd.remainingMs / cd.totalMs) * 100))
+  return (
+    <div className={cn('h-1.5 rounded-full bg-surface-elevated overflow-hidden', className)}>
+      <div
+        className="h-full rounded-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-200 ease-linear"
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  )
+}
+
 /* ───────────────────────────── Page ───────────────────────────── */
 
 export default function RoutingGraph() {
@@ -163,6 +244,8 @@ export default function RoutingGraph() {
   const [debugLogs, setDebugLogs] = useState<DebugRecord[]>([])
   const [debugOpen, setDebugOpen] = useState(true)
   const [debugExpanded, setDebugExpanded] = useState<number | null>(null)
+  const [routeState, setRouteState] = useState<RoutingState | null>(null)
+  const [nowTick, setNowTick] = useState(() => Date.now())
 
   const graphRef = useRef<RoutingGraph | null>(null)
   graphRef.current = graph
@@ -185,6 +268,24 @@ export default function RoutingGraph() {
       .then((d: { logs: DebugRecord[] }) => setDebugLogs(d.logs ?? []))
       .catch(() => { /* none yet */ })
   }, [])
+
+  /* ── Live guardrail state (cooldown timers) — poll + local interpolation ── */
+  useEffect(() => {
+    let alive = true
+    const poll = () =>
+      fetch('/api/routing/state')
+        .then((r) => r.json())
+        .then((s: Omit<RoutingState, 'fetchedAt'>) => { if (alive) setRouteState({ ...s, fetchedAt: Date.now() }) })
+        .catch(() => { /* transient */ })
+    poll()
+    const pollId = setInterval(poll, 1500)
+    // A faster local ticker drives the countdown re-render between polls.
+    const tickId = setInterval(() => setNowTick(Date.now()), 200)
+    return () => { alive = false; clearInterval(pollId); clearInterval(tickId) }
+  }, [])
+
+  // Server clock estimate, corrected for client/server skew at last fetch.
+  const serverNow = routeState ? routeState.now + (nowTick - routeState.fetchedAt) : nowTick
 
   /* ── Live pulses from the routing engine ── */
   const onMessage = useCallback((event: string, data: unknown) => {
@@ -364,42 +465,13 @@ export default function RoutingGraph() {
             saveState === 'saving' ? 'text-warn' : saveState === 'saved' ? 'text-buy' : saveState === 'error' ? 'text-sell' : 'text-muted')}>
             {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved ✓' : saveState === 'error' ? 'Save failed' : ''}
           </span>
-          <div className="relative">
-            <button
-              onClick={() => setPaletteOpen((o) => !o)}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-foreground border border-border bg-surface-card hover:bg-surface-hover transition-colors"
-            >
-              + Add node
-            </button>
-            {paletteOpen && (
-              <div className="absolute right-0 top-full mt-2 w-72 max-h-[28rem] overflow-y-auto bg-surface-card border border-border rounded-2xl shadow-xl p-2 z-50 animate-slide-down">
-                {(['input', 'processor', 'output'] as NodeKind[]).map((kind) => (
-                  <div key={kind} className="mb-2">
-                    <div className="px-2 py-1 text-[10px] font-semibold tracking-wider text-muted uppercase">{KIND_LABEL[kind]}</div>
-                    {catalog.filter((m) => m.kind === kind).map((m) => {
-                      const exists = m.singleton && graph.nodes.some((n) => n.type === m.type)
-                      const s = catStyle(m.category)
-                      return (
-                        <button
-                          key={m.type}
-                          disabled={exists}
-                          onClick={() => addNode(m)}
-                          className={cn('w-full flex items-start gap-2 px-2 py-1.5 rounded-lg text-left transition-colors',
-                            exists ? 'opacity-40 cursor-not-allowed' : 'hover:bg-surface-hover')}
-                        >
-                          <span className={cn('w-1.5 h-1.5 rounded-full mt-1.5 shrink-0', s.dot)} />
-                          <span className="min-w-0">
-                            <span className="block text-xs font-medium text-foreground">{m.label}{exists && ' (added)'}</span>
-                            <span className="block text-[11px] text-muted leading-tight">{m.description}</span>
-                          </span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <button
+            onClick={() => setPaletteOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-foreground border border-border bg-surface-card hover:bg-surface-hover hover:border-accent/40 transition-colors"
+          >
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+            Add node
+          </button>
         </div>
       </div>
 
@@ -467,6 +539,9 @@ export default function RoutingGraph() {
               const sel = selected?.kind === 'node' && selected.id === node.id
               const showInPort = node.kind !== 'input'
               const showOutPort = node.kind !== 'output'
+              const cd = node.type === 'cooldown_gate'
+                ? cooldownOf(routeState?.nodeCooldowns[node.id], Number(node.config.seconds) || 0, serverNow)
+                : null
               return (
                 <div
                   key={node.id}
@@ -486,7 +561,9 @@ export default function RoutingGraph() {
                     className="flex items-center gap-2 px-2.5 pt-2 cursor-grab active:cursor-grabbing"
                     onPointerDown={(e) => startDrag(e, node)}
                   >
-                    <span className={cn('w-2 h-2 rounded-full shrink-0', s.dot, fired && 'animate-pulse')} />
+                    <span className={cn('shrink-0 grid place-items-center w-6 h-6 rounded-md ring-1 ring-inset ring-border bg-surface-base', s.text, fired && 'animate-pulse')}>
+                      <NodeIcon type={node.type} className="w-3.5 h-3.5" />
+                    </span>
                     <span className="text-[13px] font-semibold text-foreground truncate flex-1">{node.label}</span>
                     <Toggle checked={node.enabled} onChange={() => mutateNode(node.id, { enabled: !node.enabled })} label={`Enable ${node.label}`} />
                   </div>
@@ -502,7 +579,12 @@ export default function RoutingGraph() {
                         >{emitsDataSignal(node) ? 'DATA' : 'SIMPLE'}</button>
                       )}
                     </div>
-                    {(node.kind === 'input' || node.kind === 'output') && (
+                    {cd ? (
+                      <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/10 text-accent text-[10px] font-semibold tabular-nums" title="Cooling down — passes again when the timer ends">
+                        <NodeIcon type="cooldown_gate" className="w-2.5 h-2.5" />
+                        {fmtCountdown(cd.remainingMs)}
+                      </span>
+                    ) : (node.kind === 'input' || node.kind === 'output') && (
                       <button
                         onClick={(e) => { e.stopPropagation(); fetch(`/api/routing/fire/${node.id}`, { method: 'POST' }) }}
                         className="shrink-0 text-[10px] font-semibold text-accent hover:underline"
@@ -510,6 +592,16 @@ export default function RoutingGraph() {
                       >▶ fire</button>
                     )}
                   </div>
+
+                  {/* cooldown depleting bar pinned to the node's bottom edge */}
+                  {cd && (
+                    <div className="absolute inset-x-0 bottom-0 h-[3px] bg-surface-elevated/60 rounded-b-xl overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-accent to-accent2 transition-[width] duration-200 ease-linear"
+                        style={{ width: `${Math.max(0, Math.min(100, (cd.remainingMs / cd.totalMs) * 100))}%` }}
+                      />
+                    </div>
+                  )}
 
                   {/* ports */}
                   {showInPort && (
@@ -531,6 +623,35 @@ export default function RoutingGraph() {
                 </div>
               )
             })}
+
+            {/* Edge guardrail overlay — cooldown countdown / max-per-hour chips at route midpoints */}
+            {graph.edges.map((edge) => {
+              const from = nodeById.get(edge.from); const to = nodeById.get(edge.to)
+              if (!from || !to) return null
+              const cd = cooldownOf(routeState?.edgeCooldowns[edge.id], Number(edge.cooldownSec) || 0, serverNow)
+              const maxPerHour = Number(edge.maxPerHour) || 0
+              const maxed = maxPerHour > 0 && (routeState?.edgeHourly[edge.id] ?? 0) >= maxPerHour
+              if (!cd && !maxed) return null
+              const mx = (from.position.x + NODE_W + to.position.x) / 2
+              const my = (from.position.y + to.position.y) / 2 + NODE_H / 2
+              return (
+                <div key={`g.${edge.id}`} className="absolute z-10 -translate-x-1/2 -translate-y-1/2 pointer-events-none" style={{ left: mx, top: my }}>
+                  {cd ? (
+                    <div className="flex flex-col items-center gap-0.5 px-1.5 py-1 rounded-lg bg-surface-card/95 backdrop-blur-sm border border-warn/40 shadow-soft">
+                      <span className="inline-flex items-center gap-1 text-warn text-[10px] font-semibold tabular-nums">
+                        <NodeIcon type="cooldown_gate" className="w-2.5 h-2.5" />
+                        {fmtCountdown(cd.remainingMs)}
+                      </span>
+                      <CooldownBar cd={cd} className="w-12 h-1" />
+                    </div>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-sell/15 text-sell border border-sell/40 text-[10px] font-semibold whitespace-nowrap">
+                      max/hr reached
+                    </span>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
 
@@ -538,6 +659,9 @@ export default function RoutingGraph() {
         <div className="w-72 shrink-0">
           {selNode && <NodeInspector
             node={selNode} meta={catalog.find((m) => m.type === selNode.type)}
+            cooldown={selNode.type === 'cooldown_gate'
+              ? cooldownOf(routeState?.nodeCooldowns[selNode.id], Number(selNode.config.seconds) || 0, serverNow)
+              : null}
             onLabel={(v) => mutateNode(selNode.id, { label: v })}
             onEnable={() => mutateNode(selNode.id, { enabled: !selNode.enabled })}
             onConfig={(k, v) => mutateNodeConfig(selNode.id, k, v)}
@@ -549,6 +673,8 @@ export default function RoutingGraph() {
             fromLabel={nodeById.get(selEdge.from)?.label ?? selEdge.from}
             toLabel={nodeById.get(selEdge.to)?.label ?? selEdge.to}
             carriesData={dataNodes.has(selEdge.from)}
+            cooldown={cooldownOf(routeState?.edgeCooldowns[selEdge.id], Number(selEdge.cooldownSec) || 0, serverNow)}
+            hourlyHits={routeState?.edgeHourly[selEdge.id] ?? 0}
             onEnable={() => mutateEdge(selEdge.id, { enabled: !selEdge.enabled })}
             onNum={(k, v) => mutateEdge(selEdge.id, { [k]: v })}
             onDelete={() => deleteEdge(selEdge.id)}
@@ -580,6 +706,139 @@ export default function RoutingGraph() {
         onExpand={(id) => setDebugExpanded((cur) => cur === id ? null : id)}
         onClear={() => { fetch('/api/debug-logs', { method: 'DELETE' }); setDebugLogs([]); setDebugExpanded(null) }}
       />
+
+      {/* Node catalogue (modal) */}
+      {paletteOpen && (
+        <NodeCatalog
+          catalog={catalog}
+          existingTypes={new Set(graph.nodes.map((n) => n.type))}
+          onAdd={addNode}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ───────────────────────────── Node catalogue (modal) ───────────────────────────── */
+
+function NodeCatalog({ catalog, existingTypes, onAdd, onClose }: {
+  catalog: NodeTypeMeta[]
+  existingTypes: Set<string>
+  onAdd: (meta: NodeTypeMeta) => void
+  onClose: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const [kindFilter, setKindFilter] = useState<NodeKind | 'all'>('all')
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const q = query.trim().toLowerCase()
+  const matches = (m: NodeTypeMeta) =>
+    !q || m.label.toLowerCase().includes(q) || m.description.toLowerCase().includes(q) ||
+    m.type.toLowerCase().includes(q) || m.category.toLowerCase().includes(q)
+
+  const kinds: NodeKind[] = kindFilter === 'all' ? ['input', 'processor', 'output'] : [kindFilter]
+  const sections = kinds
+    .map((kind) => ({ kind, items: catalog.filter((m) => m.kind === kind && matches(m)) }))
+    .filter((s) => s.items.length > 0)
+
+  const FILTERS: { value: NodeKind | 'all'; label: string }[] = [
+    { value: 'all', label: 'All' }, { value: 'input', label: 'Inputs' },
+    { value: 'processor', label: 'Processors' }, { value: 'output', label: 'Outputs' },
+  ]
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-start justify-center p-4 sm:p-8 bg-black/50 backdrop-blur-sm animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl border border-border bg-surface-card shadow-2xl overflow-hidden animate-slide-down"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 pt-4 pb-3 border-b border-border bg-surface-elevated/40">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Add a node</h2>
+              <p className="text-[11px] text-muted">Inputs fire events · processors gate them · outputs run an engine.</p>
+            </div>
+            <button onClick={onClose} className="p-1.5 rounded-lg text-muted hover:text-foreground hover:bg-surface-hover transition-colors" aria-label="Close">
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[12rem]">
+              <svg viewBox="0 0 24 24" className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
+              <input
+                autoFocus value={query} onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search nodes…"
+                className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-surface-base border border-border text-xs text-foreground placeholder:text-muted/70 focus:outline-none focus:ring-2 focus:ring-accent/40"
+              />
+            </div>
+            <div className="flex items-center gap-1 p-0.5 rounded-lg bg-surface-base border border-border">
+              {FILTERS.map((f) => (
+                <button
+                  key={f.value} onClick={() => setKindFilter(f.value)}
+                  className={cn('px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors',
+                    kindFilter === f.value ? 'bg-accent/15 text-accent' : 'text-muted hover:text-foreground')}
+                >{f.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto p-4 space-y-5">
+          {sections.length === 0 && (
+            <div className="py-12 text-center text-sm text-muted">No nodes match “{query}”.</div>
+          )}
+          {sections.map((section) => (
+            <div key={section.kind}>
+              <div className="flex items-center gap-2 mb-2 px-0.5">
+                <span className="text-[10px] font-semibold tracking-[0.18em] text-muted uppercase">{KIND_LABEL[section.kind]}</span>
+                <span className="h-px flex-1 bg-border" />
+                <span className="text-[10px] text-muted/70 font-mono">{section.items.length}</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {section.items.map((m) => {
+                  const exists = m.singleton && existingTypes.has(m.type)
+                  const s = catStyle(m.category)
+                  return (
+                    <button
+                      key={m.type}
+                      disabled={exists}
+                      onClick={() => { onAdd(m); onClose() }}
+                      className={cn(
+                        'group flex items-start gap-3 p-3 rounded-xl border text-left transition-all',
+                        exists
+                          ? 'opacity-45 cursor-not-allowed border-border bg-surface-base/40'
+                          : 'border-border bg-surface-base hover:border-accent/40 hover:bg-surface-hover hover:-translate-y-0.5 hover:shadow-soft',
+                      )}
+                    >
+                      <span className={cn('shrink-0 grid place-items-center w-9 h-9 rounded-lg ring-1 ring-inset ring-border bg-surface-card', s.text)}>
+                        <NodeIcon type={m.type} className="w-[18px] h-[18px]" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="text-xs font-semibold text-foreground truncate">{m.label}</span>
+                          {exists && <span className="text-[9px] font-bold text-muted uppercase tracking-wide">added</span>}
+                        </span>
+                        <span className="block text-[11px] text-muted leading-snug mt-0.5 line-clamp-2">{m.description}</span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
@@ -652,17 +911,35 @@ function Field({ label, children, help }: { label: string; children: React.React
 
 const inputCls = 'w-full px-2.5 py-1.5 rounded-lg bg-surface-base border border-border text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40'
 
-function NodeInspector({ node, meta, onLabel, onEnable, onConfig, onDelete, onFire }: {
-  node: RouteNode; meta?: NodeTypeMeta
+function NodeInspector({ node, meta, cooldown, onLabel, onEnable, onConfig, onDelete, onFire }: {
+  node: RouteNode; meta?: NodeTypeMeta; cooldown: Cooldown | null
   onLabel: (v: string) => void; onEnable: () => void
   onConfig: (k: string, v: unknown) => void; onDelete: () => void; onFire: () => void
 }) {
+  const s = catStyle(meta?.category ?? 'system')
   return (
     <div className="rounded-2xl border border-border bg-surface-card/70 glass p-4 animate-slide-down">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[10px] font-semibold tracking-wider text-muted uppercase">{KIND_LABEL[node.kind]} · {node.type}</span>
+        <span className="flex items-center gap-2 text-[10px] font-semibold tracking-wider text-muted uppercase">
+          <span className={cn('grid place-items-center w-5 h-5 rounded-md ring-1 ring-inset ring-border bg-surface-base', s.text)}>
+            <NodeIcon type={node.type} className="w-3 h-3" />
+          </span>
+          {KIND_LABEL[node.kind]} · {node.type}
+        </span>
         <Toggle checked={node.enabled} onChange={onEnable} label="Enable node" />
       </div>
+
+      {cooldown && (
+        <div className="mb-3 p-2.5 rounded-xl border border-accent/30 bg-accent/5">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-accent">
+              <NodeIcon type="cooldown_gate" className="w-3 h-3" /> Cooling down
+            </span>
+            <span className="text-[11px] font-semibold text-accent tabular-nums">{fmtCountdown(cooldown.remainingMs)} left</span>
+          </div>
+          <CooldownBar cd={cooldown} />
+        </div>
+      )}
 
       <Field label="Label"><input className={inputCls} value={node.label} onChange={(e) => onLabel(e.target.value)} /></Field>
 
@@ -708,10 +985,13 @@ function NodeInspector({ node, meta, onLabel, onEnable, onConfig, onDelete, onFi
   )
 }
 
-function EdgeInspector({ edge, fromLabel, toLabel, carriesData, onEnable, onNum, onDelete }: {
+function EdgeInspector({ edge, fromLabel, toLabel, carriesData, cooldown, hourlyHits, onEnable, onNum, onDelete }: {
   edge: RouteEdge; fromLabel: string; toLabel: string; carriesData: boolean
+  cooldown: Cooldown | null; hourlyHits: number
   onEnable: () => void; onNum: (k: 'cooldownSec' | 'maxPerHour', v: number) => void; onDelete: () => void
 }) {
+  const maxPerHour = Number(edge.maxPerHour) || 0
+  const maxed = maxPerHour > 0 && hourlyHits >= maxPerHour
   return (
     <div className="rounded-2xl border border-border bg-surface-card/70 glass p-4 animate-slide-down">
       <div className="flex items-center justify-between mb-3">
@@ -727,12 +1007,29 @@ function EdgeInspector({ edge, fromLabel, toLabel, carriesData, onEnable, onNum,
       </div>
       <p className="text-xs text-foreground mb-3"><span className="text-muted">{fromLabel}</span> → <span className="text-muted">{toLabel}</span></p>
 
+      {cooldown && (
+        <div className="mb-3 p-2.5 rounded-xl border border-warn/30 bg-warn/5">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-warn">
+              <NodeIcon type="cooldown_gate" className="w-3 h-3" /> Route cooling
+            </span>
+            <span className="text-[11px] font-semibold text-warn tabular-nums">{fmtCountdown(cooldown.remainingMs)} left</span>
+          </div>
+          <CooldownBar cd={cooldown} />
+        </div>
+      )}
+
       <Field label="Cooldown (seconds)" help="Minimum gap between traversals of this route. 0 = none.">
         <input className={inputCls} type="number" min={0} value={edge.cooldownSec ?? 0} onChange={(e) => onNum('cooldownSec', Math.max(0, Number(e.target.value)))} />
       </Field>
       <Field label="Max fires / hour" help="Hard cap per rolling hour. 0 = unlimited.">
         <input className={inputCls} type="number" min={0} value={edge.maxPerHour ?? 0} onChange={(e) => onNum('maxPerHour', Math.max(0, Number(e.target.value)))} />
       </Field>
+      {maxPerHour > 0 && (
+        <p className={cn('text-[10px] mb-3 -mt-1', maxed ? 'text-sell font-semibold' : 'text-muted')}>
+          {hourlyHits} / {maxPerHour} fired this hour{maxed ? ' — capped' : ''}
+        </p>
+      )}
 
       <button onClick={onDelete} className="w-full px-3 py-1.5 rounded-lg text-xs font-semibold text-sell border border-sell/30 hover:bg-sell/10 transition-colors">Delete route</button>
     </div>

@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { logger } from '../../core/logger.js'
 import {
   getGraph, saveGraph, setGlobalEnabled, getCatalog, fireManual, RoutingGraph,
-  getDebugLogs, clearDebugLogs,
+  getDebugLogs, clearDebugLogs, getRoutingState,
 } from '../../routing/index.js'
 
 export const router = Router()
@@ -26,6 +26,11 @@ router.get('/routing/catalog', (_req: Request, res: Response) => {
 // The active routing graph (nodes + edges + global enabled).
 router.get('/routing/graph', (_req: Request, res: Response) => {
   res.json(getGraph())
+})
+
+// Live guardrail state (cooldown timers, hourly caps) for the UI countdowns.
+router.get('/routing/state', (_req: Request, res: Response) => {
+  res.json(getRoutingState())
 })
 
 // Persist + hot-apply a user-edited graph from the flow-graph editor.

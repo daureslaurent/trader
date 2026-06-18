@@ -1,6 +1,7 @@
 import { logger } from '../core/logger.js'
 import { FireContext } from './types.js'
-import { fireNode, getGraph } from './engine.js'
+import { fireNode, getGraph, getEdgeGuardrailState } from './engine.js'
+import { getNodeCooldowns } from './processors.js'
 import { loadGraph } from './store.js'
 import { wireSources, fireStartup } from './sources.js'
 import { stopTimers } from './scheduler.js'
@@ -37,6 +38,26 @@ export async function fireManual(nodeId: string, ctx?: Partial<FireContext>): Pr
   if (!exists) return false
   await fireNode(nodeId, { trigger: 'manual', ...ctx })
   return true
+}
+
+/**
+ * A snapshot of live guardrail state for the UI countdowns: when each
+ * cooldown_gate node last passed and when each edge last fired (+ its rolling
+ * hourly hits). `now` is the server clock so the client can correct for skew.
+ */
+export function getRoutingState(): {
+  now: number
+  nodeCooldowns: Record<string, number>
+  edgeCooldowns: Record<string, number>
+  edgeHourly: Record<string, number>
+} {
+  const edges = getEdgeGuardrailState()
+  return {
+    now: Date.now(),
+    nodeCooldowns: getNodeCooldowns(),
+    edgeCooldowns: edges.lastFired,
+    edgeHourly: edges.hourly,
+  }
 }
 
 export function stopRouting(): void {

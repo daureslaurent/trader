@@ -250,6 +250,18 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     ],
     defaultConfig: { startHour: 8, endHour: 22 },
   },
+  minute_window: {
+    type: 'minute_window',
+    kind: 'processor',
+    label: 'Minute Window',
+    description: 'Passes only during a minute-of-hour slice, every hour (e.g. :25 → :35). Wraps the top of the hour when start > end (e.g. 55 → 5).',
+    category: 'system',
+    configFields: [
+      { key: 'startMinute', label: 'Start minute (0–60)', type: 'number', placeholder: '25', help: 'Minute past the hour the window opens.' },
+      { key: 'endMinute', label: 'End minute (0–60)', type: 'number', placeholder: '35', help: 'Minute past the hour the window closes (exclusive).' },
+    ],
+    defaultConfig: { startMinute: 25, endMinute: 35 },
+  },
   debug: {
     type: 'debug',
     kind: 'processor',

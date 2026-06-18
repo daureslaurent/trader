@@ -192,6 +192,18 @@ const HANDLERS: Record<string, ProcessorHandler> = {
     return startH <= endH ? h >= startH && h < endH : h >= startH || h < endH
   },
 
+  // Minute-of-hour window — passes during a slice of every hour regardless of the
+  // hour (e.g. start 25, end 35 → fires between :25 and :35 each hour). Wraps
+  // across the top of the hour when start > end (e.g. 55 → 5). Sub-minute precise.
+  minute_window: async (node) => {
+    const start = num(node.config.startMinute, 0)
+    const end = num(node.config.endMinute, 60)
+    const offset = getSettings().utc_offset_hours || 0
+    const d = new Date(Date.now() + offset * 3600_000)
+    const m = d.getUTCMinutes() + d.getUTCSeconds() / 60
+    return start <= end ? m >= start && m < end : m >= start || m < end
+  },
+
   // Records what flows through it. Pass-through (default) propagates onward so it
   // can be dropped inline as a transparent tap; sink mode stops the chain here.
   debug: async (node, ctx) => {
@@ -207,4 +219,15 @@ export async function runProcessor(node: RouteNode, ctx: FireContext): Promise<b
     return false
   }
   return handler(node, ctx)
+}
+
+/**
+ * Last-pass epoch (ms) for every cooldown_gate node that has fired at least once,
+ * so the UI can render a live "cooling — Ns left" countdown. The node's own
+ * `seconds` config (read from the graph) determines when the cooldown ends.
+ */
+export function getNodeCooldowns(): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [id, t] of lastPass) out[id] = t
+  return out
 }

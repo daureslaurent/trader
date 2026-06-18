@@ -70,6 +70,23 @@ function edgeAllowed(edge: RouteEdge): { ok: boolean; reason?: string } {
   return { ok: true }
 }
 
+/**
+ * Live guardrail state for the UI: per-edge last-fired epoch (ms) for the
+ * cooldown countdown, plus the rolling-hour hit count for the max/hour badge.
+ */
+export function getEdgeGuardrailState(): { lastFired: Record<string, number>; hourly: Record<string, number> } {
+  const now = Date.now()
+  const hourAgo = now - 3600_000
+  const lastFired: Record<string, number> = {}
+  for (const [id, t] of edgeLastFired) lastFired[id] = t
+  const hourly: Record<string, number> = {}
+  for (const [id, arr] of edgeHourly) {
+    const hits = arr.filter((t) => t >= hourAgo).length
+    if (hits > 0) hourly[id] = hits
+  }
+  return { lastFired, hourly }
+}
+
 function commitEdge(edge: RouteEdge): void {
   const now = Date.now()
   edgeLastFired.set(edge.id, now)
