@@ -84,6 +84,17 @@ export type AgentToolPermissions = Record<string, Record<string, AgentToolPermis
 export interface BotSettings {
   watchlist: string[]
   pipeline_cron: string
+  /** Which engine produces the entry (BUY/HOLD) signal for watchlist coins on the pipeline
+   *  trigger: 'classic' = the research → extractor → analyst pipeline; 'agent' = the Agent
+   *  Signal engine — one agentic, single-coin tool-calling agent per watchlist coin that keeps
+   *  long-term per-coin memory and a thesis. Mutually exclusive (mirrors `monitor_model: 'd'`). */
+  signal_model: 'classic' | 'agent'
+  /** Agent Signal only: when true, skip coins currently held in the portfolio (they belong to
+   *  the monitor); when false, run an agent on every watchlist coin regardless of holdings. */
+  agent_signal_check_portfolio: boolean
+  /** Agent Signal only: how many of the most recent run records (per coin per cycle) to keep
+   *  in agent_signal_runs; older ones are pruned after each cycle. */
+  agent_signal_retain_runs: number
   /** Trading horizon for new positions.
    *  - 'auto'              → no horizon thesis; SL/TP sized purely off ATR.
    *  - 'llm'               → the analyst LLM picks short/medium/long per trade as part of its decision.
@@ -227,6 +238,8 @@ export interface BotSettings {
   /** Type D agentic position monitor. Needs a tool-calling-capable model. */
   llm_monitor_d_endpoint: string
   llm_monitor_d_max_tokens: number
+  llm_agentSignal_endpoint: string
+  llm_agentSignal_max_tokens: number
   /** Per-module failover endpoint selection (id into `llm_endpoints`; blank = no
    *  fallback) + max-tokens (0 = reuse the primary's effective max-tokens). Tried
    *  only if the primary LLM call throws (endpoint down, timeout, 5xx, unknown model). */
@@ -252,6 +265,8 @@ export interface BotSettings {
   llm_agent_fb_max_tokens: number
   llm_monitor_d_fb_endpoint: string
   llm_monitor_d_fb_max_tokens: number
+  llm_agentSignal_fb_endpoint: string
+  llm_agentSignal_fb_max_tokens: number
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
    *  of the most recent (non-tool) messages — bounds the tokens spent per title. */
   agent_title_context_messages: number
@@ -536,6 +551,57 @@ export interface MonitorDRun {
   peak_context_tokens: number
   started_at_ms: number
   created_at: string
+}
+
+// ── Agent Signal (the agentic, single-coin entry engine) ────────────────────
+// One agent per watchlist coin reasons with the shared tool belt and commits to BUY or
+// HOLD. The transcript reuses the Type-D frame shape so the page renders both identically.
+export type SignalRunFrame = MonitorDRunFrame
+
+export interface SignalRun {
+  id: number
+  cycle_id: string
+  coin: string
+  action: 'BUY' | 'HOLD'
+  confidence: number
+  /** 0–100 conviction percentage the agent assigned to its thesis. */
+  conviction: number
+  /** The agent's one-paragraph thesis/strategy for this coin. */
+  thesis: string
+  reasoning: string
+  /** True when a BUY passed analysis but the BUY gauntlet rejected it (e.g. max positions,
+   *  fee-edge, already-held) — recorded so the page can show "BUY (not staged)". */
+  rejected: boolean
+  /** Rejection reason from the gauntlet, when `rejected`. */
+  rejected_reason: string | null
+  /** Model id credited (e.g. "agent-signal:<model>"). */
+  model: string
+  /** The agent's loop transcript (thinking / tool_call / tool_result / decision …). */
+  frames: SignalRunFrame[]
+  prompt_tokens: number
+  completion_tokens: number
+  peak_context_tokens: number
+  started_at_ms: number
+  created_at: string
+}
+
+// Persistent long-term memory the Agent Signal engine keeps per coin (one doc, _id = coin).
+// Structured fields the engine rewrites each run, plus a freeform notes log it appends to.
+export interface SignalMemory {
+  coin: string
+  /** Latest thesis/strategy narrative. */
+  thesis: string | null
+  /** 0–100 conviction percentage. */
+  conviction: number | null
+  /** Key price levels the agent is anchoring on. */
+  support: number | null
+  resistance: number | null
+  /** The most recent verdict and when it was reached. */
+  last_action: 'BUY' | 'HOLD' | null
+  last_reviewed_at: string | null
+  /** Appended running log of short memos to the agent's future self (newest last). */
+  notes: { at: string; text: string }[]
+  updated_at: string
 }
 
 export interface PositionAdjustment {

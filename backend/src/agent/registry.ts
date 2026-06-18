@@ -15,7 +15,7 @@ import { getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import type { AgentToolPermission } from '../types.js'
 import {
-  TOOLS, AgentTool, MONITOR_D_TOOL_NAMES,
+  TOOLS, AgentTool, MONITOR_D_TOOL_NAMES, AGENT_SIGNAL_TOOL_NAMES,
   getToolSchemas, runTool, isReadOnlyTool,
 } from './tools.js'
 
@@ -32,6 +32,7 @@ export interface AgentDef {
 }
 
 const MONITOR_D_SET = new Set<string>(MONITOR_D_TOOL_NAMES)
+const AGENT_SIGNAL_SET = new Set<string>(AGENT_SIGNAL_TOOL_NAMES)
 
 // The tool-calling agents. Order is the display order in the settings UI.
 export const AGENTS: AgentDef[] = [
@@ -48,6 +49,13 @@ export const AGENTS: AgentDef[] = [
     description: 'The agentic per-position monitor. Investigates each open position with read-only tools before committing to a Hold / Adjust / Reduce / Close verdict — it never triggers engines or edits the watchlist mid-review.',
     // Curated read-only subset; everything else off.
     defaultGrant: t => (MONITOR_D_SET.has(t.name) ? 'read' : 'off'),
+  },
+  {
+    id: 'agentSignal',
+    label: 'Agent Signal',
+    description: 'The agentic, single-coin entry engine. One agent per watchlist coin investigates with read tools + live news and keeps long-term per-coin memory before committing to a BUY or HOLD signal. Its memory tool is read-write; it never triggers engines or edits the watchlist mid-review.',
+    // Curated coin-scoped belt: reads stay read-only, the memory write tool is fully enabled.
+    defaultGrant: t => (AGENT_SIGNAL_SET.has(t.name) ? (t.readOnly ? 'read' : 'readwrite') : 'off'),
   },
 ]
 

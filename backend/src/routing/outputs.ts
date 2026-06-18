@@ -3,7 +3,7 @@ import { getSettings } from '../db/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
 import { runMonitor } from '../monitor/index.js'
-import { runMonitorD } from '../agent/index.js'
+import { runMonitorD, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { RouteNode, FireContext } from './types.js'
 
@@ -44,6 +44,17 @@ function dispatchMonitor(cycleId: string): Promise<void> {
   return getSettings().monitor_model === 'd' ? runMonitorD(cycleId) : runMonitor(cycleId)
 }
 
+// Entry-signal dispatch: the agentic Agent Signal engine when signal_model === 'agent',
+// otherwise the classic research pipeline. Kept local (same reason as dispatchMonitor).
+function dispatchPipeline(): Promise<void> {
+  return getSettings().signal_model === 'agent' ? runAgentSignal(cycle('signal')) : runPipeline()
+}
+function dispatchPipelineCoin(symbol: string): Promise<void> {
+  return getSettings().signal_model === 'agent'
+    ? runAgentSignalCoin(symbol, cycle('signal'))
+    : runSingleCoinPipeline(symbol, cycle('pipeline'))
+}
+
 export interface OutputResult {
   ran: boolean
   /** Set when the run was suppressed by skip-if-running. */
@@ -58,7 +69,7 @@ function result(ran: boolean): OutputResult {
 
 const HANDLERS: Record<string, OutputHandler> = {
   module_pipeline: () =>
-    result(guarded('module_pipeline', () => runPipeline())),
+    result(guarded('module_pipeline', () => dispatchPipeline())),
 
   module_pipeline_coin: (_node, ctx) => {
     const symbol = ctx.symbol
@@ -66,7 +77,7 @@ const HANDLERS: Record<string, OutputHandler> = {
       logger.warn('module_pipeline_coin fired without a symbol in context', { trigger: ctx.trigger })
       return { ran: false, skippedReason: 'no_symbol' }
     }
-    return result(guarded(`module_pipeline_coin:${symbol}`, () => runSingleCoinPipeline(symbol, cycle('pipeline'))))
+    return result(guarded(`module_pipeline_coin:${symbol}`, () => dispatchPipelineCoin(symbol)))
   },
 
   module_monitor: () =>

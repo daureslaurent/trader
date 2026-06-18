@@ -4,7 +4,8 @@ import { runLLMRetention, getSettings } from '../db/index.js'
 import { BotSettings } from '../types.js'
 import { checkOpenPositions } from '../portfolio/index.js'
 import { runMonitor } from '../monitor/index.js'
-import { runMonitorD } from '../agent/index.js'
+import { runMonitorD, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
+import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
 import { scheduleUpdateCheck, stopUpdateCheck } from '../host/index.js'
 import { syncFromSettings, stopRouting, refreshBinanceStreams, refreshHeldCoins } from '../routing/index.js'
@@ -27,6 +28,21 @@ export function dispatchMonitorRun(cycleId: string): Promise<void> {
   return getSettings().monitor_model === 'd'
     ? runMonitorD(cycleId)
     : runMonitor(cycleId)
+}
+
+// Runs whichever entry-signal engine `signal_model` resolves to. The classic research
+// pipeline (researcher → extractor → analyst) and the agentic Agent Signal engine ('agent')
+// are mutually exclusive. Shared by the manual pipeline-run bus handlers so they route the
+// same way the scheduled trigger does.
+export function dispatchPipelineRun(): Promise<void> {
+  return getSettings().signal_model === 'agent'
+    ? runAgentSignal(`${Date.now().toString(36)}-signal`)
+    : runPipeline()
+}
+export function dispatchSingleCoinPipeline(symbol: string, cycleId: string): Promise<void> {
+  return getSettings().signal_model === 'agent'
+    ? runAgentSignalCoin(symbol, cycleId)
+    : runSingleCoinPipeline(symbol, cycleId)
 }
 
 /**

@@ -9,6 +9,9 @@ import { MonitorModelsResponse, LLMDefaults, LLMModuleKey, LLMEndpoint, AgentToo
 interface SettingsData {
   watchlist: string[]
   pipeline_cron: string
+  signal_model: 'classic' | 'agent'
+  agent_signal_check_portfolio: boolean
+  agent_signal_retain_runs: number
   default_horizon: 'auto' | 'llm' | 'short' | 'medium' | 'long'
   analyst_candle_tf: string
   analyst_candle_count: number
@@ -81,6 +84,8 @@ interface SettingsData {
   llm_agent_max_tokens: number
   llm_monitor_d_endpoint: string
   llm_monitor_d_max_tokens: number
+  llm_agentSignal_endpoint: string
+  llm_agentSignal_max_tokens: number
   llm_analyst_fb_endpoint: string
   llm_analyst_fb_max_tokens: number
   llm_extractor_fb_endpoint: string
@@ -103,6 +108,8 @@ interface SettingsData {
   llm_agent_fb_max_tokens: number
   llm_monitor_d_fb_endpoint: string
   llm_monitor_d_fb_max_tokens: number
+  llm_agentSignal_fb_endpoint: string
+  llm_agentSignal_fb_max_tokens: number
   agent_title_context_messages: number
   agent_tool_permissions: AgentToolPermissions
   summary_auto_run: boolean
@@ -441,6 +448,7 @@ const LLM_MODULES: {
   { key: 'entryPlanner',        label: 'Entry Planner',        hint: 'Picks the per-coin entry band (pullback / invalidate / chase cap / TTL) for deferred BUYs. A small fast model is enough.', endpointKey: 'llm_entry_planner_endpoint', maxTokensKey: 'llm_entry_planner_max_tokens', fbEndpointKey: 'llm_entry_planner_fb_endpoint', fbMaxTokensKey: 'llm_entry_planner_fb_max_tokens' },
   { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
   { key: 'monitorD',            label: 'Agent D (monitor)',    hint: 'The Type D agentic position monitor (monitor model “Agent D”). Runs a tool-calling loop per open position, so use a tool-calling-capable model.', endpointKey: 'llm_monitor_d_endpoint', maxTokensKey: 'llm_monitor_d_max_tokens', fbEndpointKey: 'llm_monitor_d_fb_endpoint', fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens' },
+  { key: 'agentSignal',         label: 'Agent Signal',         hint: 'The agentic entry engine (entry model “Agent Signal”). Runs a tool-calling loop per watchlist coin, so use a tool-calling-capable model.', endpointKey: 'llm_agentSignal_endpoint', maxTokensKey: 'llm_agentSignal_max_tokens', fbEndpointKey: 'llm_agentSignal_fb_endpoint', fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens' },
 ]
 
 type LLMModule = typeof LLM_MODULES[number]
@@ -1144,7 +1152,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'entry_planner_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1257,6 +1265,46 @@ export default function Settings() {
           <Row stacked label="Pipeline schedule" hint="How often the research → analysis → trade pipeline runs.">
             <CronEditor value={settings.pipeline_cron} onChange={v => set('pipeline_cron', v)} />
           </Row>
+
+          <Row
+            stacked
+            label="Entry signal engine"
+            hint="What produces the BUY/HOLD signal for watchlist coins on each pipeline tick. Classic: the research → extractor → analyst pipeline. Agent Signal: one agentic, single-coin tool-calling agent per coin that keeps long-term per-coin memory and a thesis (see the Agent Signal page). Mutually exclusive."
+          >
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                { id: 'classic', label: 'Classic pipeline', hint: 'Research → extractor → analyst' },
+                { id: 'agent', label: 'Agent Signal', hint: 'One tool-calling agent per coin' },
+              ] as const).map(({ id, label, hint }) => {
+                const active = settings.signal_model === id
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => set('signal_model', id)}
+                    className={cn(
+                      'flex flex-col items-center gap-1 px-3 py-3 rounded-xl border text-sm font-semibold transition-all duration-150',
+                      active ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-surface-elevated text-muted hover:border-accent/50',
+                    )}
+                  >
+                    {label}
+                    <span className="text-[10px] font-normal opacity-70">{hint}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </Row>
+
+          {settings.signal_model === 'agent' && (
+            <>
+              <Row label="Skip held coins" hint="When on, Agent Signal skips coins already held in the portfolio (the monitor manages them) and coins already on the Entry Desk. Turn off to run an agent on every watchlist coin regardless of holdings.">
+                <Toggle label="Skip held coins" checked={settings.agent_signal_check_portfolio} onChange={() => toggle('agent_signal_check_portfolio')} />
+              </Row>
+              <Row label="Run history retained" hint="How many of the most recent Agent Signal run records (per coin per cycle) to keep for the Agent Signal page. Older runs are pruned after each cycle.">
+                <UnitInput type="number" step="10" min="10" max="2000" unit="runs" value={settings.agent_signal_retain_runs} onChange={e => set('agent_signal_retain_runs', parseInt(e.target.value) || 200)} />
+              </Row>
+            </>
+          )}
 
           <Row label="Analyst price history" hint="Candle timeframe and count fed to the analyst (BUY/SELL/HOLD) prompt as price-action context alongside the indicators. Set count to 0 to omit the table.">
             <div className="flex items-center gap-2">

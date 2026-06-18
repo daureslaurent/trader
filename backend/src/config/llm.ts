@@ -21,6 +21,7 @@ export type LLMModule =
   | 'entryPlanner'
   | 'agent'
   | 'monitorD'
+  | 'agentSignal'
 
 interface ModuleSpec {
   /** Settings key holding the selected endpoint id (blank = use the env fallback). */
@@ -114,6 +115,13 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     fbEndpointKey: 'llm_monitor_d_fb_endpoint',
     fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens',
     fallback: config.monitorD,
+  },
+  agentSignal: {
+    endpointKey: 'llm_agentSignal_endpoint',
+    maxTokensKey: 'llm_agentSignal_max_tokens',
+    fbEndpointKey: 'llm_agentSignal_fb_endpoint',
+    fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens',
+    fallback: config.agentSignal,
   },
 }
 

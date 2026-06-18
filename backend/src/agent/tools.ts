@@ -5,7 +5,8 @@
 // it can mutate is the watchlist and kicking off the engines that already run on crons.
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
-import { getSettings, updateSetting, trades, decisions, llmCalls, entryEvents, monitorNotes } from '../db/index.js'
+import { getSettings, updateSetting, nowSql, trades, decisions, llmCalls, entryEvents, monitorNotes, agentSignalMemory, agentSignalRuns } from '../db/index.js'
+import type { SignalMemory } from '../types.js'
 import { isTradeable } from '../core/tradeable.js'
 import * as priceCache from '../market/index.js'
 import { fetchMarketData } from '../trader/index.js'
@@ -509,6 +510,109 @@ async function getCoinSentiment(args: Record<string, unknown>): Promise<unknown>
   }
 }
 
+// ── Agent Signal long-term per-coin memory ─────────────────────────────────────
+// The Agent Signal engine keeps one memory doc per coin (_id = coin): structured fields
+// (thesis / conviction % / key levels / last verdict) it rewrites each run, plus a freeform
+// notes log it appends to. This upsert is shared by the `remember_signal` tool AND the engine
+// itself (so memory persists even if the model never calls the tool). Newest notes last.
+const SIGNAL_NOTES_CAP = 50
+
+export async function upsertSignalMemory(coin: string, patch: {
+  thesis?: string | null
+  conviction?: number | null
+  support?: number | null
+  resistance?: number | null
+  last_action?: 'BUY' | 'HOLD' | null
+  note?: string | null
+}): Promise<SignalMemory> {
+  const now = nowSql()
+  const existing = await agentSignalMemory.findOne({ _id: coin }) as Partial<SignalMemory> | null
+  const notes = Array.isArray(existing?.notes) ? [...existing!.notes!] : []
+  const trimmedNote = typeof patch.note === 'string' ? patch.note.trim().slice(0, 500) : ''
+  if (trimmedNote) {
+    notes.push({ at: now, text: trimmedNote })
+    if (notes.length > SIGNAL_NOTES_CAP) notes.splice(0, notes.length - SIGNAL_NOTES_CAP)
+  }
+  // Only overwrite a structured field when the caller supplied it (undefined = keep prior).
+  const keep = <T>(next: T | undefined, prev: T | null | undefined): T | null =>
+    next !== undefined ? next : (prev ?? null)
+  const doc: SignalMemory = {
+    coin,
+    thesis: keep(patch.thesis, existing?.thesis),
+    conviction: keep(patch.conviction, existing?.conviction),
+    support: keep(patch.support, existing?.support),
+    resistance: keep(patch.resistance, existing?.resistance),
+    last_action: keep(patch.last_action, existing?.last_action),
+    last_reviewed_at: patch.last_action !== undefined ? now : (existing?.last_reviewed_at ?? null),
+    notes,
+    updated_at: now,
+  }
+  await agentSignalMemory.upsert(coin, doc)
+  return doc
+}
+
+// Read the agent's long-term memory for one coin (its own thesis/conviction/levels/notes).
+async function recallSignalMemory(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  const row = await agentSignalMemory.findOne({ _id: coin }, { projection: { _id: 0 } }) as SignalMemory | null
+  if (!row) return { coin, memory: null, note: 'No stored memory for this coin yet — this is your first review of it.' }
+  return {
+    coin,
+    thesis: row.thesis ?? null,
+    conviction: row.conviction ?? null,
+    support: row.support ?? null,
+    resistance: row.resistance ?? null,
+    last_action: row.last_action ?? null,
+    last_reviewed_at: row.last_reviewed_at ?? null,
+    recent_notes: (row.notes ?? []).slice(-8),
+  }
+}
+
+// Write/append to the agent's long-term memory for one coin.
+async function rememberSignal(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  const toNum = (v: unknown): number | undefined => {
+    const n = typeof v === 'number' ? v : parseFloat(String(v ?? ''))
+    return Number.isFinite(n) ? n : undefined
+  }
+  const toStr = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+  const saved = await upsertSignalMemory(coin, {
+    thesis: toStr(args.thesis),
+    conviction: toNum(args.conviction),
+    support: toNum(args.support),
+    resistance: toNum(args.resistance),
+    note: toStr(args.note),
+  })
+  logger.info('Agent Signal memory updated via tool', { coin })
+  return { saved: true, coin, thesis: saved.thesis, conviction: saved.conviction, notes_count: saved.notes.length }
+}
+
+// The agent's own recent BUY/HOLD verdicts for a coin (from agent_signal_runs), for continuity.
+async function getCoinSignalHistory(args: Record<string, unknown>): Promise<unknown> {
+  const coin = normalizeCoin(args.coin)
+  if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
+  const limit = clampLimit(args.limit, 8, 30)
+  const rows = await agentSignalRuns.find(
+    { coin },
+    { sort: { id: -1 }, limit, projection: { _id: 0, action: 1, confidence: 1, conviction: 1, thesis: 1, reasoning: 1, rejected: 1, created_at: 1 } },
+  ) as Record<string, unknown>[]
+  return {
+    coin,
+    count: rows.length,
+    runs: rows.map(r => ({
+      action: r.action,
+      confidence: r.confidence,
+      conviction: r.conviction ?? null,
+      thesis: snippet(r.thesis, 200),
+      reasoning: snippet(r.reasoning, 200),
+      rejected: !!r.rejected,
+      at: r.created_at,
+    })),
+  }
+}
+
 // ── safe-action tools ────────────────────────────────────────────────────────
 
 async function addToWatchlist(args: Record<string, unknown>): Promise<unknown> {
@@ -764,6 +868,49 @@ export const TOOLS: AgentTool[] = [
     handler: getCoinNotes,
   },
   {
+    name: 'recall_signal_memory',
+    description: "Read the Agent Signal engine's long-term memory for a coin: its latest thesis, conviction % (0–100), key support/resistance levels, last verdict, and a log of recent notes-to-self. Call this FIRST so you build on your past reasoning instead of starting from scratch.",
+    parameters: {
+      type: 'object',
+      properties: { coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' } },
+      required: ['coin'],
+    },
+    readOnly: true,
+    handler: recallSignalMemory,
+  },
+  {
+    name: 'remember_signal',
+    description: 'Persist or update your long-term memory for a coin: set the thesis, conviction (0–100), and key support/resistance price levels, and/or append a short note to your future self. Call before committing your verdict so the next review has continuity. Safe, non-trading action.',
+    parameters: {
+      type: 'object',
+      properties: {
+        coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' },
+        thesis: { type: 'string', description: 'One-paragraph thesis / strategy for this coin.' },
+        conviction: { type: 'number', description: 'Conviction in the thesis, 0–100.' },
+        support: { type: 'number', description: 'Key support price level.' },
+        resistance: { type: 'number', description: 'Key resistance price level.' },
+        note: { type: 'string', description: 'Short memo (≤500 chars) appended to the running notes log.' },
+      },
+      required: ['coin'],
+    },
+    readOnly: false,
+    handler: rememberSignal,
+  },
+  {
+    name: 'get_coin_signal_history',
+    description: "List your own recent BUY/HOLD verdicts for a coin (the Agent Signal engine's past runs) with thesis and confidence, so you can see how your read has evolved and avoid flip-flopping against your past self.",
+    parameters: {
+      type: 'object',
+      properties: {
+        coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' },
+        limit: { type: 'number', description: 'How many (default 8, max 30).' },
+      },
+      required: ['coin'],
+    },
+    readOnly: true,
+    handler: getCoinSignalHistory,
+  },
+  {
     name: 'add_to_watchlist',
     description: 'Add a coin to the watchlist so the entry pipeline starts analyzing it. Safe, non-trading action.',
     parameters: {
@@ -829,6 +976,14 @@ export const MONITOR_D_TOOL_NAMES = [
   'get_portfolio', 'list_open_positions', 'get_market', 'get_candle_data',
   'get_position_history', 'get_coin_sentiment', 'get_coin_notes', 'list_position_reviews',
   'list_recent_trades', 'list_recent_signals',
+] as const
+
+// The curated belt the Agent Signal engine exposes per coin: the evidence reads it needs to
+// decide BUY/HOLD plus its own long-term memory (read + write). Deliberately coin-scoped —
+// it must never trigger engines or mutate the watchlist mid-review, so those tools are excluded.
+export const AGENT_SIGNAL_TOOL_NAMES = [
+  'get_market', 'get_candle_data', 'get_coin_sentiment', 'get_position_history',
+  'list_recent_signals', 'recall_signal_memory', 'remember_signal', 'get_coin_signal_history',
 ] as const
 
 export function isReadOnlyTool(name: string): boolean {

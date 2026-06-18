@@ -13,6 +13,7 @@ export const portfolioEntries   = new Repository<Row>('portfolio_entries')
 export const portfolioSnapshots = new Repository<Row>('portfolio_snapshots')
 export const positionReviews    = new Repository<Row>('position_reviews')
 export const monitorDRuns       = new Repository<Row>('monitor_d_runs')
+export const agentSignalRuns    = new Repository<Row>('agent_signal_runs')
 export const positionAdjustments = new Repository<Row>('position_adjustments')
 export const slTpHistory        = new Repository<Row>('sl_tp_history')
 export const portfolioSummaries = new Repository<Row>('portfolio_summaries')
@@ -21,6 +22,7 @@ export const agentMessages      = new Repository<Row>('agent_messages')
 
 // Natural string-key collections (no auto-increment).
 export const monitorNotes       = new Repository<Row>('monitor_notes', false)        // _id = coin
+export const agentSignalMemory  = new Repository<Row>('agent_signal_memory', false)  // _id = coin
 export const entryIntents       = new Repository<Row>('entry_intents', false)        // _id = intent id
 export const entryEvents        = new Repository<Row>('entry_events', false)          // _id = event id
 export const settings           = new Repository<Row>('settings', false)             // _id = key
@@ -49,10 +51,11 @@ export const llmJobs            = new Repository<Row>('llm_jobs', false)        
 export const ALL_REPOS: Record<string, Repository<Row>> = {
   trades, decisions, positions, portfolio_entries: portfolioEntries,
   portfolio_snapshots: portfolioSnapshots, position_reviews: positionReviews,
-  monitor_d_runs: monitorDRuns,
+  monitor_d_runs: monitorDRuns, agent_signal_runs: agentSignalRuns,
   position_adjustments: positionAdjustments, sl_tp_history: slTpHistory,
   portfolio_summaries: portfolioSummaries, agent_conversations: agentConversations,
   agent_messages: agentMessages, monitor_notes: monitorNotes,
+  agent_signal_memory: agentSignalMemory,
   entry_intents: entryIntents, entry_events: entryEvents, settings,
   pipeline_events: pipelineEvents, extraction_cache: extractionCache,
   ohlcv_cache: ohlcvCache, coin_discoveries: coinDiscoveries,

@@ -4,6 +4,7 @@ import { fetchMarketData } from '../trader/index.js'
 import * as priceCache from '../market/index.js'
 import * as entry from '../entry/index.js'
 import { planEntry, resolveEntryBand } from '../entryPlanner/index.js'
+import { EntryBand } from '../entryPlanner/types.js'
 import { getPortfolioState, getUsdcEntry, getMarketContext } from '../portfolio/index.js'
 import { isTradeable } from '../core/tradeable.js'
 import { Signal, MarketContext, BotSettings } from '../types.js'
@@ -27,6 +28,10 @@ export async function deferToEntryDesk(args: {
   marketCtx: MarketContext
   settings: BotSettings
   cycleId: string
+  /** Pre-resolved entry band (e.g. the Agent Signal engine plans its own). When given,
+   *  the Entry Planner LLM is skipped entirely and this band is used as-is — the static
+   *  settings still serve as the safety fallback if it's somehow unusable. */
+  band?: EntryBand
 }): Promise<void> {
   const { buySignal, analyzedPrice, marketCtx, settings, cycleId } = args
   const symbol = buySignal.coin
@@ -34,13 +39,18 @@ export async function deferToEntryDesk(args: {
 
   const entryBasis = priceCache.getPrice(symbol)?.price ?? analyzedPrice
 
-  const plan = settings.entry_planner_enabled
-    ? await planEntry({
-        coin: symbol, price: analyzedPrice, market: marketCtx, signal: buySignal,
-        candleTf: settings.entry_planner_candle_tf, candleCount: settings.entry_planner_candle_count,
-      })
-    : null
-  const band = resolveEntryBand(plan, settings)
+  let band: EntryBand
+  if (args.band) {
+    band = args.band
+  } else {
+    const plan = settings.entry_planner_enabled
+      ? await planEntry({
+          coin: symbol, price: analyzedPrice, market: marketCtx, signal: buySignal,
+          candleTf: settings.entry_planner_candle_tf, candleCount: settings.entry_planner_candle_count,
+        })
+      : null
+    band = resolveEntryBand(plan, settings)
+  }
 
   entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * analyzedPrice, atr: marketCtx.atr14, band })
   logPipelineEvent('entry_intent_created', symbol, cycleId, {

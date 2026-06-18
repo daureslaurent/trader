@@ -8,11 +8,11 @@ import {
 } from '../execution/index.js'
 import {
   executeEntryFire, runSimulatedSignal,
-  runPipeline, runSingleCoinPipeline, requestCancel, logPipelineEvent, PIPELINE_TIMEOUT_MS,
+  requestCancel, logPipelineEvent, PIPELINE_TIMEOUT_MS,
 } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
-import { rescheduleFromSettings, dispatchMonitorRun } from './scheduler.js'
+import { rescheduleFromSettings, dispatchMonitorRun, dispatchPipelineRun, dispatchSingleCoinPipeline } from './scheduler.js'
 
 const errMsg = (err: unknown) => err instanceof Error ? err.message : String(err)
 
@@ -90,7 +90,7 @@ export function registerEventHandlers(): void {
   })
 
   bus.on('pipeline_run_all_requested', () => {
-    runPipeline().catch(err => {
+    dispatchPipelineRun().catch(err => {
       logger.error('Manual full pipeline run failed', { error: errMsg(err) })
     })
   })
@@ -117,7 +117,7 @@ export function registerEventHandlers(): void {
     const timeout = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Pipeline timed out after 1 hour')), PIPELINE_TIMEOUT_MS)
     )
-    Promise.race([runSingleCoinPipeline(symbol, cycle_id), timeout]).catch(err => {
+    Promise.race([dispatchSingleCoinPipeline(symbol, cycle_id), timeout]).catch(err => {
       const isTimeout = err instanceof Error && err.message.startsWith('Pipeline timed out')
       const stage = isTimeout ? 'pipeline_timeout' : 'pipeline_failed'
       logPipelineEvent(stage, symbol, cycle_id, { error: errMsg(err) })

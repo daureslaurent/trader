@@ -99,6 +99,14 @@ export const config = {
     model: opt('MONITOR_D_MODEL', llamaModel),
     maxTokens: num('MONITOR_D_MAX_TOKENS', 4096),
   },
+  agentSignal: {
+    // Agent Signal — the agentic, single-coin entry engine. A native tool-calling loop
+    // (one agent per watchlist coin), so it needs a tool-calling-capable model. Separate
+    // from the chat agent / Type D so each can use its own model. Falls back to llama.
+    baseURL: opt('AGENT_SIGNAL_BASE_URL', llamaBaseURL),
+    model: opt('AGENT_SIGNAL_MODEL', llamaModel),
+    maxTokens: num('AGENT_SIGNAL_MAX_TOKENS', 4096),
+  },
   telegram: {
     botToken: opt('TELEGRAM_BOT_TOKEN', ''),
     chatId: opt('TELEGRAM_CHAT_ID', ''),

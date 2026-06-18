@@ -7,6 +7,7 @@ import { router as marketRoutes } from './market.routes.js'
 import { router as cacheRoutes } from './cache.routes.js'
 import { router as discoverRoutes } from './discover.routes.js'
 import { router as monitorRoutes } from './monitor.routes.js'
+import { router as agentSignalRoutes } from './agent-signal.routes.js'
 import { router as summaryRoutes } from './summary.routes.js'
 import { router as llmRoutes } from './llm.routes.js'
 import { router as agentRoutes } from './agent.routes.js'
@@ -29,6 +30,7 @@ router.use(marketRoutes)
 router.use(cacheRoutes)
 router.use(discoverRoutes)
 router.use(monitorRoutes)
+router.use(agentSignalRoutes)
 router.use(summaryRoutes)
 router.use(llmRoutes)
 router.use(agentRoutes)

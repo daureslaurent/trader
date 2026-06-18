@@ -45,6 +45,7 @@ router.get('/llm/defaults', (_req: Request, res: Response) => {
     entryPlanner: { baseURL: config.entryPlanner.baseURL, model: config.entryPlanner.model, maxTokens: config.entryPlanner.maxTokens },
     agent: { baseURL: config.agent.baseURL, model: config.agent.model, maxTokens: config.agent.maxTokens },
     monitorD: { baseURL: config.monitorD.baseURL, model: config.monitorD.model, maxTokens: config.monitorD.maxTokens },
+    agentSignal: { baseURL: config.agentSignal.baseURL, model: config.agentSignal.model, maxTokens: config.agentSignal.maxTokens },
   })
 })
 

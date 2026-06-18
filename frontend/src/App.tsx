@@ -12,6 +12,7 @@ import TradingState from './pages/TradingState'
 import Portfolio from './pages/Portfolio'
 import Monitor from './pages/Monitor'
 import AgentMonitor from './pages/AgentMonitor'
+import AgentSignal from './pages/AgentSignal'
 import Summary from './pages/Summary'
 import Trade from './pages/Trade'
 import EntryDesk from './pages/EntryDesk'
@@ -37,6 +38,7 @@ const PAGE_TITLES: Record<Page, string> = {
   trade: 'Trade',
   entry: 'Entry Desk',
   pipeline: 'Pipeline',
+  'agent-signal': 'Agent Signal',
   cache: 'Article Cache',
   settings: 'Settings',
   discover: 'Discover Coins',
@@ -215,6 +217,7 @@ function AppInner() {
           {page === 'portfolio' && <Portfolio />}
           {page === 'monitor' && <Monitor />}
           {page === 'agent-monitor' && <AgentMonitor />}
+          {page === 'agent-signal' && <AgentSignal />}
           {page === 'summary' && <Summary />}
           {page === 'trade' && <Trade />}
           {page === 'entry' && <EntryDesk />}
