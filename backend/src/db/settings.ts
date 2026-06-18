@@ -1,5 +1,5 @@
 import { settings as settingsRepo, Row } from './repositories.js'
-import { BotSettings, LLMEndpoint } from '../types.js'
+import { BotSettings, LLMEndpoint, AgentToolPermissions, AgentToolPermission } from '../types.js'
 
 // In-memory settings cache. getSettings() is called synchronously in dozens of
 // hot paths (config resolution, every engine tick, every route), so we keep the
@@ -36,6 +36,30 @@ function parseEndpoints(raw: string | undefined): LLMEndpoint[] {
       .filter(e => e.id)
   } catch {
     return []
+  }
+}
+
+// Parse the per-agent tool-grant overrides, defensively dropping anything that isn't a
+// known permission level so a corrupt row can't crash settings reads. The registry fills
+// in defaults for any agent/tool not present here, so an empty/partial map is fine.
+const PERMS: ReadonlySet<string> = new Set<AgentToolPermission>(['off', 'read', 'readwrite'])
+function parseToolPermissions(raw: string | undefined): AgentToolPermissions {
+  if (!raw) return {}
+  try {
+    const obj = JSON.parse(raw)
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {}
+    const out: AgentToolPermissions = {}
+    for (const [agentId, grants] of Object.entries(obj as Record<string, unknown>)) {
+      if (!grants || typeof grants !== 'object' || Array.isArray(grants)) continue
+      const cleaned: Record<string, AgentToolPermission> = {}
+      for (const [tool, perm] of Object.entries(grants as Record<string, unknown>)) {
+        if (typeof perm === 'string' && PERMS.has(perm)) cleaned[tool] = perm as AgentToolPermission
+      }
+      out[agentId] = cleaned
+    }
+    return out
+  } catch {
+    return {}
   }
 }
 
@@ -145,6 +169,7 @@ export function getSettings(): BotSettings {
     llm_monitor_d_fb_endpoint: map.llm_monitor_d_fb_endpoint || '',
     llm_monitor_d_fb_max_tokens: parseInt(map.llm_monitor_d_fb_max_tokens || '0', 10),
     agent_title_context_messages: parseInt(map.agent_title_context_messages || '6', 10),
+    agent_tool_permissions: parseToolPermissions(map.agent_tool_permissions),
     summary_auto_run: map.summary_auto_run === 'true',
     summary_cron: map.summary_cron || '0 */6 * * *',
     summary_retain_days: parseInt(map.summary_retain_days || '30', 10),

@@ -17,7 +17,11 @@ import { logger } from '../core/logger.js'
 import { getSettings } from '../db/index.js'
 import type { AgentMessage } from '../types.js'
 import * as store from './store.js'
-import { getToolSchemas, runTool, isReadOnlyTool } from './tools.js'
+import { isReadOnlyTool } from './tools.js'
+import { getAgentToolSchemas, runAgentTool } from './registry.js'
+
+// This module IS the "chat" agent in the registry — its tool grants live under that id.
+const AGENT_ID = 'chat'
 import { SYSTEM_PROMPT, TITLE_SYSTEM_PROMPT } from './prompts.js'
 
 // Safety valve: how many model↔tool round-trips a single user turn may take before
@@ -194,7 +198,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
     }
 
     const active = resolveLLM('agent')
-    const tools = getToolSchemas()
+    const tools = getAgentToolSchemas(AGENT_ID)
     const history = await store.getMessages(conversationId)
     userTurns = history.filter(m => m.role === 'user').length
     const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -251,7 +255,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
           try { args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {} } catch { /* bad JSON → empty args */ }
 
           step(conversationId, { type: 'tool_call', tool: name, args, read_only: isReadOnlyTool(name), tool_call_id: tc.id })
-          const result = await runTool(name, args)
+          const result = await runAgentTool(AGENT_ID, name, args)
           const resultStr = JSON.stringify(result)
           const toolMsg = await store.addMessage(conversationId, {
             role: 'tool', content: resultStr, tool_call_id: tc.id, name,

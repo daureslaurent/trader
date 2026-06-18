@@ -441,6 +441,34 @@ export interface LLMDefault {
 /** Env-var fallback per overridable module, from GET /api/llm/defaults. */
 export type LLMDefaults = Record<LLMModuleKey, LLMDefault>
 
+/** Per-(agent, tool) access level — see Settings → Agent → Agentic Tools.
+ *  'off' = hidden from the agent; 'read' = exposed (write tools run with their side
+ *  effect suppressed); 'readwrite' = full (only meaningful for write/action tools). */
+export type AgentToolPermission = 'off' | 'read' | 'readwrite'
+
+/** Saved per-agent grant overrides, keyed by agent id then tool name (sparse). */
+export type AgentToolPermissions = Record<string, Record<string, AgentToolPermission>>
+
+/** One tool in the shared belt, from GET /api/agent/tools-config. */
+export interface AgenticToolInfo {
+  name: string
+  description: string
+  capability: 'read' | 'write'
+}
+
+/** One tool-calling agent + its currently resolved grants, from GET /api/agent/tools-config. */
+export interface AgenticAgentInfo {
+  id: string
+  label: string
+  description: string
+  grants: Record<string, AgentToolPermission>
+}
+
+export interface AgenticToolsConfig {
+  tools: AgenticToolInfo[]
+  agents: AgenticAgentInfo[]
+}
+
 export interface SlTpEvent {
   position_id: number
   coin: string

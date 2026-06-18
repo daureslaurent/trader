@@ -5,5 +5,7 @@ export {
   renameConversation, deleteConversation, getMessages,
 } from './store.js'
 export { TOOLS } from './tools.js'
+export { getAgenticToolsConfig, AGENTS } from './registry.js'
+export type { AgenticToolInfo, AgenticAgentInfo, ToolPermission } from './registry.js'
 export { runMonitorD, isRunningD, getMonitorDRuns, getActiveReviews } from './monitorD.js'
 export type { ChatTurnResult } from './service.js'

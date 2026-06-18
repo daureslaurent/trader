@@ -30,7 +30,12 @@ import {
 import type { MonitorEntry, RawReview } from '../monitor/index.js'
 import type { PositionContext } from '../monitor/prompts.js'
 import type { MonitorDRun, MonitorDRunFrame, PositionReview } from '../types.js'
-import { getToolSchemas, runTool, isReadOnlyTool, MONITOR_D_TOOL_NAMES } from './tools.js'
+import { isReadOnlyTool } from './tools.js'
+import { getAgentToolSchemas, runAgentTool } from './registry.js'
+
+// This module IS the "monitorD" agent in the registry — its tool grants live under that id
+// (read-only by default; configurable in Settings → Agent → Agentic Tools).
+const AGENT_ID = 'monitorD'
 
 // Safety valve mirroring the chat agent: how many model↔tool round-trips one position's
 // review may take before we stop and commit to HOLD.
@@ -168,7 +173,7 @@ function buildUserBriefing(ctx: PositionContext): string {
 // step. Falls back to a safe HOLD on any failure (no JSON, exhausted rounds, tool error).
 async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: string, rec: Recorder): Promise<RawReview> {
   const active = resolveLLM('monitorD') // dedicated, tool-calling-capable module (Settings → LLM Models)
-  const tools = getToolSchemas(MONITOR_D_TOOL_NAMES)
+  const tools = getAgentToolSchemas(AGENT_ID)
 
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -215,7 +220,7 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
         const meta = TOOL_FEED[name] ?? { icon: '🔧', verb: name }
         rec.push('tool_call', meta.icon, `${meta.verb}…`, 'muted', { tool: name, read_only: isReadOnlyTool(name) })
 
-        const result = await runTool(name, args)
+        const result = await runAgentTool(AGENT_ID, name, args)
         const res = result as Record<string, unknown> | undefined
         // Compact, consistent result line (full blobs are never persisted).
         if (name === 'get_candle_data' && res && typeof res.count === 'number') {

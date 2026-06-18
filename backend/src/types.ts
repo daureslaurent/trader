@@ -69,6 +69,18 @@ export interface LLMEndpoint {
   disabled: boolean
 }
 
+/** Per-(agent, tool) access level granted in Settings → Agent → Agentic Tools.
+ *  'off' = the tool is not exposed to the agent at all; 'read' = the tool is
+ *  exposed and read-only tools run normally, while write/action tools are exposed
+ *  but their side effect is suppressed; 'readwrite' = full access (only meaningful
+ *  for write/action tools — read-only tools treat it the same as 'read'). */
+export type AgentToolPermission = 'off' | 'read' | 'readwrite'
+
+/** Saved overrides keyed by agent id, then tool name. A missing agent or tool entry
+ *  falls back to that agent's default grant in the backend registry, so this map only
+ *  needs to hold the cells the user has actually changed. */
+export type AgentToolPermissions = Record<string, Record<string, AgentToolPermission>>
+
 export interface BotSettings {
   watchlist: string[]
   pipeline_cron: string
@@ -243,6 +255,10 @@ export interface BotSettings {
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
    *  of the most recent (non-tool) messages — bounds the tokens spent per title. */
   agent_title_context_messages: number
+  /** Per-agent tool grants for the tool-calling agents (Chat Agent, Type D monitor, …).
+   *  Sparse: only holds cells the user changed away from each agent's registry default.
+   *  Resolved/enforced by the backend agent registry. */
+  agent_tool_permissions: AgentToolPermissions
   /** When true, the portfolio-summary engine runs on its own cron. */
   summary_auto_run: boolean
   /** Cron expression for the portfolio-summary engine. */

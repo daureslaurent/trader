@@ -4,7 +4,7 @@ import { Button } from '../components/ui/Button'
 import { Input, Select } from '../components/ui/Input'
 import { useTheme, THEMES } from '../contexts/ThemeContext'
 import { cn } from '../lib/utils'
-import { MonitorModelsResponse, LLMDefaults, LLMModuleKey, LLMEndpoint } from '../types'
+import { MonitorModelsResponse, LLMDefaults, LLMModuleKey, LLMEndpoint, AgentToolPermissions, AgentToolPermission, AgenticToolsConfig, AgenticAgentInfo, AgenticToolInfo } from '../types'
 
 interface SettingsData {
   watchlist: string[]
@@ -104,6 +104,7 @@ interface SettingsData {
   llm_monitor_d_fb_endpoint: string
   llm_monitor_d_fb_max_tokens: number
   agent_title_context_messages: number
+  agent_tool_permissions: AgentToolPermissions
   summary_auto_run: boolean
   summary_cron: string
   summary_retain_days: number
@@ -861,6 +862,173 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
 
 /* ------------------------------------- Page ------------------------------------- */
 
+/* ------------------------- Agentic Tools (per-agent grants) ------------------------- */
+
+// Segmented control for one tool's grant. Read-only tools show Off / On (On = 'read');
+// write/action tools show Off / Read / R-W. Keyboard-accessible radio group.
+function PermissionControl({ capability, value, onChange }: {
+  capability: 'read' | 'write'
+  value: AgentToolPermission
+  onChange: (v: AgentToolPermission) => void
+}) {
+  const opts: { v: AgentToolPermission; label: string; title: string; active: string }[] =
+    capability === 'read'
+      ? [
+          { v: 'off',  label: 'Off', title: 'Hidden from this agent',          active: 'bg-surface-hover text-foreground shadow-sm' },
+          { v: 'read', label: 'On',  title: 'Agent can use this read tool',    active: 'bg-accent/15 text-accent shadow-sm' },
+        ]
+      : [
+          { v: 'off',       label: 'Off',  title: 'Hidden from this agent',                                  active: 'bg-surface-hover text-foreground shadow-sm' },
+          { v: 'read',      label: 'Read', title: 'Exposed, but the action is blocked (no side effect)',     active: 'bg-accent/15 text-accent shadow-sm' },
+          { v: 'readwrite', label: 'R-W',  title: 'Full access — the agent may perform this action',        active: 'bg-buy/15 text-buy shadow-sm' },
+        ]
+  // A read-only tool can never carry a write grant — show it as 'read'.
+  const current: AgentToolPermission = capability === 'read' && value === 'readwrite' ? 'read' : value
+  return (
+    <div role="radiogroup" className="inline-flex shrink-0 items-center rounded-lg border border-border bg-surface-base p-0.5">
+      {opts.map(o => {
+        const on = current === o.v
+        return (
+          <button
+            key={o.v}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            title={o.title}
+            onClick={() => onChange(o.v)}
+            className={cn(
+              'px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors duration-150',
+              on ? o.active : 'text-muted hover:text-foreground',
+            )}
+          >
+            {o.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function PresetButton({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="px-2.5 py-1 text-[11px] rounded-full border border-border bg-surface-base text-muted hover:text-foreground hover:border-foreground/20 transition-colors duration-150"
+    >
+      {children}
+    </button>
+  )
+}
+
+// One collapsible agent card: header (label + live grant summary) and, when expanded, the
+// shared tool catalog split into Reads / Actions, each row with its PermissionControl.
+function AgentToolCard({ agent, tools, grants, onGrant, onPreset, defaultOpen }: {
+  agent: AgenticAgentInfo
+  tools: AgenticToolInfo[]
+  grants: Record<string, AgentToolPermission>
+  onGrant: (tool: string, v: AgentToolPermission) => void
+  onPreset: (preset: 'off' | 'read' | 'max') => void
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(!!defaultOpen)
+  const grantOf = (name: string): AgentToolPermission => grants?.[name] ?? 'off'
+
+  const reads = tools.filter(t => t.capability === 'read')
+  const writes = tools.filter(t => t.capability === 'write')
+  const enabled = tools.filter(t => grantOf(t.name) !== 'off').length
+  const actionsLive = writes.filter(t => grantOf(t.name) === 'readwrite').length
+
+  const Group = ({ title, items }: { title: string; items: AgenticToolInfo[] }) =>
+    items.length ? (
+      <div className="space-y-0.5">
+        <p className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">{title}</p>
+        {items.map(t => (
+          <div key={t.name} className="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 hover:bg-surface-elevated/60 transition-colors">
+            <div className="min-w-0">
+              <p className="font-mono text-xs text-foreground truncate">{t.name}</p>
+              <p className="text-[11px] text-muted leading-snug line-clamp-2">{t.description}</p>
+            </div>
+            <PermissionControl capability={t.capability} value={grantOf(t.name)} onChange={v => onGrant(t.name, v)} />
+          </div>
+        ))}
+      </div>
+    ) : null
+
+  return (
+    <div className="rounded-xl border border-border overflow-hidden bg-surface-card">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-elevated/50 transition-colors"
+      >
+        <svg className={cn('h-4 w-4 shrink-0 text-muted transition-transform duration-150', open && 'rotate-90')} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-foreground">{agent.label}</p>
+          <p className="text-[11px] text-muted leading-snug mt-0.5 line-clamp-2">{agent.description}</p>
+        </div>
+        <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
+          <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">{enabled}/{tools.length} enabled</span>
+          {actionsLive > 0 && (
+            <span className="rounded-full bg-buy/10 px-2 py-0.5 text-[10px] font-medium text-buy">{actionsLive} action{actionsLive === 1 ? '' : 's'}</span>
+          )}
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-border px-2.5 py-2.5 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 px-1.5 pb-1">
+            <span className="mr-1 text-[11px] text-muted">Quick set:</span>
+            <PresetButton onClick={() => onPreset('max')}>Enable all</PresetButton>
+            <PresetButton onClick={() => onPreset('read')}>Read-only</PresetButton>
+            <PresetButton onClick={() => onPreset('off')}>Disable all</PresetButton>
+          </div>
+          <Group title="Reads" items={reads} />
+          <Group title="Actions" items={writes} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The Agentic Tools subsection body: a short legend + one collapsible card per agent.
+function AgenticToolsManager({ config, permissions, onGrant, onPreset }: {
+  config: AgenticToolsConfig
+  permissions: AgentToolPermissions
+  onGrant: (agentId: string, tool: string, v: AgentToolPermission) => void
+  onPreset: (agentId: string, preset: 'off' | 'read' | 'max') => void
+}) {
+  return (
+    <div className="py-4 space-y-3">
+      <div>
+        <p className="text-sm font-medium text-foreground">Agentic tools</p>
+        <p className="mt-1 text-xs text-muted leading-relaxed">
+          Every tool-calling agent draws from one shared tool belt. Grant access per tool —
+          <span className="text-foreground"> Off</span> hides it from the agent,
+          <span className="text-accent"> Read</span> exposes it (action tools run with their side effect suppressed), and
+          <span className="text-buy"> R-W</span> lets the agent perform the action. Changes save with the rest of Settings.
+        </p>
+      </div>
+      <div className="space-y-2.5">
+        {config.agents.map((a, i) => (
+          <AgentToolCard
+            key={a.id}
+            agent={a}
+            tools={config.tools}
+            grants={permissions[a.id] ?? a.grants}
+            onGrant={(tool, v) => onGrant(a.id, tool, v)}
+            onPreset={preset => onPreset(a.id, preset)}
+            defaultOpen={i === 0}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function Settings() {
   const [settings, setSettings] = useState<SettingsData | null>(null)
   const [baseline, setBaseline] = useState<SettingsData | null>(null)
@@ -870,8 +1038,12 @@ export default function Settings() {
   const [monitorModels, setMonitorModels] = useState<MonitorModelsResponse | null>(null)
   const [llmDefaults, setLlmDefaults] = useState<LLMDefaults | null>(null)
   const [endpointModalOpen, setEndpointModalOpen] = useState(false)
+  const [toolsConfig, setToolsConfig] = useState<AgenticToolsConfig | null>(null)
   const { theme, setTheme } = useTheme()
   const savedTimer = useRef<ReturnType<typeof setTimeout>>()
+  // Guards the one-time seed of agent_tool_permissions from the resolved tools-config, so
+  // it can't clobber the user's in-progress edits once both fetches have landed.
+  const permsSeeded = useRef(false)
 
   useEffect(() => {
     fetch('/api/settings')
@@ -896,6 +1068,25 @@ export default function Settings() {
       .then((data: LLMDefaults) => setLlmDefaults(data))
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    fetch('/api/agent/tools-config')
+      .then(r => r.json())
+      .then((data: AgenticToolsConfig) => setToolsConfig(data))
+      .catch(() => {})
+  }, [])
+
+  // Seed the editable permission map from the backend-resolved grants (defaults merged with
+  // any saved overrides) once both the settings and the tools-config have loaded. Writing it
+  // into settings AND baseline keeps the form pristine until the user actually changes a cell.
+  useEffect(() => {
+    if (permsSeeded.current || !settings || !toolsConfig) return
+    permsSeeded.current = true
+    const seeded: AgentToolPermissions = {}
+    for (const a of toolsConfig.agents) seeded[a.id] = { ...a.grants }
+    setSettings(s => (s ? { ...s, agent_tool_permissions: seeded } : s))
+    setBaseline(b => (b ? { ...b, agent_tool_permissions: seeded } : b))
+  }, [settings, toolsConfig])
 
   // Scroll-spy for the section nav
   useEffect(() => {
@@ -922,6 +1113,33 @@ export default function Settings() {
 
   function set<K extends keyof SettingsData>(key: K, value: SettingsData[K]) {
     setSettings(s => s ? { ...s, [key]: value } : s)
+    setSaved(false)
+  }
+
+  // Update one agent's grant for one tool (part of the form — saved on the next Save).
+  function setGrant(agentId: string, tool: string, perm: AgentToolPermission) {
+    setSettings(s => {
+      if (!s) return s
+      const all = s.agent_tool_permissions ?? {}
+      return { ...s, agent_tool_permissions: { ...all, [agentId]: { ...all[agentId], [tool]: perm } } }
+    })
+    setSaved(false)
+  }
+
+  // Bulk-apply a preset to every tool of one agent (respecting each tool's capability):
+  // 'off' disables all; 'read' grants read-only access; 'max' gives writes R-W, reads read.
+  function setAgentPreset(agentId: string, preset: 'off' | 'read' | 'max') {
+    if (!toolsConfig) return
+    setSettings(s => {
+      if (!s) return s
+      const next: Record<string, AgentToolPermission> = {}
+      for (const t of toolsConfig.tools) {
+        next[t.name] = preset === 'off' ? 'off'
+          : preset === 'read' ? 'read'
+          : t.capability === 'write' ? 'readwrite' : 'read'
+      }
+      return { ...s, agent_tool_permissions: { ...(s.agent_tool_permissions ?? {}), [agentId]: next } }
+    })
     setSaved(false)
   }
 
@@ -1616,6 +1834,14 @@ export default function Settings() {
               onChange={e => set('agent_title_context_messages', parseInt(e.target.value) || 6)}
             />
           </Row>
+          {toolsConfig && (
+            <AgenticToolsManager
+              config={toolsConfig}
+              permissions={settings.agent_tool_permissions ?? {}}
+              onGrant={setGrant}
+              onPreset={setAgentPreset}
+            />
+          )}
         </Section>
 
         {/* Appearance */}

@@ -3,6 +3,7 @@ import {
   listConversations, getConversation, createConversation,
   renameConversation, deleteConversation, getMessages,
   runChatTurn, isGenerating, getActiveAgentModel, TOOLS,
+  getAgenticToolsConfig,
 } from '../../agent/index.js'
 
 export const router = Router()
@@ -18,6 +19,15 @@ router.get('/agent/meta', (_req: Request, res: Response) => {
       model: { model: m.model, baseURL: m.baseURL },
       tools: TOOLS.map(t => ({ name: t.name, description: t.description, readOnly: t.readOnly })),
     })
+  } catch (err) { errOut(res, err) }
+})
+
+// The shared tool catalog + each tool-calling agent's resolved per-tool grants, for the
+// Settings → Agent → Agentic Tools editor. Saving goes through PUT /settings
+// (agent_tool_permissions); this endpoint is the read side that drives the UI.
+router.get('/agent/tools-config', (_req: Request, res: Response) => {
+  try {
+    res.json(getAgenticToolsConfig())
   } catch (err) { errOut(res, err) }
 })
 
