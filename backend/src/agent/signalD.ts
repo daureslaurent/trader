@@ -25,7 +25,7 @@ import { scheduleChat } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
-import { getSettings, nowSql, agentSignalRuns } from '../db/index.js'
+import { getSettings, nowSql, agentSignalRuns, decisions } from '../db/index.js'
 import { fetchMarketData } from '../trader/index.js'
 import { getPortfolioState, getMarketContext, getOpenEntries, classifyRegime } from '../portfolio/index.js'
 import { prepareBuyOrder, deferToEntryDesk, logPipelineEvent } from '../pipeline/index.js'
@@ -391,6 +391,18 @@ async function reviewCoin(coin: string, cycleId: string, rec: Recorder): Promise
     resistance: verdict.resistance,
     last_action: verdict.action,
     note: verdict.notes ?? undefined,
+  })
+
+  // Record a `decisions` row exactly like the classic analyst does, so the verdict shows as
+  // a BUY/HOLD marker on the Trade candle chart (it reads /api/decisions/:coin). Markers are
+  // placed by candle timestamp; the price/conviction ride on `context` for the tooltip.
+  await decisions.insert({
+    coin, action: verdict.action, reason: verdict.thesis || 'Agent Signal', confidence: verdict.confidence,
+    context: JSON.stringify({ price: md.price, conviction: verdict.conviction, source: 'agent_signal' }),
+    triggered_trade_id: null, created_at: nowSql(),
+  })
+  logPipelineEvent('signal_generated', coin, cycleId, {
+    symbol: coin, action: verdict.action, reason: verdict.thesis, confidence: verdict.confidence,
   })
 
   let rejected = false
