@@ -195,195 +195,6 @@ function NoteBlock({ note }: { note: MonitorNote }) {
   )
 }
 
-// ── Review card ────────────────────────────────────────────────────────────
-
-function ReviewCard({ review, holdings, closingCoin, onClose, note }: {
-  review: PositionReview
-  holdings: PortfolioEntry[]
-  closingCoin: string | null
-  onClose: (coin: string) => void
-  note?: MonitorNote | null
-}) {
-  const mdata = (() => { try { return JSON.parse(review.market_data) } catch { return {} } })()
-  const coin = review.coin.replace('/USDC', '')
-  const hasHolding = holdings.some(h => h.coin === review.coin)
-  const isClosing = closingCoin === review.coin
-  const s = ACTION_STYLES[review.action] ?? ACTION_STYLES.HOLD
-
-  return (
-    <div className={cn('rounded-xl border border-border border-l-4 bg-surface-elevated/30 overflow-hidden', s.leftBorder)}>
-      <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-2">
-        <div className="flex items-center gap-2.5 flex-wrap min-w-0">
-          <span className="font-semibold text-foreground">{coin}</span>
-          <ActionBadge action={review.action} />
-          {mdata.trend && (
-            <span className={cn(
-              'text-xs px-1.5 py-0.5 rounded border font-medium',
-              mdata.trend === 'uptrend' ? 'bg-buy/10 text-buy border-buy/20'
-              : mdata.trend === 'downtrend' ? 'bg-sell/10 text-sell border-sell/20'
-              : 'bg-surface-hover text-muted border-border',
-            )}>
-              {mdata.trend}
-            </span>
-          )}
-          {mdata.horizon && (
-            <span className="text-xs px-1.5 py-0.5 rounded border font-medium bg-surface-hover text-muted border-border">
-              {mdata.horizon}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {(review.action === 'CLOSE' || review.action === 'REDUCE') && hasHolding && (
-            <Button variant="danger" size="sm" loading={isClosing} disabled={isClosing} onClick={() => onClose(review.coin)}>
-              {review.action === 'REDUCE'
-                ? `Sell ${review.reduce_to_pct != null ? (100 - review.reduce_to_pct) + '%' : 'partial'}`
-                : 'Close'}
-            </Button>
-          )}
-          <span className="text-xs text-muted whitespace-nowrap">{review.created_at.slice(11, 16)}</span>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-5 px-4 pb-2 text-xs text-muted flex-wrap">
-        {mdata.pnlPct != null && (
-          <span className={cn('font-medium', mdata.pnlPct >= 0 ? 'text-buy' : 'text-sell')}>
-            P&L {mdata.pnlPct >= 0 ? '+' : ''}{mdata.pnlPct.toFixed(2)}%
-          </span>
-        )}
-        {mdata.rsi14 != null && <span>RSI {mdata.rsi14.toFixed(0)}</span>}
-        {mdata.change24h != null && (
-          <span className={cn(mdata.change24h >= 0 ? 'text-buy' : 'text-sell')}>
-            24h {mdata.change24h >= 0 ? '+' : ''}{mdata.change24h.toFixed(2)}%
-          </span>
-        )}
-        {review.action === 'REDUCE' && review.reduce_to_pct != null && (
-          <span className="text-warn">Keep {review.reduce_to_pct}%</span>
-        )}
-      </div>
-
-      {review.action === 'ADJUST' && (review.new_stop_loss != null || review.new_take_profit != null) && (
-        <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-xs">
-          {review.new_stop_loss != null && (() => {
-            const deltaPct = review.old_stop_loss && review.old_stop_loss !== 0
-              ? ((review.new_stop_loss - review.old_stop_loss) / Math.abs(review.old_stop_loss)) * 100
-              : null
-            return (
-              <span className="px-2 py-0.5 rounded-md bg-sell/10 text-sell border border-sell/20 tabular-nums">
-                SL → {fmtUSD(review.new_stop_loss)}
-                {deltaPct != null && <span className="ml-1 opacity-70">({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)</span>}
-              </span>
-            )
-          })()}
-          {review.new_take_profit != null && (() => {
-            const deltaPct = review.old_take_profit && review.old_take_profit !== 0
-              ? ((review.new_take_profit - review.old_take_profit) / Math.abs(review.old_take_profit)) * 100
-              : null
-            return (
-              <span className="px-2 py-0.5 rounded-md bg-buy/10 text-buy border border-buy/20 tabular-nums">
-                TP → {fmtUSD(review.new_take_profit)}
-                {deltaPct != null && <span className="ml-1 opacity-70">({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)</span>}
-              </span>
-            )
-          })()}
-        </div>
-      )}
-
-      <div className="px-4 pb-3.5 space-y-2">
-        <ConfidenceBar value={review.confidence} />
-        <p className="text-sm text-muted leading-relaxed">{review.reasoning}</p>
-        {note && <NoteBlock note={note} />}
-      </div>
-    </div>
-  )
-}
-
-// ── Review carousel ─────────────────────────────────────────────────────────
-// Hero presentation: one review at a time, flanked by prev/next controls with
-// dot indicators below. Keeps the monitor scannable when many coins are held.
-
-const NavArrowIcon = ({ dir }: { dir: 'left' | 'right' }) => (
-  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2.25} viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d={dir === 'left' ? 'M15.75 19.5L8.25 12l7.5-7.5' : 'M8.25 4.5l7.5 7.5-7.5 7.5'} />
-  </svg>
-)
-
-function ReviewCarousel({ reviews, holdings, closingCoin, onClose, notesByCoin }: {
-  reviews: PositionReview[]
-  holdings: PortfolioEntry[]
-  closingCoin: string | null
-  onClose: (coin: string) => void
-  notesByCoin: Map<string, MonitorNote>
-}) {
-  const [idx, setIdx] = useState(0)
-  const count = reviews.length
-
-  // Clamp the index whenever the review set changes (e.g. a new monitor run).
-  useEffect(() => { setIdx(i => Math.min(i, Math.max(0, count - 1))) }, [count])
-
-  if (count === 0) return null
-
-  const safeIdx = Math.min(idx, count - 1)
-  const review = reviews[safeIdx]
-  const go = (delta: number) => setIdx(i => (i + delta + count) % count)
-
-  const NavButton = ({ dir }: { dir: 'left' | 'right' }) => (
-    <button
-      type="button"
-      aria-label={dir === 'left' ? 'Previous position' : 'Next position'}
-      onClick={() => go(dir === 'left' ? -1 : 1)}
-      disabled={count <= 1}
-      className={cn(
-        'shrink-0 grid place-items-center w-10 h-10 rounded-full border border-border bg-surface-card text-muted',
-        'transition-colors hover:text-foreground hover:border-accent/40 hover:bg-surface-hover',
-        'disabled:opacity-30 disabled:pointer-events-none',
-      )}
-    >
-      <NavArrowIcon dir={dir} />
-    </button>
-  )
-
-  return (
-    <div className="px-4 pb-5">
-      <div className="flex items-stretch gap-3">
-        <div className="flex items-center"><NavButton dir="left" /></div>
-
-        <div className="flex-1 min-w-0">
-          <ReviewCard
-            key={review.id}
-            review={review}
-            holdings={holdings}
-            closingCoin={closingCoin}
-            onClose={onClose}
-            note={notesByCoin.get(review.coin) ?? null}
-          />
-        </div>
-
-        <div className="flex items-center"><NavButton dir="right" /></div>
-      </div>
-
-      {count > 1 && (
-        <div className="mt-4 flex items-center justify-center gap-3">
-          <div className="flex items-center gap-1.5">
-            {reviews.map((r, i) => (
-              <button
-                key={r.id}
-                type="button"
-                aria-label={`Go to position ${i + 1}`}
-                onClick={() => setIdx(i)}
-                className={cn(
-                  'h-2 rounded-full transition-all',
-                  i === safeIdx ? 'w-6 bg-accent' : 'w-2 bg-border hover:bg-muted',
-                )}
-              />
-            ))}
-          </div>
-          <span className="text-xs text-muted tabular-nums">{safeIdx + 1} / {count}</span>
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ── Position Detail Modal ──────────────────────────────────────────────────
 
 function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClosed, onClose, onClosePosition, onMarkAlreadyClosed, onHorizonChange }: {
@@ -643,58 +454,6 @@ function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClos
   )
 }
 
-// ── Monitor history modal ──────────────────────────────────────────────────
-
-function HistoryModal({ runs, onClose }: {
-  runs: { cycleId: string; reviews: PositionReview[] }[]
-  onClose: () => void
-}) {
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-surface-card border border-border rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl animate-fade-in" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">Monitor History</h2>
-            <p className="text-xs text-muted mt-0.5">{runs.length} previous run{runs.length !== 1 ? 's' : ''}</p>
-          </div>
-          <button onClick={onClose} className="text-muted hover:text-foreground transition-colors p-1 rounded-lg hover:bg-surface-elevated">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="overflow-y-auto flex-1 p-4 space-y-6">
-          {runs.map(({ cycleId, reviews }) => {
-            const ts = reviews[0]?.created_at ?? ''
-            const dateLabel = ts
-              ? new Date(ts.includes('T') ? ts : ts + 'Z').toLocaleString()
-              : cycleId
-            return (
-              <div key={cycleId}>
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-xs font-semibold text-muted uppercase tracking-wide">{dateLabel}</span>
-                  <span className="text-xs text-muted">· {reviews.length} position{reviews.length !== 1 ? 's' : ''}</span>
-                </div>
-                <div className="space-y-2">
-                  {reviews.map(r => (
-                    <ReviewCard key={r.id} review={r} holdings={[]} closingCoin={null} onClose={() => {}} />
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Component ──────────────────────────────────────────────────────────────
 
 export default function Portfolio() {
@@ -707,13 +466,11 @@ export default function Portfolio() {
   const [txPending, setTxPending] = useState<'deposit' | 'withdraw' | null>(null)
   const [transferOpen, setTransferOpen] = useState(false)
 
-  const [monitorRunning, setMonitorRunning] = useState(false)
   const [reviews, setReviews] = useState<PositionReview[]>([])
   const [monitorNotes, setMonitorNotes] = useState<MonitorNote[]>([])
   const [closingCoin, setClosingCoin] = useState<string | null>(null)
   const [markingClosed, setMarkingClosed] = useState<string | null>(null)
   const [monitorError, setMonitorError] = useState<string | null>(null)
-  const [historyOpen, setHistoryOpen] = useState(false)
   const [selectedPos, setSelectedPos] = useState<ActivePosition | null>(null)
 
   const livePrices = usePrices()
@@ -733,22 +490,14 @@ export default function Portfolio() {
 
   function loadMonitor() {
     fetch('/api/monitor').then(r => r.json()).then((data: MonitorResponse) => {
-      setMonitorRunning(data.running)
       setReviews(data.reviews ?? [])
       setMonitorNotes(data.notes ?? [])
     }).catch(() => {})
   }
 
   useWebSocket(useCallback((event: string, data: unknown) => {
-    if (event === 'monitor_started') setMonitorRunning(true)
-    if (event === 'monitor_completed') {
-      setMonitorRunning(false)
-      loadMonitor()
-    }
-    if (event === 'monitor_error') {
-      setMonitorRunning(false)
-      setMonitorError((data as { error?: string })?.error ?? 'Monitor failed')
-    }
+    if (event === 'monitor_completed') loadMonitor()
+    if (event === 'monitor_error') setMonitorError((data as { error?: string })?.error ?? 'Monitor failed')
   }, []))
 
   useEffect(() => { load(); loadMonitor() }, [])
@@ -820,22 +569,6 @@ export default function Portfolio() {
     }).catch(() => {})
   }
 
-  async function handleRunMonitor() {
-    setMonitorError(null)
-    setMonitorRunning(true)
-    try {
-      const res = await fetch('/api/monitor/run', { method: 'POST' })
-      if (!res.ok) {
-        const d = await res.json()
-        setMonitorError(d.error ?? 'Failed to start monitor')
-        setMonitorRunning(false)
-      }
-    } catch {
-      setMonitorError('Request failed')
-      setMonitorRunning(false)
-    }
-  }
-
   async function handleClosePosition(coin: string) {
     const entry = holdings.find(h => h.coin === coin)
     if (!entry || !entry.quantity) return
@@ -897,7 +630,6 @@ export default function Portfolio() {
   const cycleIds = Array.from(reviewsByCycle.keys())
   const latestCycleId = cycleIds[0] ?? null
   const latestReviews = latestCycleId ? (reviewsByCycle.get(latestCycleId) ?? []) : []
-  const historyRuns = cycleIds.slice(1).map(id => ({ cycleId: id, reviews: reviewsByCycle.get(id)! }))
 
   const winCount = gains?.positions.filter(p => p.pnl >= 0).length ?? 0
   const totalTrades = gains?.positions.length ?? 0
@@ -945,6 +677,12 @@ export default function Portfolio() {
           valueClass={openCount >= maxPositions ? 'text-warn' : 'text-foreground'}
         />
       </div>
+
+      {monitorError && (
+        <div className="px-4 py-3 rounded-xl bg-sell/10 border border-sell/20 text-sell text-sm">
+          {monitorError}
+        </div>
+      )}
 
       {/* ── Active Positions ───────────────────────────────────────────── */}
       <Card noPad>
@@ -1104,67 +842,6 @@ export default function Portfolio() {
               </tbody>
             </table>
           </div>
-        )}
-      </Card>
-
-      {/* ── Position Monitor ───────────────────────────────────────────── */}
-      <Card noPad>
-        <div className="px-5 pt-5 pb-4">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-sm font-semibold text-foreground">Position Monitor</h3>
-              <p className="text-xs text-muted mt-0.5">LLM-powered review — HOLD, CLOSE, REDUCE, or ADJUST</p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {historyRuns.length > 0 && (
-                <Button variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>
-                  History ({historyRuns.length})
-                </Button>
-              )}
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={monitorRunning}
-                disabled={monitorRunning || holdings.length === 0}
-                onClick={handleRunMonitor}
-              >
-                {monitorRunning ? 'Analysing…' : 'Run Monitor'}
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        {monitorError && (
-          <div className="mx-5 mb-4 px-4 py-3 rounded-xl bg-sell/10 border border-sell/20 text-sell text-sm">
-            {monitorError}
-          </div>
-        )}
-
-        {monitorRunning && latestReviews.length === 0 && (
-          <div className="px-5 pb-6 flex items-center gap-3 text-sm text-muted">
-            <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0" />
-            Fetching market data and requesting LLM analysis…
-          </div>
-        )}
-
-        {!monitorRunning && latestReviews.length === 0 && !monitorError && (
-          <div className="px-5 pb-8 text-center">
-            <p className="text-sm text-muted">
-              {holdings.length === 0
-                ? 'No open holdings to analyse.'
-                : 'Click "Run Monitor" to get an LLM review of your open positions.'}
-            </p>
-          </div>
-        )}
-
-        {latestReviews.length > 0 && (
-          <ReviewCarousel
-            reviews={latestReviews}
-            holdings={holdings}
-            closingCoin={closingCoin}
-            onClose={handleClosePosition}
-            notesByCoin={notesByCoin}
-          />
         )}
       </Card>
 
@@ -1412,10 +1089,6 @@ export default function Portfolio() {
           />
         )
       })()}
-
-      {historyOpen && (
-        <HistoryModal runs={historyRuns} onClose={() => setHistoryOpen(false)} />
-      )}
 
       <TransferModal
         open={transferOpen}
