@@ -18,7 +18,7 @@
 // full transcript) and the live frames stream to the Entry Agent page as `agent_step`
 // events (source 'entry_agent'). Old runs are pruned to `entry_agent_retain_runs`.
 import OpenAI from 'openai'
-import { scheduleChat } from '../core/llmScheduler.js'
+import { scheduleChat, runInSession } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
@@ -343,7 +343,12 @@ async function reviewIntent(coin: string, cycleId: string): Promise<void> {
     }
     const ctx = await getMarketContext(coin, price)
 
-    const verdict = await runAgenticEntry(coin, intent, price, ctx, cycleId, rec)
+    // Run the whole tool-calling loop as one session so it holds the entryAgent endpoint
+    // across all its rounds + nested tool LLM calls — no other module swaps the model mid-pass.
+    const verdict = await runInSession(
+      { route: () => resolveLLM('entryAgent') },
+      () => runAgenticEntry(coin, intent, price, ctx, cycleId, rec),
+    )
 
     const tone: Tone = verdict.action === 'FIRE' ? 'buy' : verdict.action === 'CANCEL' ? 'warn' : verdict.action === 'ADJUST' ? 'accent' : 'muted'
     const icon = verdict.action === 'FIRE' ? '🚀' : verdict.action === 'CANCEL' ? '🚫' : verdict.action === 'ADJUST' ? '🎚️' : '✋'

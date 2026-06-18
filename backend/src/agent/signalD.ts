@@ -21,7 +21,7 @@
 // per-coin memory to `agent_signal_memory`, so the Agent Signal page survives a reload and the
 // next review has continuity. Old runs are pruned to `agent_signal_retain_runs`.
 import OpenAI from 'openai'
-import { scheduleChat } from '../core/llmScheduler.js'
+import { scheduleChat, runInSession } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
@@ -380,7 +380,12 @@ async function reviewCoin(coin: string, cycleId: string, rec: Recorder): Promise
   }
   const ctx = await getMarketContext(coin, md.price)
 
-  const verdict = await runAgenticSignal(coin, md, ctx, cycleId, rec)
+  // One session per coin: holds the agentSignal endpoint across all rounds + nested tool
+  // LLM calls (e.g. get_coin_sentiment's extractor) so no other module swaps the model mid-pass.
+  const verdict = await runInSession(
+    { route: () => resolveLLM('agentSignal') },
+    () => runAgenticSignal(coin, md, ctx, cycleId, rec),
+  )
 
   // Always persist memory (engine-authoritative) so continuity survives even if the model
   // never called remember_signal itself.

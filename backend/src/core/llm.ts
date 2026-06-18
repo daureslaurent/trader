@@ -191,6 +191,58 @@ function clientBaseURL(client: OpenAI): string {
   return (client as unknown as { baseURL: string }).baseURL ?? ''
 }
 
+// Transient transport failures: the socket dropped before a clean response was received
+// (server closed keep-alive mid-body, reset, network/DNS blip). Re-issuing the same prompt
+// at the same endpoint is safe and usually succeeds — distinct from API/4xx errors, which
+// reflect a real rejection and must NOT be retried. The undici cause message is folded in
+// because OpenAI's fetch wrapper often nests the real reason there ("Premature close").
+const TRANSIENT_RE = /premature close|econnreset|socket hang ?up|terminated|fetch failed|und_err|epipe|enotfound|eai_again|network|connection (?:closed|reset|aborted)|timeout|timed out/i
+function isTransientTransportError(err: unknown): boolean {
+  const cause = (err as { cause?: { message?: string; code?: string } } | undefined)?.cause
+  const msg = `${err instanceof Error ? err.message : String(err)} ${cause?.message ?? ''} ${cause?.code ?? ''}`
+  return TRANSIENT_RE.test(msg)
+}
+
+// Bounded same-endpoint retries for transient transport errors. 0 disables (failover only).
+const _envRetries = Number(process.env.LLM_TRANSPORT_RETRIES)
+const TRANSPORT_RETRIES = Number.isFinite(_envRetries) && _envRetries >= 0 ? _envRetries : 2
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+// runChat + a bounded same-endpoint retry on transient transport errors. Each attempt is
+// its own runChat (so it logs its own `llm_calls` row and the retries stay visible). A
+// non-transient error throws immediately so llmChat's fallback logic can take over.
+async function runChatWithRetry(
+  target: LLMTarget,
+  params: OpenAI.ChatCompletionCreateParams,
+  meta: LLMCallMeta,
+): Promise<OpenAI.ChatCompletion> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt++) {
+    try {
+      return await runChat(target, params, meta)
+    } catch (err) {
+      lastErr = err
+      if (attempt < TRANSPORT_RETRIES && isTransientTransportError(err)) {
+        const backoffMs = 400 * 2 ** attempt
+        logger.warn('LLM transient transport error — retrying same endpoint', {
+          module: meta.module,
+          coin: meta.coin ?? null,
+          target: `${target.model} @ ${target.baseURL}`,
+          attempt: attempt + 1,
+          retries: TRANSPORT_RETRIES,
+          backoffMs,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        await sleep(backoffMs)
+        continue
+      }
+      throw err
+    }
+  }
+  throw lastErr
+}
+
 /**
  * Run a chat completion with automatic failover. The primary target is the
  * `client` + `params.model` pair; if `fallback` is supplied and the primary call
@@ -225,7 +277,7 @@ export async function llmChat(
       ? { ...params, model: target.model, ...(target.maxTokens ? { max_tokens: target.maxTokens } : {}) }
       : params
     try {
-      return await runChat(target, attemptParams, meta)
+      return await runChatWithRetry(target, attemptParams, meta)
     } catch (err) {
       lastErr = err
       if (!isFallback && fallback) {

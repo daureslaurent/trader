@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import OpenAI from 'openai'
 import { llmChat, endpointGate, type LLMTarget, type LLMCallMeta } from './llm.js'
 import { broadcast } from '../api/ws.js'
@@ -96,6 +97,12 @@ interface Job {
   reject: (e: unknown) => void
   /** Whether a persisted `llm_jobs` row exists for this job (durable). */
   durable: boolean
+  /**
+   * The agentic session this call belongs to, if any (captured from AsyncLocalStorage at
+   * enqueue, so a tool's nested call inherits its parent loop's session). A leased gate is
+   * reserved for its owning session; session jobs are never blocked by a lease.
+   */
+  sessionId?: string
 }
 
 const _waiting: Job[] = []
@@ -104,6 +111,86 @@ const _gateActive = new Map<string, number>()
 const _residentModel = new Map<string, string>()
 const _sameModelStreak = new Map<string, number>()
 let _seq = 0
+
+// ── Session leases ───────────────────────────────────────────────────────────
+// A multi-round agentic loop (entry agent, agent signal, type-D monitor, chat agent) runs
+// as a *session*: it opens with runInSession() and keeps the SAME endpoint busy across all
+// its rounds AND the nested LLM calls its tools make (e.g. get_coin_sentiment runs the
+// extractor). Without this, the per-round gate permit is released between rounds and an
+// unrelated module's call slips onto the same one-slot server, forcing a model swap / full
+// context re-ingest mid-session — the thrash that surfaces as "Premature close".
+//
+// A session takes an EXCLUSIVE lease on its primary endpoint's gate for its whole lifetime.
+// While a gate is leased, pickNext() will not dispatch any NON-session job to it; the
+// session's own calls — tracked via AsyncLocalStorage, so a tool's nested call inherits the
+// parent loop's session — flow normally (still bounded by the gate's permit limit). The
+// lease is acquired EAGERLY at session start while the session holds nothing else, so a
+// session never waits on a lease while owning one → no deadlock. Sessions on *different*
+// endpoints run concurrently (the lease is per gate, not global). A different session's
+// nested call into a leased gate is allowed through rather than blocked — that keeps two
+// concurrent sessions deadlock-free; the rare cross-session swap it permits is harmless.
+interface SessionCtx { id: string }
+const _sessionStore = new AsyncLocalStorage<SessionCtx>()
+const _gateLeaseOwner = new Map<string, string>()                                   // gateKey → owning sessionId
+const _gateLeaseWaiters = new Map<string, { sessionId: string; resolve: () => void }[]>()
+
+function currentSessionId(): string | undefined {
+  return _sessionStore.getStore()?.id
+}
+
+// Acquire the exclusive lease for `gateKey` for `sessionId`, FIFO. Resolves immediately if
+// the gate is free or already owned by this session (re-entrant); otherwise queues.
+function acquireLease(gateKey: string, sessionId: string): Promise<void> {
+  const owner = _gateLeaseOwner.get(gateKey)
+  if (owner === undefined) { _gateLeaseOwner.set(gateKey, sessionId); return Promise.resolve() }
+  if (owner === sessionId) return Promise.resolve()
+  return new Promise<void>(resolve => {
+    const q = _gateLeaseWaiters.get(gateKey) ?? []
+    q.push({ sessionId, resolve })
+    _gateLeaseWaiters.set(gateKey, q)
+  })
+}
+
+// Release the lease, handing it to the next FIFO waiter if any, else clearing it. A freed
+// gate may unblock queued non-session jobs, so re-pump.
+function releaseLease(gateKey: string): void {
+  const q = _gateLeaseWaiters.get(gateKey)
+  const next = q?.shift()
+  if (next) {
+    _gateLeaseOwner.set(gateKey, next.sessionId)
+    if (q && q.length === 0) _gateLeaseWaiters.delete(gateKey)
+    next.resolve()
+  } else {
+    _gateLeaseOwner.delete(gateKey)
+    _gateLeaseWaiters.delete(gateKey)
+  }
+  pump()
+}
+
+/**
+ * Run an agentic, multi-round LLM loop as a session that holds its primary endpoint
+ * exclusively for its whole lifetime. `route()` resolves that primary endpoint (the same
+ * resolver the loop's scheduleChat calls use). Nested LLM calls made inside `fn` — including
+ * those a tool issues — inherit the session via AsyncLocalStorage and run re-entrantly,
+ * while every OTHER module's call to that endpoint waits until the session ends. A session
+ * that can't resolve a gated endpoint simply runs without a lease.
+ */
+export async function runInSession<T>(opts: { route: () => LLMRoute }, fn: () => Promise<T>): Promise<T> {
+  const id = `sess_${Date.now().toString(36)}_${(_seq++).toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+  let leasedKey: string | null = null
+  try {
+    const r = opts.route()
+    const gate = endpointGate(r.baseURL, r.model)
+    if (gate) { await acquireLease(gate.key, id); leasedKey = gate.key }
+  } catch (err) {
+    logger.warn('Session lease skipped — route() failed', { error: (err as Error).message })
+  }
+  try {
+    return await _sessionStore.run({ id }, fn)
+  } finally {
+    if (leasedKey) releaseLease(leasedKey)
+  }
+}
 
 // ── Recent-activity history (so a reloaded Control Room rebuilds, not blanks) ────
 // The scheduler is the source of truth for live LLM flow; the page is a thin view of
@@ -260,6 +347,7 @@ export function getSchedulerState() {
     queueDepth: _waiting.length,
     retainHours: getSettings().control_room_retain_hours,
     gates: Array.from(_gateActive.entries()).map(([key, active]) => ({ key, active, residentModel: _residentModel.get(key) ?? null, streak: _sameModelStreak.get(key) ?? 0 })),
+    leases: Array.from(_gateLeaseOwner.entries()).map(([key, sessionId]) => ({ key, host: shortHost(key), sessionId, waiting: _gateLeaseWaiters.get(key)?.length ?? 0 })),
     waiting: _waiting.map(j => ({ id: j.id, module: j.spec.module, lane: j.spec.lane, coin: j.spec.coin ?? null, priority: defaultPriority(j.spec), waitedMs: now - j.enqueuedAt })),
     active: Array.from(_active.values()).map(a => ({ id: a.id, module: a.module, lane: a.lane, coin: a.coin, model: a.model, state: a.state, agoMs: now - a.at })),
     feed: _feed.map(f => ({ id: f.id, text: f.text, kind: f.kind, agoMs: now - f.at })),
@@ -285,7 +373,11 @@ async function enqueue(
   existingId?: string,
 ): Promise<void> {
   const id = existingId ?? newJobId()
-  const job: Job = { id, spec, seq: _seq++, enqueuedAt: Date.now(), resolve, reject, durable: !!spec.durable }
+  // Captured synchronously here so a tool's nested scheduleChat (run inside its parent
+  // loop's _sessionStore.run scope) is tagged with that session; a durable resume at
+  // startup runs outside any session and so is untagged.
+  const sessionId = currentSessionId()
+  const job: Job = { id, spec, seq: _seq++, enqueuedAt: Date.now(), resolve, reject, durable: !!spec.durable, sessionId }
 
   if (spec.durable && !existingId) {
     try {
@@ -327,6 +419,11 @@ function pickNext(): { job: Job; route: LLMRoute; gateKey: string | null } | nul
 
     const gate = endpointGate(route.baseURL, route.model)
     const gateKey = gate?.key ?? null
+    // A leased gate is reserved for its owning session: hold back every NON-session call
+    // until the lease is released so an agentic loop's endpoint isn't swapped mid-session.
+    // Session jobs (sessionId set) flow regardless — they're either the owner or a harmless
+    // cross-session nested call — still bounded by the gate permit limit below.
+    if (gateKey && !job.sessionId && _gateLeaseOwner.has(gateKey)) continue
     if (gate && (_gateActive.get(gate.key) ?? 0) >= gate.limit) continue
 
     const pr = defaultPriority(job.spec)

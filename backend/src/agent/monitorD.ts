@@ -18,7 +18,7 @@
 // so the Agent Monitor page survives a reload and can show a per-run decision table and a
 // per-coin transcript. Old runs are pruned to `monitor_d_retain_runs`.
 import OpenAI from 'openai'
-import { scheduleChat } from '../core/llmScheduler.js'
+import { scheduleChat, runInSession } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
@@ -278,7 +278,12 @@ async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: strin
   rec.push('coin_started', '🔍', `Reviewing ${coin}…`, 'accent')
 
   const { ctx, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
-  const verdict = await runAgenticReview(coin, ctx, cycleId, rec)
+  // One session per position: holds the monitorD endpoint across all rounds + nested tool
+  // LLM calls so no other module swaps the model mid-review.
+  const verdict = await runInSession(
+    { route: () => resolveLLM('monitorD') },
+    () => runAgenticReview(coin, ctx, cycleId, rec),
+  )
 
   const model = `type-d:${resolveLLM('monitorD').model}`
   const review = await finalizeReview({

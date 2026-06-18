@@ -10,7 +10,7 @@
 // Live progress is streamed to the frontend via `broadcast('agent_step')`.
 import OpenAI from 'openai'
 import type { LLMTarget } from '../core/llm.js'
-import { scheduleChat } from '../core/llmScheduler.js'
+import { scheduleChat, runInSession } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
@@ -206,6 +206,9 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
       ...toOpenAIMessages(history),
     ]
 
+    // Run the whole tool-calling turn as one session so it holds the agent endpoint across
+    // every round + any nested tool LLM call — no background batch swaps the model mid-turn.
+    return await runInSession({ route: () => active }, async () => {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       step(conversationId, { type: 'thinking' })
 
@@ -286,6 +289,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
     step(conversationId, { type: 'assistant', message: capMsg })
     succeeded = true
     return { produced }
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.error('Agent chat turn failed', { conversationId, error: message })
