@@ -35,7 +35,10 @@ export function syncBinanceStreams(graph: RoutingGraph): void {
     for (const node of graph.nodes) {
       if (node.kind !== 'input' || !node.enabled) continue
       if (!node.type.startsWith('binance_') || node.type === 'binance_price') continue
-      const filter = String(node.config.symbol ?? '').trim()
+      // Simple-mode inputs fire for all coins, so they ignore any (stale) symbol
+      // filter and subscribe across the whole watched universe.
+      const dataMode = node.config.dataMode !== false
+      const filter = dataMode ? String(node.config.symbol ?? '').trim() : ''
       const syms = filter ? [filter] : symbols
       const interval = String(node.config.interval ?? '1m')
       for (const sym of syms) {

@@ -1,10 +1,31 @@
-import { NodeTypeMeta } from './types.js'
+import { ConfigField, NodeTypeMeta } from './types.js'
 
 /**
  * The catalog of node types. Pure metadata: what each node is, how to colour it,
  * and which config fields the frontend should render. Runtime behaviour lives in
  * `processors.ts` / `outputs.ts` / `sources.ts`, keyed by the same `type`.
  */
+
+/**
+ * Shared "Signal" toggle for every Binance input. On (default) the input fires
+ * per coin with a data payload (accent routes); off it collapses to one plain
+ * trigger for all coins with no payload (grey routes). The per-coin fields that
+ * only make sense in data mode are gated behind it via `showWhen`.
+ */
+const SIGNAL_FIELD: ConfigField = {
+  key: 'dataMode',
+  label: 'Data signal',
+  type: 'boolean',
+  help: 'On: carries coin/price for processors (accent routes). Off: a plain trigger for all coins, no payload (grey routes).',
+}
+const SYMBOL_FIELD: ConfigField = {
+  key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all',
+  help: 'e.g. BTC/USDC. Blank matches every subscribed symbol.', showWhen: { key: 'dataMode', equals: true },
+}
+const HELD_ONLY_FIELD: ConfigField = {
+  key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean',
+  help: 'Only fire for coins currently held in the portfolio.', showWhen: { key: 'dataMode', equals: true },
+}
 export const NODE_TYPES: Record<string, NodeTypeMeta> = {
   // ── Inputs ────────────────────────────────────────────────────────────────
   timer: {
@@ -24,11 +45,8 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     label: 'Binance Price',
     description: 'Fires on each live miniTicker price update from Binance for the matched symbol(s).',
     category: 'market',
-    configFields: [
-      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all', help: 'e.g. BTC/USDC. Blank matches every subscribed symbol.' },
-      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
-    ],
-    defaultConfig: { symbol: '', heldOnly: false },
+    configFields: [SIGNAL_FIELD, SYMBOL_FIELD, HELD_ONLY_FIELD],
+    defaultConfig: { dataMode: true, symbol: '', heldOnly: false },
   },
   binance_kline: {
     type: 'binance_kline',
@@ -37,14 +55,14 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     description: 'Fires when a candle closes on Binance for the chosen interval.',
     category: 'market',
     configFields: [
-      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
+      SIGNAL_FIELD,
       { key: 'interval', label: 'Interval', type: 'select', options: [
         { value: '1m', label: '1m' }, { value: '3m', label: '3m' }, { value: '5m', label: '5m' },
         { value: '15m', label: '15m' }, { value: '1h', label: '1h' }, { value: '4h', label: '4h' }, { value: '1d', label: '1d' },
       ] },
-      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
+      SYMBOL_FIELD, HELD_ONLY_FIELD,
     ],
-    defaultConfig: { symbol: '', interval: '1m', heldOnly: false },
+    defaultConfig: { dataMode: true, symbol: '', interval: '1m', heldOnly: false },
   },
   binance_book: {
     type: 'binance_book',
@@ -52,11 +70,8 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     label: 'Binance Best Bid/Ask',
     description: 'Fires on every top-of-book change (bookTicker). High frequency — gate it before an output.',
     category: 'market',
-    configFields: [
-      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
-      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
-    ],
-    defaultConfig: { symbol: '', heldOnly: false },
+    configFields: [SIGNAL_FIELD, SYMBOL_FIELD, HELD_ONLY_FIELD],
+    defaultConfig: { dataMode: true, symbol: '', heldOnly: false },
   },
   binance_trade: {
     type: 'binance_trade',
@@ -64,11 +79,8 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     label: 'Binance Trades',
     description: 'Fires on each aggregate market trade (price/size/side). High frequency.',
     category: 'market',
-    configFields: [
-      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
-      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
-    ],
-    defaultConfig: { symbol: '', heldOnly: false },
+    configFields: [SIGNAL_FIELD, SYMBOL_FIELD, HELD_ONLY_FIELD],
+    defaultConfig: { dataMode: true, symbol: '', heldOnly: false },
   },
   binance_depth: {
     type: 'binance_depth',
@@ -76,11 +88,8 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     label: 'Binance Depth (L2)',
     description: 'Streams top-of-book partial depth. Very high volume — use sparingly.',
     category: 'market',
-    configFields: [
-      { key: 'symbol', label: 'Symbol filter', type: 'text', placeholder: 'blank = all' },
-      { key: 'heldOnly', label: 'Portfolio coins only', type: 'boolean', help: 'Only fire for coins currently held in the portfolio.' },
-    ],
-    defaultConfig: { symbol: '', heldOnly: false },
+    configFields: [SIGNAL_FIELD, SYMBOL_FIELD, HELD_ONLY_FIELD],
+    defaultConfig: { dataMode: true, symbol: '', heldOnly: false },
   },
   manual: {
     type: 'manual',

@@ -20,8 +20,8 @@ export function defaultGraph(settings: BotSettings): RoutingGraph {
 
     // Example inputs (off by default).
     { id: 'input.manual', kind: 'input', type: 'manual', label: 'Manual trigger', enabled: true, config: {}, position: { x: 60, y: 500 } },
-    { id: 'input.binance', kind: 'input', type: 'binance_price', label: 'Binance price', enabled: false, config: { symbol: '' }, position: { x: 60, y: 610 } },
-    { id: 'input.kline', kind: 'input', type: 'binance_kline', label: 'Binance 1m kline', enabled: false, config: { symbol: '', interval: '1m' }, position: { x: 60, y: 720 } },
+    { id: 'input.binance', kind: 'input', type: 'binance_price', label: 'Binance price', enabled: false, config: { dataMode: true, symbol: '' }, position: { x: 60, y: 610 } },
+    { id: 'input.kline', kind: 'input', type: 'binance_kline', label: 'Binance 1m kline', enabled: false, config: { dataMode: true, symbol: '', interval: '1m' }, position: { x: 60, y: 720 } },
     { id: 'input.startup', kind: 'input', type: 'system_startup', label: 'On startup', enabled: false, config: {}, position: { x: 60, y: 830 } },
 
     // Example processors (off by default).

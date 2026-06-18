@@ -13,6 +13,7 @@ interface ConfigField {
   placeholder?: string
   options?: { value: string; label: string }[]
   help?: string
+  showWhen?: { key: string; equals: unknown }
 }
 
 interface NodeTypeMeta {
@@ -82,6 +83,54 @@ const CAT_STYLE: Record<string, { text: string; dot: string; ring: string; strok
 const catStyle = (c: string) => CAT_STYLE[c] ?? CAT_STYLE.system
 
 const KIND_LABEL: Record<NodeKind, string> = { input: 'INPUT', processor: 'PROCESSOR', output: 'OUTPUT' }
+
+// Route colours: a route carries either a DATA signal (coin/price payload, only
+// processors read it) or a plain SIMPLE trigger. Data routes are accent-tinted,
+// simple routes grey — matching the per-node Signal toggle on Binance inputs.
+const DATA_STROKE = 'rgb(var(--accent-rgb))'
+const SIMPLE_STROKE = 'rgb(var(--border-rgb, 100 116 139))'
+const SIMPLE_ACTIVE = 'rgb(148 163 184)'
+
+const isBinanceInput = (n: RouteNode) => n.kind === 'input' && n.type.startsWith('binance')
+/** A Binance input emits the per-coin data signal unless explicitly switched off. */
+const emitsDataSignal = (n: RouteNode) => isBinanceInput(n) && n.config.dataMode !== false
+
+/**
+ * Compute which nodes a data signal reaches. A data-mode Binance input seeds it,
+ * and the flavour propagates downstream through the whole chain (a node fed any
+ * data route re-emits data). Returns the set of node ids that emit a data route.
+ */
+function computeDataNodes(graph: RoutingGraph): Set<string> {
+  const incoming = new Map<string, string[]>()
+  for (const e of graph.edges) {
+    const list = incoming.get(e.to) ?? []
+    list.push(e.from)
+    incoming.set(e.to, list)
+  }
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]))
+  const memo = new Map<string, boolean>()
+  const visiting = new Set<string>()
+  const emits = (id: string): boolean => {
+    const cached = memo.get(id)
+    if (cached !== undefined) return cached
+    if (visiting.has(id)) return false // cycle guard
+    visiting.add(id)
+    const node = byId.get(id)
+    const res = !node ? false
+      : node.kind === 'input' ? emitsDataSignal(node)
+      : (incoming.get(id) ?? []).some(emits)
+    visiting.delete(id)
+    memo.set(id, res)
+    return res
+  }
+  return new Set(graph.nodes.filter((n) => emits(n.id)).map((n) => n.id))
+}
+
+/** Evaluate a config field's `showWhen` guard against a node's current config. */
+function fieldVisible(node: RouteNode, field: ConfigField): boolean {
+  if (!field.showWhen) return true
+  return node.config[field.showWhen.key] === field.showWhen.equals
+}
 
 /* ───────────────────────────── Small UI primitives ───────────────────────────── */
 
@@ -280,6 +329,8 @@ export default function RoutingGraph() {
   }, [graph])
 
   const nodeById = useMemo(() => new Map((graph?.nodes ?? []).map((n) => [n.id, n])), [graph])
+  // Which nodes emit a data route (accent) vs a simple route (grey).
+  const dataNodes = useMemo(() => graph ? computeDataNodes(graph) : new Set<string>(), [graph])
 
   if (!graph) {
     return <div className="text-muted text-sm py-16 text-center">Loading routing graph…</div>
@@ -378,7 +429,9 @@ export default function RoutingGraph() {
                 const d = `M ${sx},${sy} C ${sx + dx},${sy} ${tx - dx},${ty} ${tx},${ty}`
                 const active = pulses[edge.id] != null
                 const blocked = pulses[`blocked:${edge.id}`] != null
-                const live = catStyle(catStyleCat(from))
+                const carriesData = dataNodes.has(edge.from)
+                const baseStroke = carriesData ? DATA_STROKE : SIMPLE_STROKE
+                const activeStroke = carriesData ? DATA_STROKE : SIMPLE_ACTIVE
                 const sel = selected?.kind === 'edge' && selected.id === edge.id
                 return (
                   <g key={edge.id}>
@@ -387,19 +440,18 @@ export default function RoutingGraph() {
                       onClick={(e) => { e.stopPropagation(); setSelected({ kind: 'edge', id: edge.id }) }} />
                     <path
                       d={d} fill="none"
-                      stroke={blocked ? 'rgb(var(--sell-rgb))' : active ? live.stroke : (edge.enabled ? 'rgb(var(--border-rgb, 100 116 139))' : 'transparent')}
+                      stroke={blocked ? 'rgb(var(--sell-rgb))' : active ? activeStroke : (edge.enabled ? baseStroke : 'transparent')}
                       strokeWidth={sel ? 3 : active ? 3 : 1.75}
                       strokeDasharray={edge.enabled ? undefined : '4 4'}
                       style={{
-                        stroke: blocked ? 'rgb(var(--sell-rgb))' : active ? live.stroke : undefined,
-                        opacity: edge.enabled ? (active ? 1 : 0.55) : 0.35,
-                        filter: active ? `drop-shadow(0 0 5px ${live.stroke})` : undefined,
+                        opacity: edge.enabled ? (active ? 1 : carriesData ? 0.7 : 0.5) : 0.35,
+                        filter: active ? `drop-shadow(0 0 5px ${activeStroke})` : undefined,
                         transition: 'opacity .2s, stroke-width .2s',
                       }}
                       className={cn(!edge.enabled && 'stroke-border')}
                     />
                     {/* arrowhead */}
-                    <circle cx={tx} cy={ty} r={active ? 4 : 3} fill={blocked ? 'rgb(var(--sell-rgb))' : active ? live.stroke : 'rgb(var(--border-rgb, 100 116 139))'}
+                    <circle cx={tx} cy={ty} r={active ? 4 : 3} fill={blocked ? 'rgb(var(--sell-rgb))' : active ? activeStroke : baseStroke}
                       style={{ opacity: edge.enabled ? 0.8 : 0.4 }} />
                   </g>
                 )
@@ -438,12 +490,22 @@ export default function RoutingGraph() {
                     <span className="text-[13px] font-semibold text-foreground truncate flex-1">{node.label}</span>
                     <Toggle checked={node.enabled} onChange={() => mutateNode(node.id, { enabled: !node.enabled })} label={`Enable ${node.label}`} />
                   </div>
-                  <div className="flex items-center justify-between px-2.5 pb-2 pt-1.5">
-                    <span className={cn('text-[10px] font-mono tracking-wide', s.text)}>{KIND_LABEL[node.kind]} · {node.type}{node.managed ? ' · managed' : ''}</span>
+                  <div className="flex items-center justify-between gap-2 px-2.5 pb-2 pt-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={cn('text-[10px] font-mono tracking-wide truncate', s.text)}>{KIND_LABEL[node.kind]} · {node.type}{node.managed ? ' · managed' : ''}</span>
+                      {isBinanceInput(node) && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); mutateNodeConfig(node.id, 'dataMode', !emitsDataSignal(node)) }}
+                          title="Switch between a per-coin data signal and a simple trigger"
+                          className={cn('shrink-0 px-1.5 py-0.5 rounded-md text-[9px] font-bold tracking-wider transition-colors',
+                            emitsDataSignal(node) ? 'bg-accent/15 text-accent' : 'bg-surface-elevated text-muted border border-border')}
+                        >{emitsDataSignal(node) ? 'DATA' : 'SIMPLE'}</button>
+                      )}
+                    </div>
                     {(node.kind === 'input' || node.kind === 'output') && (
                       <button
                         onClick={(e) => { e.stopPropagation(); fetch(`/api/routing/fire/${node.id}`, { method: 'POST' }) }}
-                        className="text-[10px] font-semibold text-accent hover:underline"
+                        className="shrink-0 text-[10px] font-semibold text-accent hover:underline"
                         title="Fire this node now"
                       >▶ fire</button>
                     )}
@@ -486,6 +548,7 @@ export default function RoutingGraph() {
             edge={selEdge}
             fromLabel={nodeById.get(selEdge.from)?.label ?? selEdge.from}
             toLabel={nodeById.get(selEdge.to)?.label ?? selEdge.to}
+            carriesData={dataNodes.has(selEdge.from)}
             onEnable={() => mutateEdge(selEdge.id, { enabled: !selEdge.enabled })}
             onNum={(k, v) => mutateEdge(selEdge.id, { [k]: v })}
             onDelete={() => deleteEdge(selEdge.id)}
@@ -497,7 +560,12 @@ export default function RoutingGraph() {
               <p className="mb-1">• Click a node to edit it.</p>
               <p className="mb-1">• Drag the right-hand <span className="text-foreground">port</span> of a node, then click a target’s left port to wire a route.</p>
               <p className="mb-1">• Click a link to set its cooldown / max-per-hour.</p>
-              <p>• The kill-switch halts all routing instantly.</p>
+              <p className="mb-2">• The kill-switch halts all routing instantly.</p>
+              <div className="border-t border-border pt-2">
+                <p className="flex items-center gap-2 mb-1"><span className="inline-block w-6 h-0.5 rounded bg-accent" /> <span><span className="text-foreground">Data</span> route — carries a coin/price payload (only processors read it).</span></p>
+                <p className="flex items-center gap-2"><span className="inline-block w-6 h-0.5 rounded bg-muted" /> <span><span className="text-foreground">Simple</span> route — a plain trigger, no coin.</span></p>
+                <p className="mt-1">Flip a Binance input’s <span className="text-accent font-semibold">DATA</span>/<span className="font-semibold">SIMPLE</span> badge to switch what it emits.</p>
+              </div>
             </div>
           )}
         </div>
@@ -570,14 +638,6 @@ function prettyJson(s: string): string {
   try { return JSON.stringify(JSON.parse(s), null, 2) } catch { return s }
 }
 
-// Resolve a node's category via the catalog isn't available inside SVG closure cheaply;
-// fall back to kind-based colour for the link stroke.
-function catStyleCat(node: RouteNode): string {
-  if (node.kind === 'output') return 'execution'
-  if (node.kind === 'processor') return node.type === 'debug' ? 'system' : 'strategy'
-  return node.type.startsWith('binance') ? 'market' : 'system'
-}
-
 /* ───────────────────────────── Inspectors ───────────────────────────── */
 
 function Field({ label, children, help }: { label: string; children: React.ReactNode; help?: string }) {
@@ -606,7 +666,7 @@ function NodeInspector({ node, meta, onLabel, onEnable, onConfig, onDelete, onFi
 
       <Field label="Label"><input className={inputCls} value={node.label} onChange={(e) => onLabel(e.target.value)} /></Field>
 
-      {meta?.configFields.map((f) => {
+      {meta?.configFields.filter((f) => fieldVisible(node, f)).map((f) => {
         const val = node.config[f.key]
         if (f.type === 'select') return (
           <Field key={f.key} label={f.label} help={f.help}>
@@ -648,8 +708,8 @@ function NodeInspector({ node, meta, onLabel, onEnable, onConfig, onDelete, onFi
   )
 }
 
-function EdgeInspector({ edge, fromLabel, toLabel, onEnable, onNum, onDelete }: {
-  edge: RouteEdge; fromLabel: string; toLabel: string
+function EdgeInspector({ edge, fromLabel, toLabel, carriesData, onEnable, onNum, onDelete }: {
+  edge: RouteEdge; fromLabel: string; toLabel: string; carriesData: boolean
   onEnable: () => void; onNum: (k: 'cooldownSec' | 'maxPerHour', v: number) => void; onDelete: () => void
 }) {
   return (
@@ -657,6 +717,13 @@ function EdgeInspector({ edge, fromLabel, toLabel, onEnable, onNum, onDelete }: 
       <div className="flex items-center justify-between mb-3">
         <span className="text-[10px] font-semibold tracking-wider text-muted uppercase">Route</span>
         <Toggle checked={edge.enabled} onChange={onEnable} label="Enable route" />
+      </div>
+      <div className="flex items-center gap-2 mb-3">
+        <span className={cn('px-1.5 py-0.5 rounded-md text-[9px] font-bold tracking-wider',
+          carriesData ? 'bg-accent/15 text-accent' : 'bg-surface-elevated text-muted border border-border')}>
+          {carriesData ? 'DATA' : 'SIMPLE'}
+        </span>
+        <span className="text-[10px] text-muted">{carriesData ? 'carries a coin payload' : 'plain trigger'}</span>
       </div>
       <p className="text-xs text-foreground mb-3"><span className="text-muted">{fromLabel}</span> → <span className="text-muted">{toLabel}</span></p>
 

@@ -15,8 +15,12 @@ import { isHeld, noteOpened, noteClosed } from './heldCoins.js'
 
 let wired = false
 
-// A binance input node fires for a symbol when its symbol filter matches AND,
-// if `heldOnly` is set, the coin is currently held in the portfolio.
+// Whether a Binance input emits the per-coin DATA signal (default) or the plain
+// SIMPLE trigger. A node opts out of data mode with `dataMode: false`.
+const isDataMode = (node: RouteNode): boolean => node.config.dataMode !== false
+
+// A data-mode binance input fires for a symbol when its symbol filter matches
+// AND, if `heldOnly` is set, the coin is currently held in the portfolio.
 function inputMatches(node: RouteNode, symbol: string): boolean {
   const filter = String(node.config.symbol ?? '').trim()
   if (filter !== '' && filter !== symbol) return false
@@ -24,9 +28,17 @@ function inputMatches(node: RouteNode, symbol: string): boolean {
   return true
 }
 
-function fire(type: string, symbol: string, ctx: Record<string, unknown>): void {
-  void fireInputsOfType(type, { trigger: 'binance', symbol, ...ctx }, (node) => inputMatches(node, symbol))
-    .catch((err) => logger.warn(`${type} source fire failed`, { error: err instanceof Error ? err.message : String(err) }))
+/**
+ * Map one stream event onto the matching inputs of `type`, fanning out to both
+ * flavours: data-mode nodes get the per-coin payload (and honour symbol/held
+ * filters); simple-mode nodes get a bare trigger with no coin (one for all).
+ * `extraMatch` adds a per-flavour predicate (e.g. kline interval).
+ */
+function fire(type: string, symbol: string, ctx: Record<string, unknown>, extraMatch?: (node: RouteNode) => boolean): void {
+  const onErr = (err: unknown) => logger.warn(`${type} source fire failed`, { error: err instanceof Error ? err.message : String(err) })
+  const extra = (node: RouteNode) => !extraMatch || extraMatch(node)
+  void fireInputsOfType(type, { trigger: 'binance', symbol, ...ctx }, (node) => isDataMode(node) && extra(node) && inputMatches(node, symbol)).catch(onErr)
+  void fireInputsOfType(type, { trigger: 'binance' }, (node) => !isDataMode(node) && extra(node)).catch(onErr)
 }
 
 export function wireSources(): void {
@@ -38,12 +50,8 @@ export function wireSources(): void {
   })
 
   systemBus.onEvent(SystemEvent.MARKET_KLINE_CLOSED, (k) => {
-    // Kline nodes also match on the configured interval.
-    void fireInputsOfType(
-      'binance_kline',
-      { trigger: 'binance', price: k.close, ...k },
-      (node) => inputMatches(node, k.symbol) && String(node.config.interval ?? '1m') === k.interval,
-    ).catch((err) => logger.warn('binance_kline source fire failed', { error: err instanceof Error ? err.message : String(err) }))
+    // Kline nodes also match on the configured interval (both flavours).
+    fire('binance_kline', k.symbol, { price: k.close, ...k }, (node) => String(node.config.interval ?? '1m') === k.interval)
   })
 
   // Keep the held-coins cache live for the `heldOnly` toggle.

@@ -16,6 +16,20 @@
 
 export type NodeKind = 'input' | 'processor' | 'output'
 
+/**
+ * The two flavours a signal can travel as:
+ * - `data`   : carries a coin + market payload (symbol, price, …). Only
+ *              processors (and the odd coin-aware output) actually read it;
+ *              every other node just gets triggered and ignores the payload.
+ * - `simple` : a plain trigger with no coin — "fire once for everything".
+ *
+ * It is a *derived* property, not stored on the edge: a data-mode Binance input
+ * emits `data`, and that flavour propagates downstream through the whole chain
+ * (a processor fed data re-emits data). Everything else emits `simple`. The UI
+ * colours data routes with the accent and simple routes grey.
+ */
+export type SignalType = 'data' | 'simple'
+
 export interface RouteNode {
   /** Stable id. Managed defaults use readable ids (e.g. `timer.pipeline`). */
   id: string
@@ -72,6 +86,8 @@ export interface ConfigField {
   placeholder?: string
   options?: { value: string; label: string }[]
   help?: string
+  /** Render this field only when another config key holds the given value. */
+  showWhen?: { key: string; equals: unknown }
 }
 
 /** Serializable node-type definition shipped to the frontend palette. */

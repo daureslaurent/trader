@@ -17,16 +17,23 @@ function parseGraph(raw: string | undefined): RoutingGraph | null {
     if (!obj || !Array.isArray(obj.nodes) || !Array.isArray(obj.edges)) return null
     const nodes: RouteNode[] = obj.nodes
       .filter((n): n is RouteNode => !!n && typeof n.id === 'string' && typeof n.type === 'string')
-      .map((n) => ({
-        id: n.id,
-        kind: n.kind,
-        type: n.type,
-        label: String(n.label ?? n.type),
-        enabled: n.enabled !== false,
-        config: (n.config && typeof n.config === 'object') ? n.config : {},
-        position: n.position && typeof n.position === 'object' ? n.position : { x: 0, y: 0 },
-        ...(n.managed ? { managed: true } : {}),
-      }))
+      .map((n) => {
+        const config: Record<string, unknown> = (n.config && typeof n.config === 'object') ? { ...n.config } : {}
+        // Binance inputs default to the per-coin DATA signal; make it explicit so
+        // the UI toggle + its dependent fields read a concrete value (legacy
+        // graphs predate this flag).
+        if (n.kind === 'input' && n.type.startsWith('binance') && config.dataMode === undefined) config.dataMode = true
+        return {
+          id: n.id,
+          kind: n.kind,
+          type: n.type,
+          label: String(n.label ?? n.type),
+          enabled: n.enabled !== false,
+          config,
+          position: n.position && typeof n.position === 'object' ? n.position : { x: 0, y: 0 },
+          ...(n.managed ? { managed: true } : {}),
+        }
+      })
     const nodeIds = new Set(nodes.map((n) => n.id))
     const edges: RouteEdge[] = obj.edges
       .filter((e): e is RouteEdge => !!e && typeof e.from === 'string' && typeof e.to === 'string')
