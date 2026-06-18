@@ -89,6 +89,18 @@ export function getAgentToolSchemas(agentId: string): ReturnType<typeof getToolS
   return getToolSchemas(allowed)
 }
 
+/** "- name: description" bullets for every tool currently granted to this agent (grant !==
+ *  'off'), pulled straight from the TOOLS catalog so an agent's system prompt can describe
+ *  its toolset dynamically — never hardcode a tool's name/description in a prompt file, or
+ *  it'll drift from the catalog and may describe a tool the agent isn't actually granted. */
+export function getAgentToolPrompt(agentId: string): string {
+  const grants = getAgentGrants(agentId)
+  return TOOLS
+    .filter(t => grants.get(t.name) !== 'off')
+    .map(t => `- ${t.name}: ${t.description}`)
+    .join('\n')
+}
+
 /** Run a tool on behalf of an agent, enforcing its grant. A disabled tool is refused; a
  *  write/action tool granted only 'read' is blocked (the read still flows to the model so
  *  it can explain that the action isn't permitted) — it never throws. */

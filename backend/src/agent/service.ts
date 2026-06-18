@@ -18,11 +18,11 @@ import { getSettings } from '../db/index.js'
 import type { AgentMessage } from '../types.js'
 import * as store from './store.js'
 import { isReadOnlyTool } from './tools.js'
-import { getAgentToolSchemas, runAgentTool } from './registry.js'
+import { getAgentToolSchemas, getAgentToolPrompt, runAgentTool } from './registry.js'
 
 // This module IS the "chat" agent in the registry — its tool grants live under that id.
 const AGENT_ID = 'chat'
-import { SYSTEM_PROMPT, TITLE_SYSTEM_PROMPT } from './prompts.js'
+import { buildSystemPrompt, TITLE_SYSTEM_PROMPT } from './prompts.js'
 
 // Safety valve: how many model↔tool round-trips a single user turn may take before
 // we stop and ask the user to narrow the question. Generous enough for multi-tool
@@ -202,7 +202,7 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
     const history = await store.getMessages(conversationId)
     userTurns = history.filter(m => m.role === 'user').length
     const messages: OpenAI.ChatCompletionMessageParam[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: buildSystemPrompt(getAgentToolPrompt(AGENT_ID)) },
       ...toOpenAIMessages(history),
     ]
 

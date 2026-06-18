@@ -31,7 +31,7 @@ import type { MonitorEntry, RawReview } from '../monitor/index.js'
 import type { PositionContext } from '../monitor/prompts.js'
 import type { MonitorDRun, MonitorDRunFrame, PositionReview } from '../types.js'
 import { isReadOnlyTool } from './tools.js'
-import { getAgentToolSchemas, runAgentTool } from './registry.js'
+import { getAgentToolSchemas, getAgentToolPrompt, runAgentTool } from './registry.js'
 
 // This module IS the "monitorD" agent in the registry — its tool grants live under that id
 // (read-only by default; configurable in Settings → Agent → Agentic Tools).
@@ -123,17 +123,17 @@ class Recorder {
   }
 }
 
-const SYSTEM_PROMPT = `You are "Type D", an autonomous risk manager reviewing ONE open crypto position at a time.
+// The "Method" section lists exactly the tools `getAgentToolPrompt` resolves for this agent
+// (its catalog descriptions, filtered to whatever's granted under Settings → Agent →
+// Agentic Tools) — never hardcode a tool name/blurb here, or it can drift from the catalog
+// and describe a tool that's actually disabled.
+function buildSystemPrompt(toolPrompt: string): string {
+  return `You are "Type D", an autonomous risk manager reviewing ONE open crypto position at a time.
 
 Your job: decide whether to HOLD, ADJUST (move stop-loss / take-profit), REDUCE (trim the position) or CLOSE it now.
 
 Method — gather evidence with your tools BEFORE deciding:
-- get_candle_data: read recent price structure, momentum and volatility (try the position's horizon timeframe).
-- get_position_history: see realized P&L, fees and how this coin has been managed.
-- get_coin_sentiment: weigh recent news / narrative risk against the chart.
-- get_coin_notes: your own memory from prior reviews of this coin — use it for continuity and to avoid flip-flopping.
-- get_portfolio: overall exposure, cash and this coin's allocation % — weigh concentration risk when sizing REDUCE/CLOSE.
-- get_market / list_position_reviews / list_recent_signals: live indicators and prior verdicts for extra context.
+${toolPrompt}
 Call the tools you actually need; don't pad. You have at most ${MAX_TOOL_ROUNDS} tool rounds.
 
 Decision guidance:
@@ -153,6 +153,7 @@ When — and only when — you are done gathering evidence, reply with ONE JSON 
   "reduce_to_pct": number | null,       // only for REDUCE: % of the position to KEEP (1-99)
   "notes": string | null                // optional <=500 char memo to your future self about this coin
 }`
+}
 
 function buildUserBriefing(ctx: PositionContext): string {
   const f = (n: number | null, d = 2) => (n == null ? 'n/a' : n.toFixed(d))
@@ -176,7 +177,7 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
   const tools = getAgentToolSchemas(AGENT_ID)
 
   const messages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: buildSystemPrompt(getAgentToolPrompt(AGENT_ID)) },
     { role: 'user', content: buildUserBriefing(ctx) },
   ]
 
