@@ -15,9 +15,7 @@ import AgentMonitor from './pages/AgentMonitor'
 import Summary from './pages/Summary'
 import Trade from './pages/Trade'
 import EntryDesk from './pages/EntryDesk'
-import Logs from './pages/Logs'
 import Settings from './pages/Settings'
-import Charts from './pages/Charts'
 import LLM from './pages/LLM'
 import LLMDebug from './pages/LLMDebug'
 import CacheView from './pages/CacheView'
@@ -39,8 +37,6 @@ const PAGE_TITLES: Record<Page, string> = {
   trade: 'Trade',
   entry: 'Entry Desk',
   pipeline: 'Pipeline',
-  charts: 'Signals',
-  logs: 'Logs',
   cache: 'Article Cache',
   settings: 'Settings',
   discover: 'Discover Coins',
@@ -223,8 +219,6 @@ function AppInner() {
           {page === 'trade' && <Trade />}
           {page === 'entry' && <EntryDesk />}
           {page === 'pipeline' && <LLM />}
-          {page === 'charts' && <Charts />}
-          {page === 'logs' && <Logs />}
           {page === 'cache' && <CacheView />}
           {page === 'discover' && <Discover />}
           {page === 'llm-debug' && <LLMDebug />}
