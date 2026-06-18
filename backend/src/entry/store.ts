@@ -26,6 +26,8 @@ function rowToIntent(r: Record<string, unknown>): EntryIntent {
     planReason: (r.plan_reason as string) || undefined,
     createdAt: r.created_at as number,
     expiresAt: r.expires_at as number,
+    // Older persisted intents predate band history — default to an empty list.
+    bandHistory: r.band_history ? (JSON.parse(r.band_history as string) as EntryIntent['bandHistory']) : [],
   }
 }
 
@@ -57,6 +59,7 @@ export async function saveIntent(intent: EntryIntent): Promise<void> {
       plan_reason: intent.planReason ?? null,
       created_at: intent.createdAt,
       expires_at: intent.expiresAt,
+      band_history: JSON.stringify(intent.bandHistory),
     })
   } catch (err) {
     logger.error('Failed to persist entry intent', { coin: intent.coin, error: err instanceof Error ? err.message : String(err) })
@@ -84,6 +87,8 @@ function rowToEvent(r: Record<string, unknown>): EntryEvent {
     price: (r.price as number | null) ?? undefined,
     slippagePct: (r.slippage_pct as number | null) ?? undefined,
     at: r.created_at as number,
+    signal: r.signal ? (JSON.parse(r.signal as string) as Signal) : undefined,
+    bandHistory: r.band_history ? (JSON.parse(r.band_history as string) as EntryEvent['bandHistory']) : undefined,
   }
 }
 
@@ -108,6 +113,8 @@ export async function saveEvent(event: EntryEvent): Promise<void> {
       price: event.price ?? null,
       slippage_pct: event.slippagePct ?? null,
       created_at: event.at,
+      signal: event.signal ? JSON.stringify(event.signal) : null,
+      band_history: event.bandHistory ? JSON.stringify(event.bandHistory) : null,
     })
   } catch (err) {
     logger.error('Failed to persist entry event', { coin: event.coin, error: err instanceof Error ? err.message : String(err) })

@@ -8,6 +8,7 @@ import { CancelEntryModal } from '../components/CancelEntryModal'
 import { ManualEntryModal } from '../components/ManualEntryModal'
 import { ValidateEntryModal } from '../components/ValidateEntryModal'
 import { EditEntryModal } from '../components/EditEntryModal'
+import { SignalDataModal, SignalDataTarget } from '../components/SignalDataModal'
 import { Button } from '../components/ui/Button'
 import { EntryIntent, EntryEvent } from '../types'
 import { fmtUSD, fmtPct, cn } from '../lib/utils'
@@ -57,6 +58,7 @@ export default function EntryDesk() {
   const [cancelTarget, setCancelTarget] = useState<EntryIntent | null>(null)
   const [validateTarget, setValidateTarget] = useState<EntryIntent | null>(null)
   const [editTarget, setEditTarget] = useState<EntryIntent | null>(null)
+  const [signalDataTarget, setSignalDataTarget] = useState<SignalDataTarget | null>(null)
   const [approvalRequired, setApprovalRequired] = useState(false)
   const [now, setNow] = useState(Date.now())
   // The "Refresh LLM" button only makes sense when the Entry Planner is on —
@@ -228,6 +230,17 @@ export default function EntryDesk() {
                   <Button
                     variant="secondary"
                     size="sm"
+                    onClick={() => setSignalDataTarget(selectedIntent)}
+                    title="See the thesis, live market context, and full entry-band history behind this intent"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+                    </svg>
+                    Signal data
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     loading={refreshing}
                     disabled={!plannerEnabled || refreshing}
                     onClick={() => onRefreshLlm(selectedIntent.coin)}
@@ -373,6 +386,19 @@ export default function EntryDesk() {
                       <span className="block text-[10px] font-normal text-muted text-right">vs signal</span>
                     </span>
                   )}
+                  {(e.signal || (e.bandHistory && e.bandHistory.length > 0)) && (
+                    <button
+                      type="button"
+                      onClick={() => setSignalDataTarget(e)}
+                      title="See the signal data and entry-band history for this entry"
+                      aria-label={`Signal data for ${coin}`}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors duration-150"
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+                      </svg>
+                    </button>
+                  )}
                   <span className="text-[11px] text-muted tabular-nums shrink-0 w-16 text-right">{timeAgo(now - e.at)}</span>
                 </div>
               )
@@ -403,6 +429,9 @@ export default function EntryDesk() {
         currentPrice={editTarget ? prices.get(editTarget.coin)?.price : undefined}
         onClose={() => setEditTarget(null)}
       />
+
+      {/* Signal data + entry-band history */}
+      <SignalDataModal target={signalDataTarget} onClose={() => setSignalDataTarget(null)} />
 
       {/* Manually stage a coin */}
       <ManualEntryModal

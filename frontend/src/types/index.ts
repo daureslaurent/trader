@@ -237,9 +237,50 @@ export interface Settings {
   approval_required: boolean
 }
 
+/** The BUY signal an entry intent was created from — the analyst's (or agent's) thesis. */
+export interface EntrySignal {
+  coin: string
+  action: string
+  quantity: number
+  reason: string
+  confidence: number
+  horizon?: 'short' | 'medium' | 'long'
+  stop_loss_pct?: number
+  take_profit_pct?: number
+}
+
+/** Live market context an entry band decision (LLM plan or static settings) was made from. */
+export interface EntryMarketContext {
+  price: number
+  change24h: number
+  volume: number
+  rsi14: number
+  sma7: number
+  sma25: number
+  sma99: number
+  atr14: number
+  trend: 'uptrend' | 'downtrend' | 'ranging'
+  perf7d: number
+  volatility: 'high' | 'normal' | 'low'
+}
+
+/** A point-in-time band assignment (creation, "Refresh LLM", or manual edit), oldest first on the intent. */
+export interface BandSnapshot {
+  at: number
+  source: 'llm' | 'static' | 'manual'
+  signalPrice: number
+  targetPrice: number
+  invalidatePrice: number
+  chaseCapPrice: number
+  ttlMinutes: number
+  reason?: string
+  market?: EntryMarketContext
+}
+
 export interface EntryIntent {
   id: string
   coin: string
+  signal?: EntrySignal
   signalPrice: number
   targetPrice: number
   invalidatePrice: number
@@ -251,6 +292,8 @@ export interface EntryIntent {
   planReason?: string
   createdAt: number
   expiresAt: number
+  /** Every band assignment since registration, oldest first — what fed the entry decision and how it changed. */
+  bandHistory?: BandSnapshot[]
 }
 
 export interface EntryEvent {
@@ -263,6 +306,9 @@ export interface EntryEvent {
   price?: number
   slippagePct?: number
   at: number
+  /** Snapshot of the resolved intent's signal + band history at fill/cancel time. */
+  signal?: EntrySignal
+  bandHistory?: BandSnapshot[]
 }
 
 export interface ApprovalRequest {

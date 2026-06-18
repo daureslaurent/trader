@@ -1,4 +1,4 @@
-import { Signal } from '../types.js'
+import { Signal, MarketContext } from '../types.js'
 
 /**
  * A deferred BUY: the analyst has decided direction/size, but instead of firing
@@ -29,6 +29,26 @@ export interface EntryIntent {
   planReason?: string
   createdAt: number
   expiresAt: number
+  /** Every band assignment since registration (creation, each "Refresh LLM", each manual edit), oldest first. */
+  bandHistory: BandSnapshot[]
+}
+
+/**
+ * A point-in-time record of the band applied to an intent, plus the market data
+ * the decision was made from. The Entry Desk uses the list of these on an intent
+ * to show what the engine/LLM saw and how the band changed across re-plans.
+ */
+export interface BandSnapshot {
+  at: number
+  source: 'llm' | 'static' | 'manual'
+  signalPrice: number
+  targetPrice: number
+  invalidatePrice: number
+  chaseCapPrice: number
+  ttlMinutes: number
+  reason?: string
+  /** Market context the planner/agent saw when this band was set (absent for a manual edit). */
+  market?: MarketContext
 }
 
 export type CancelReason = 'falling_knife' | 'ran_away' | 'expired' | 'manual'
@@ -51,4 +71,7 @@ export interface EntryEvent {
   /** (signalPrice − fillPrice) / signalPrice × 100 — positive = bought below the signal price. */
   slippagePct?: number
   at: number
+  /** The resolved intent's signal + band history at the time it filled/cancelled, for the Entry Desk detail view. */
+  signal?: Signal
+  bandHistory?: BandSnapshot[]
 }

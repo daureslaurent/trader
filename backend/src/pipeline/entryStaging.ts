@@ -52,7 +52,7 @@ export async function deferToEntryDesk(args: {
     band = resolveEntryBand(plan, settings)
   }
 
-  entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * analyzedPrice, atr: marketCtx.atr14, band })
+  entry.register({ signal: buySignal, signalPrice: entryBasis, notionalUsdc: qty * analyzedPrice, atr: marketCtx.atr14, band, market: marketCtx })
   logPipelineEvent('entry_intent_created', symbol, cycleId, {
     action: 'BUY', signal_price: entryBasis, analyzed_price: analyzedPrice, quantity: qty,
     target_price: entryBasis * (1 - band.pullbackPct / 100),

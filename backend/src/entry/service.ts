@@ -4,9 +4,9 @@ import { logger } from '../core/logger.js'
 import * as priceCache from '../market/index.js'
 import { getSettings } from '../db/index.js'
 import { getMarketContext } from '../portfolio/index.js'
-import { Signal, BotSettings } from '../types.js'
+import { Signal, BotSettings, MarketContext } from '../types.js'
 import { EntryBand, planEntry, resolveEntryBand } from '../entryPlanner/index.js'
-import { EntryIntent, EntryEvent, CancelReason, FillTrigger } from './types.js'
+import { EntryIntent, EntryEvent, BandSnapshot, CancelReason, FillTrigger } from './types.js'
 import * as store from './store.js'
 
 // One active intent per coin. Short-lived (≤ entry_ttl_minutes). Mirrored to the
@@ -17,6 +17,8 @@ const intents = new Map<string, EntryIntent>()
 // entry_events and reloaded on startup; this is an in-session cache of that log.
 const recentEvents: EntryEvent[] = []
 const MAX_EVENTS = 100
+// Caps unbounded growth from repeated "Refresh LLM" clicks on a long-lived intent.
+const MAX_BAND_HISTORY = 20
 let timer: ReturnType<typeof setInterval> | null = null
 
 export function hasActiveIntent(coin: string): boolean {
@@ -49,9 +51,11 @@ interface RegisterParams {
   atr: number
   /** The resolved entry band (LLM plan or static settings) — see resolveEntryBand. */
   band: EntryBand
+  /** Market context the band decision was made from, kept on the intent for the Entry Desk detail view. */
+  market: MarketContext
 }
 
-export function register({ signal, signalPrice, notionalUsdc, atr, band }: RegisterParams): void {
+export function register({ signal, signalPrice, notionalUsdc, atr, band, market }: RegisterParams): void {
   const coin = signal.coin
   if (intents.has(coin)) {
     logger.debug('Entry intent already active, skipping register', { coin })
@@ -73,7 +77,13 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band }: Regis
     planReason: band.reason,
     createdAt: now,
     expiresAt: now + band.ttlMinutes * 60_000,
+    bandHistory: [],
   }
+  intent.bandHistory = [{
+    at: now, source: band.source, signalPrice,
+    targetPrice: intent.targetPrice, invalidatePrice: intent.invalidatePrice, chaseCapPrice: intent.chaseCapPrice,
+    ttlMinutes: band.ttlMinutes, reason: band.reason, market,
+  }]
 
   intents.set(coin, intent)
   store.saveIntent(intent)
@@ -135,16 +145,25 @@ export async function replan(coin: string): Promise<ReplanResult> {
   // plan is non-null, so resolveEntryBand yields an 'llm' band.
   const band = resolveEntryBand(plan, settings)
   const now = Date.now()
+  const targetPrice = livePrice * (1 - band.pullbackPct / 100)
+  const invalidatePrice = livePrice * (1 - band.invalidatePct / 100)
+  const chaseCapPrice = livePrice * (1 + band.chaseCapPct / 100)
+  const snapshot: BandSnapshot = {
+    at: now, source: band.source, signalPrice: livePrice,
+    targetPrice, invalidatePrice, chaseCapPrice,
+    ttlMinutes: band.ttlMinutes, reason: band.reason, market,
+  }
   const updated: EntryIntent = {
     ...intent,
     signalPrice: livePrice,
-    targetPrice: livePrice * (1 - band.pullbackPct / 100),
-    invalidatePrice: livePrice * (1 - band.invalidatePct / 100),
-    chaseCapPrice: livePrice * (1 + band.chaseCapPct / 100),
+    targetPrice,
+    invalidatePrice,
+    chaseCapPrice,
     atr: market.atr14, // refresh ATR too — it feeds SL/TP sizing at fill
     bandSource: band.source,
     planReason: band.reason,
     expiresAt: now + band.ttlMinutes * 60_000,
+    bandHistory: [...intent.bandHistory, snapshot].slice(-MAX_BAND_HISTORY),
   }
 
   intents.set(coin, updated)
@@ -220,6 +239,12 @@ export function updateIntent(coin: string, edit: IntentEdit): { ok: boolean; err
     expiresAt = Date.now() + edit.ttlMinutes * 60_000
   }
 
+  const now = Date.now()
+  const snapshot: BandSnapshot = {
+    at: now, source: 'manual', signalPrice: intent.signalPrice,
+    targetPrice: target, invalidatePrice: invalidate, chaseCapPrice: chaseCap,
+    ttlMinutes: Math.max(0, (expiresAt - now) / 60_000),
+  }
   const updated: EntryIntent = {
     ...intent,
     targetPrice: target,
@@ -229,6 +254,7 @@ export function updateIntent(coin: string, edit: IntentEdit): { ok: boolean; err
     expiresAt,
     bandSource: 'manual',
     planReason: undefined,
+    bandHistory: [...intent.bandHistory, snapshot].slice(-MAX_BAND_HISTORY),
   }
 
   intents.set(coin, updated)
@@ -246,7 +272,10 @@ export function cancel(coin: string, reason: CancelReason, price?: number): void
   store.deleteIntent(coin)
   logger.info('Entry intent cancelled', { coin, reason, price })
   if (intent) {
-    recordEvent({ coin, type: 'cancelled', reason, signalPrice: intent.signalPrice, targetPrice: intent.targetPrice, price })
+    recordEvent({
+      coin, type: 'cancelled', reason, signalPrice: intent.signalPrice, targetPrice: intent.targetPrice, price,
+      signal: intent.signal, bandHistory: intent.bandHistory,
+    })
   }
   broadcastIntents()
 }
@@ -261,7 +290,10 @@ function fire(intent: EntryIntent, price: number, trigger: FillTrigger): void {
   const quantity = price > 0 ? intent.notionalUsdc / price : 0
   const slippagePct = intent.signalPrice > 0 ? ((intent.signalPrice - price) / intent.signalPrice) * 100 : 0
   logger.info('Entry intent fired', { coin: intent.coin, trigger, price, quantity, slippagePct })
-  recordEvent({ coin: intent.coin, type: 'filled', reason: trigger, signalPrice: intent.signalPrice, targetPrice: intent.targetPrice, price, slippagePct })
+  recordEvent({
+    coin: intent.coin, type: 'filled', reason: trigger, signalPrice: intent.signalPrice, targetPrice: intent.targetPrice, price, slippagePct,
+    signal: intent.signal, bandHistory: intent.bandHistory,
+  })
   // Execution stays in index.ts (the single trade chokepoint) — it re-checks live
   // gates and honors the approval setting.
   bus.emit('entry_fire', { signal: { ...intent.signal, quantity }, price, atr: intent.atr })
