@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
+import { ToolDetailPopover, type ToolDetail } from '../components/ui/ToolDetailPopover'
 import { useApi } from '../hooks/useApi'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { cn } from '../lib/utils'
@@ -17,7 +18,7 @@ function agoMs(ms: number): string {
 
 type Tone = 'muted' | 'accent' | 'buy' | 'sell' | 'warn'
 
-interface Frame { type: string; icon: string; text: string; tone: Tone; at: number }
+interface Frame { type: string; icon: string; text: string; tone: Tone; at: number; detail?: ToolDetail }
 
 interface MonitorDRun {
   id: number
@@ -94,16 +95,19 @@ function Transcript({ frames }: { frames: Frame[] }) {
   if (!frames.length) return <p className="text-muted font-mono text-xs">No transcript.</p>
   return (
     <div className="font-mono text-xs leading-relaxed space-y-0.5">
-      {frames.map((f, i) =>
-        isThinking(f) ? (
-          <ThinkingLine key={i} text={f.text} />
-        ) : (
+      {frames.map((f, i) => {
+        if (isThinking(f)) return <ThinkingLine key={i} text={f.text} />
+        const hasDetail = (f.type === 'tool_call' || f.type === 'tool_result') && f.detail
+        const textEl = <span className={cn(TONE_CLASS[f.tone] ?? 'text-foreground/80')}>{f.text}</span>
+        return (
           <div key={i} className="flex items-start gap-2 py-0.5">
             <span className="select-none">{f.icon}</span>
-            <span className={cn(TONE_CLASS[f.tone] ?? 'text-foreground/80')}>{f.text}</span>
+            {hasDetail
+              ? <ToolDetailPopover detail={f.detail!} kind={f.type === 'tool_call' ? 'call' : 'result'}>{textEl}</ToolDetailPopover>
+              : textEl}
           </div>
-        ),
-      )}
+        )
+      })}
     </div>
   )
 }
@@ -158,7 +162,7 @@ export default function AgentMonitor() {
     const s = data as AgentStep
     if (s.source !== 'monitor_d' || !s.coin || !s.type) return
     const coin = s.coin
-    const frame: Frame = { type: s.type, icon: s.icon ?? '•', text: s.text ?? '', tone: (s.tone as Tone) ?? 'muted', at: s.at ?? Date.now() }
+    const frame: Frame = { type: s.type, icon: s.icon ?? '•', text: s.text ?? '', tone: (s.tone as Tone) ?? 'muted', at: s.at ?? Date.now(), detail: s.detail }
 
     setLive(prev => {
       const cur = prev[coin] ?? { coin, frames: [], status: 'reviewing' as const, peakContext: 0, startedAt: Date.now() }

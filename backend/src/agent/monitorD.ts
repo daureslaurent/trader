@@ -78,6 +78,23 @@ const TOOL_FEED: Record<string, { icon: string; verb: string }> = {
   list_open_positions:   { icon: '📂', verb: 'Listing open positions' },
 }
 
+// Caps a tool result before it rides on a frame's `detail` (persisted to monitor_d_runs and
+// broadcast live) — long arrays (e.g. candle bars) are trimmed to their first/last few entries
+// so the hover/pin popover stays useful without bloating storage.
+const DETAIL_ARRAY_CAP = 8
+function truncateForDetail(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    if (value.length <= DETAIL_ARRAY_CAP) return value.map(truncateForDetail)
+    const head = value.slice(0, DETAIL_ARRAY_CAP - 3).map(truncateForDetail)
+    const tail = value.slice(-2).map(truncateForDetail)
+    return [...head, `… ${value.length - DETAIL_ARRAY_CAP + 1} more …`, ...tail]
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, truncateForDetail(v)]))
+  }
+  return value
+}
+
 // Records the transcript for one coin's review while streaming each frame live. The
 // server owns presentation (icon/text/tone) so a reloaded transcript matches the live one.
 // It also maintains the shared `activeReviews` entry so an in-flight review is recoverable.
@@ -105,8 +122,8 @@ class Recorder {
     this.entry.peak_context_tokens = this.peakContext
   }
 
-  push(type: string, icon: string, text: string, tone: Tone, extra: Record<string, unknown> = {}): void {
-    const frame: MonitorDRunFrame = { type, icon, text, tone, at: Date.now() }
+  push(type: string, icon: string, text: string, tone: Tone, extra: Record<string, unknown> = {}, detail?: MonitorDRunFrame['detail']): void {
+    const frame: MonitorDRunFrame = { type, icon, text, tone, at: Date.now(), ...(detail ? { detail } : {}) }
     this.entry.frames.push(frame)
     if (type === 'error') this.entry.status = 'error'
     else if (type === 'decision') this.entry.status = 'done'
@@ -219,19 +236,20 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
         try { args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {} } catch { /* bad JSON → empty args */ }
 
         const meta = TOOL_FEED[name] ?? { icon: '🔧', verb: name }
-        rec.push('tool_call', meta.icon, `${meta.verb}…`, 'muted', { tool: name, read_only: isReadOnlyTool(name) })
+        rec.push('tool_call', meta.icon, `${meta.verb}…`, 'muted', { tool: name, read_only: isReadOnlyTool(name) }, { tool: name, args })
 
         const result = await runAgentTool(AGENT_ID, name, args)
         const res = result as Record<string, unknown> | undefined
-        // Compact, consistent result line (full blobs are never persisted).
+        const resultDetail = { tool: name, result: truncateForDetail(result) }
+        // Compact, consistent result line (the summary stays short; the full payload rides on `detail`).
         if (name === 'get_candle_data' && res && typeof res.count === 'number') {
-          rec.push('tool_result', '💾', `Candle data ready (${res.count} bars, cache-first)`, 'muted', { tool: name })
+          rec.push('tool_result', '💾', `Candle data ready (${res.count} bars, cache-first)`, 'muted', { tool: name }, resultDetail)
         } else if (name === 'get_coin_sentiment' && res && typeof res.article_count === 'number') {
-          rec.push('tool_result', '📰', `Sentiment: ${res.aggregated_sentiment ?? 'n/a'} (${res.article_count} article${res.article_count === 1 ? '' : 's'})`, 'muted', { tool: name })
+          rec.push('tool_result', '📰', `Sentiment: ${res.aggregated_sentiment ?? 'n/a'} (${res.article_count} article${res.article_count === 1 ? '' : 's'})`, 'muted', { tool: name }, resultDetail)
         } else if (res?.error) {
-          rec.push('tool_result', '⚠️', `${meta.verb} → ${String(res.error)}`, 'warn', { tool: name })
+          rec.push('tool_result', '⚠️', `${meta.verb} → ${String(res.error)}`, 'warn', { tool: name }, resultDetail)
         } else {
-          rec.push('tool_result', '✓', `${meta.verb} complete`, 'muted', { tool: name })
+          rec.push('tool_result', '✓', `${meta.verb} complete`, 'muted', { tool: name }, resultDetail)
         }
 
         messages.push({ role: 'tool', content: JSON.stringify(result), tool_call_id: tc.id })

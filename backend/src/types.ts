@@ -511,6 +511,8 @@ export interface MonitorDRunFrame {
   text: string
   tone: 'muted' | 'accent' | 'buy' | 'sell' | 'warn'
   at: number
+  /** Raw tool args (on tool_call frames) or raw tool result (on tool_result frames), for the hover/pin detail popover. */
+  detail?: { tool: string; args?: Record<string, unknown>; result?: unknown }
 }
 
 export interface MonitorDRun {
