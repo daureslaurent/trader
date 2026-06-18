@@ -3,6 +3,7 @@ import { Card, CardHeader } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { UpdateInfo } from '../../types'
 import { UpdateButton, BridgeNotReadyHint } from './AppUpdate'
+import { RebootButton } from './AppReboot'
 import { cn } from '../../lib/utils'
 
 function relTime(iso: string): string {
@@ -77,6 +78,7 @@ export function SoftwareCard() {
         subtitle={status?.currentShortSha ? `Deployed · ${status.currentShortSha}` : 'App version & updates'}
         action={
           <div className="flex items-center gap-2">
+            {enabled && ready && <RebootButton enabled={enabled} bridgeReady={ready} />}
             {enabled && ready && (
               <Button type="button" variant="secondary" size="sm" loading={checking} onClick={checkNow}>
                 Check now

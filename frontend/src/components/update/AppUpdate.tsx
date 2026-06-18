@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react'
 import { Button } from '../ui/Button'
 
 /**
- * Full-screen takeover shown while the host rebuilds and restarts the stack. The
- * backend (and frontend container) go down mid-update, so we can't be told when
- * it's done — instead we poll the API: once we've seen it go *down* and then come
- * back *up*, the new build is live and we reload to pick it up.
+ * Full-screen takeover shown while the host restarts the stack (update rebuild or
+ * a plain reboot). The backend (and frontend container) go down mid-restart, so we
+ * can't be told when it's done — instead we poll the API: once we've seen it go
+ * *down* and then come back *up*, the stack is live again and we reload to pick it
+ * up. Reused by both the update and reboot flows with different copy.
  */
-export function UpdatingOverlay() {
+export function RestartOverlay({ title, message }: { title: string; message: string }) {
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -42,16 +43,24 @@ export function UpdatingOverlay() {
         </svg>
       </div>
       <div className="text-center">
-        <h2 className="text-lg font-semibold text-foreground">Updating CryptoBot…</h2>
-        <p className="mt-1.5 max-w-sm text-sm text-muted">
-          Pulling the latest version and rebuilding the stack. This page will reload automatically once it’s back online.
-        </p>
+        <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+        <p className="mt-1.5 max-w-sm text-sm text-muted">{message}</p>
         <p className="mt-3 font-mono text-xs text-muted/70">elapsed {mm}:{ss}</p>
       </div>
       <Button type="button" variant="ghost" size="sm" onClick={() => window.location.reload()}>
         Reload now
       </Button>
     </div>
+  )
+}
+
+/** Overlay shown while an update rebuilds the stack. */
+export function UpdatingOverlay() {
+  return (
+    <RestartOverlay
+      title="Updating CryptoBot…"
+      message="Pulling the latest version and rebuilding the stack. This page will reload automatically once it’s back online."
+    />
   )
 }
 

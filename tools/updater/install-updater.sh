@@ -30,15 +30,24 @@ fi
 
 UPDATE_SCRIPT="$REPO_DIR/update_run.sh"
 CHECK_SCRIPT="$REPO_DIR/check_run.sh"
+REBOOT_SCRIPT="$REPO_DIR/reboot_run.sh"
 TRIGGER_DIR="$REPO_DIR/.update"
 TRIGGER_FILE="$TRIGGER_DIR/trigger"
 CHECK_TRIGGER_FILE="$TRIGGER_DIR/check"
+REBOOT_TRIGGER_FILE="$TRIGGER_DIR/reboot"
 LOG_FILE="$TRIGGER_DIR/update.log"
 
 if [[ ! -x "$UPDATE_SCRIPT" ]]; then
   echo "update_run.sh not found or not executable at $UPDATE_SCRIPT" >&2
   exit 1
 fi
+
+if [[ ! -f "$REBOOT_SCRIPT" ]]; then
+  echo "reboot_run.sh not found at $REBOOT_SCRIPT" >&2
+  exit 1
+fi
+# The reboot script ships in the repo; make sure it's executable on the host.
+chmod +x "$REBOOT_SCRIPT" 2>/dev/null || true
 
 if [[ ! -f "$CHECK_SCRIPT" ]]; then
   echo "check_run.sh not found at $CHECK_SCRIPT" >&2
@@ -141,13 +150,54 @@ EOF
 echo "==> Wrote $CHECK_SERVICE"
 echo "==> Wrote $CHECK_PATH_UNIT"
 
+REBOOT_SERVICE=/etc/systemd/system/cryptobot-reboot.service
+REBOOT_PATH_UNIT=/etc/systemd/system/cryptobot-reboot.path
+
+# --- the oneshot service that restarts the stack -----------------------------
+# reboot_run.sh only runs `docker compose restart` — it never pulls or rebuilds.
+# ExecStartPre removes the trigger so the .path unit re-arms after each restart.
+cat > "$REBOOT_SERVICE" <<EOF
+[Unit]
+Description=cryptoBot stack restart (docker compose restart)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=$RUN_USER
+WorkingDirectory=$REPO_DIR
+ExecStartPre=/bin/rm -f $REBOOT_TRIGGER_FILE
+ExecStart=/usr/bin/env bash $REBOOT_SCRIPT
+StandardOutput=append:$LOG_FILE
+StandardError=append:$LOG_FILE
+TimeoutStartSec=600
+EOF
+
+# --- the path unit that watches for the reboot trigger ------------------------
+cat > "$REBOOT_PATH_UNIT" <<EOF
+[Unit]
+Description=Watch for cryptoBot reboot trigger
+
+[Path]
+PathExists=$REBOOT_TRIGGER_FILE
+Unit=cryptobot-reboot.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "==> Wrote $REBOOT_SERVICE"
+echo "==> Wrote $REBOOT_PATH_UNIT"
+
 systemctl daemon-reload
 systemctl enable --now cryptobot-update.path
 systemctl enable --now cryptobot-update-check.path
+systemctl enable --now cryptobot-reboot.path
 
 echo "==> Installed and watching. Status:"
 systemctl --no-pager status cryptobot-update.path || true
 systemctl --no-pager status cryptobot-update-check.path || true
+systemctl --no-pager status cryptobot-reboot.path || true
 echo
 echo "Done. Enable the toggle in Settings → System; the app then checks for"
 echo "updates periodically and 'Update app' (on the System page) applies them."

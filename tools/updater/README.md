@@ -51,6 +51,29 @@ base64-encoded so arbitrary commit text can't break the JSON). The backend reads
 it back to drive the pin, the commits-ahead modal, a Telegram notification, and a
 live toast. The check interval is set in **Settings → System** (default 1 hour).
 
+## Rebooting (restart without updating)
+
+The **System** page also has a **Reboot** button that restarts the running stack
+*without* pulling or rebuilding:
+
+```
+Browser ──POST /api/host/reboot──▶ backend ──writes──▶ <repo>/.update/reboot
+                                                              │ (bind mount)
+                                                              ▼
+                                              systemd cryptobot-reboot.path
+                                                              │ file appeared
+                                                              ▼
+                                              cryptobot-reboot.service
+                                                  rm reboot → reboot_run.sh
+                                                              │
+                                                  docker compose restart
+```
+
+`reboot_run.sh` only runs `docker compose restart` — it keeps the current code
+and images. Same trust boundary as updates: gated by the `update_enabled` setting
+and the host bridge. The frontend shows the same "back online" overlay and reloads
+once the stack returns.
+
 ## Install (on the host, once)
 
 ```bash
@@ -80,3 +103,4 @@ sudo tools/updater/uninstall-updater.sh
 - Trigger a manual update for testing: `touch ./.update/trigger`.
 - Trigger a manual check for testing: `touch ./.update/check` → inspect
   `./.update/status.json`.
+- Trigger a manual reboot for testing: `touch ./.update/reboot`.

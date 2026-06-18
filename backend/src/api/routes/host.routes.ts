@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { getHostStats, requestUpdate, getUpdateReadiness, readUpdateStatus, runUpdateCheck } from '../../host/index.js'
+import { getHostStats, requestUpdate, requestReboot, getUpdateReadiness, readUpdateStatus, runUpdateCheck } from '../../host/index.js'
 import { getSettings } from '../../db/index.js'
 import { logger } from '../../core/logger.js'
 
@@ -68,6 +68,30 @@ router.post('/host/update', async (_req: Request, res: Response) => {
     res.json({ ok: true })
   } catch (err) {
     logger.error('host update trigger failed', { err: err instanceof Error ? err.message : String(err) })
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Signal the host watcher to restart the stack (`docker compose restart`) without
+// pulling or rebuilding. Shares the update master switch + host bridge as the
+// single trust boundary for letting the app command the host lifecycle. Only
+// drops a trigger file — the actual restart runs on the host.
+router.post('/host/reboot', async (_req: Request, res: Response) => {
+  if (!getSettings().update_enabled) {
+    res.status(403).json({ error: 'Host actions are disabled. Enable them in Settings → System first.' })
+    return
+  }
+  const readiness = await getUpdateReadiness()
+  if (!readiness.ready) {
+    res.status(503).json({ error: `Update host bridge not ready: ${readiness.reason}` })
+    return
+  }
+  try {
+    await requestReboot({ by: 'web' })
+    logger.warn('host stack reboot requested via web')
+    res.json({ ok: true })
+  } catch (err) {
+    logger.error('host reboot trigger failed', { err: err instanceof Error ? err.message : String(err) })
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })

@@ -19,6 +19,9 @@ const TRIGGER_FILE = path.join(TRIGGER_DIR, 'trigger')
 // Separate trigger for a read-only update *check* (git fetch + status.json write),
 // distinct from the destructive update trigger above.
 const CHECK_TRIGGER_FILE = path.join(TRIGGER_DIR, 'check')
+// Trigger for a plain restart of the running stack (docker compose restart) —
+// no git pull, no rebuild. Distinct from the update trigger.
+const REBOOT_TRIGGER_FILE = path.join(TRIGGER_DIR, 'reboot')
 // Where the host watcher (check_run.sh) writes the comparison result.
 const STATUS_FILE = path.join(TRIGGER_DIR, 'status.json')
 
@@ -47,6 +50,15 @@ export async function requestUpdate(meta: { by?: string } = {}): Promise<void> {
   await fs.mkdir(TRIGGER_DIR, { recursive: true })
   const payload = JSON.stringify({ requestedAt: new Date().toISOString(), by: meta.by ?? 'web' })
   await fs.writeFile(TRIGGER_FILE, payload + '\n', 'utf8')
+}
+
+// Signal the host watcher to restart the running stack (`docker compose restart`)
+// without pulling or rebuilding. Like requestUpdate, the file's existence is the
+// signal; the watcher removes it before running reboot_run.sh.
+export async function requestReboot(meta: { by?: string } = {}): Promise<void> {
+  await fs.mkdir(TRIGGER_DIR, { recursive: true })
+  const payload = JSON.stringify({ requestedAt: new Date().toISOString(), by: meta.by ?? 'web' })
+  await fs.writeFile(REBOOT_TRIGGER_FILE, payload + '\n', 'utf8')
 }
 
 // Signal the host watcher to run a read-only update check: `git fetch origin main`
