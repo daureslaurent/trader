@@ -25,7 +25,7 @@ RUN apt-get update -qq && apt-get install -y -qq \
 WORKDIR /app
 COPY package.json package-lock.json ./
 ENV PUPPETEER_SKIP_DOWNLOAD=true
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 COPY src/ ./src/
 COPY tsconfig.json ./
 

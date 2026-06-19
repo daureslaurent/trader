@@ -1,0 +1,23 @@
+# Dependencies & build output — `npm ci` + `npm run build` regenerate these in the image.
+# Critical: the Dockerfile does `COPY . .`, so without this these would be baked in.
+node_modules
+dist
+*.tsbuildinfo
+
+# Secrets & local env (frontend is a static build; nothing here belongs in the image)
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# VCS / editor / tooling
+.git
+.gitignore
+.idea
+.vscode
+
+# Docker metadata
+Dockerfile
+.dockerignore

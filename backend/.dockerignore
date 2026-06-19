@@ -1,0 +1,31 @@
+# Dependencies & build output — reinstalled/recompiled in the image
+node_modules
+dist
+*.tsbuildinfo
+
+# Legacy sql.js databases (one-off migration source; large, not needed at runtime)
+data
+
+# Secrets & local env (env is injected via docker-compose env_file)
+.env
+.env.*
+!.env.example
+
+# Tests & dev-only assets (runtime uses src/ only)
+test
+tests
+
+# Logs
+*.log
+npm-debug.log*
+
+# VCS / editor / tooling
+.git
+.gitignore
+.idea
+.vscode
+.update
+
+# Docker metadata (no need inside the build context)
+Dockerfile
+.dockerignore
