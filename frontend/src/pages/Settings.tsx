@@ -88,6 +88,18 @@ interface SettingsData {
   llm_monitor_d_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
+  llm_stream_analyst: boolean
+  llm_stream_extractor: boolean
+  llm_stream_discoverer: boolean
+  llm_stream_discovererExtractor: boolean
+  llm_stream_monitorA: boolean
+  llm_stream_monitorB: boolean
+  llm_stream_monitorC: boolean
+  llm_stream_summary: boolean
+  llm_stream_entryAgent: boolean
+  llm_stream_agent: boolean
+  llm_stream_monitorD: boolean
+  llm_stream_agentSignal: boolean
   llm_analyst_fb_endpoint: string
   llm_analyst_fb_max_tokens: number
   llm_extractor_fb_endpoint: string
@@ -438,19 +450,20 @@ const LLM_MODULES: {
   maxTokensKey: keyof SettingsData
   fbEndpointKey: keyof SettingsData
   fbMaxTokensKey: keyof SettingsData
+  streamKey: keyof SettingsData
 }[] = [
-  { key: 'analyst',             label: 'Analyst',              hint: 'Main BUY/SELL/HOLD decision per coin.',                   endpointKey: 'llm_analyst_endpoint',             maxTokensKey: 'llm_analyst_max_tokens',             fbEndpointKey: 'llm_analyst_fb_endpoint',             fbMaxTokensKey: 'llm_analyst_fb_max_tokens' },
-  { key: 'extractor',           label: 'Extractor',            hint: 'Compresses research articles into structured sentiment.', endpointKey: 'llm_extractor_endpoint',           maxTokensKey: 'llm_extractor_max_tokens',           fbEndpointKey: 'llm_extractor_fb_endpoint',           fbMaxTokensKey: 'llm_extractor_fb_max_tokens' },
-  { key: 'discoverer',          label: 'Discoverer',           hint: 'Scores new coin candidates during discovery.',            endpointKey: 'llm_discoverer_endpoint',          maxTokensKey: 'llm_discoverer_max_tokens',          fbEndpointKey: 'llm_discoverer_fb_endpoint',          fbMaxTokensKey: 'llm_discoverer_fb_max_tokens' },
-  { key: 'discovererExtractor', label: 'Discoverer extractor', hint: 'Extractor used inside the discovery pipeline.',            endpointKey: 'llm_discoverer_extractor_endpoint', maxTokensKey: 'llm_discoverer_extractor_max_tokens', fbEndpointKey: 'llm_discoverer_extractor_fb_endpoint', fbMaxTokensKey: 'llm_discoverer_extractor_fb_max_tokens' },
-  { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     endpointKey: 'llm_monitor_a_endpoint',           maxTokensKey: 'llm_monitor_a_max_tokens',           fbEndpointKey: 'llm_monitor_a_fb_endpoint',           fbMaxTokensKey: 'llm_monitor_a_fb_max_tokens' },
-  { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — second model for the position monitor (used in B / Alternate / A+B / A+B+C modes).', endpointKey: 'llm_monitor_b_endpoint', maxTokensKey: 'llm_monitor_b_max_tokens', fbEndpointKey: 'llm_monitor_b_fb_endpoint', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens' },
-  { key: 'monitorC',            label: 'Monitor C',            hint: 'Slot C — the synthesizer in A+B+C mode. Sees A and B’s verdicts and writes the final decision. Use a strong, well-reasoned model.', endpointKey: 'llm_monitor_c_endpoint', maxTokensKey: 'llm_monitor_c_max_tokens', fbEndpointKey: 'llm_monitor_c_fb_endpoint', fbMaxTokensKey: 'llm_monitor_c_fb_max_tokens' },
-  { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', endpointKey: 'llm_summary_endpoint', maxTokensKey: 'llm_summary_max_tokens', fbEndpointKey: 'llm_summary_fb_endpoint', fbMaxTokensKey: 'llm_summary_fb_max_tokens' },
-  { key: 'entryAgent',          label: 'Entry Agent',          hint: 'The agentic per-coin entry engine: drives each deferred BUY (adjusts the band / fires / cancels) via tool calls. Use a tool-calling-capable model.', endpointKey: 'llm_entryAgent_endpoint', maxTokensKey: 'llm_entryAgent_max_tokens', fbEndpointKey: 'llm_entryAgent_fb_endpoint', fbMaxTokensKey: 'llm_entryAgent_fb_max_tokens' },
-  { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens' },
-  { key: 'monitorD',            label: 'Agent D (monitor)',    hint: 'The Type D agentic position monitor (monitor model “Agent D”). Runs a tool-calling loop per open position, so use a tool-calling-capable model.', endpointKey: 'llm_monitor_d_endpoint', maxTokensKey: 'llm_monitor_d_max_tokens', fbEndpointKey: 'llm_monitor_d_fb_endpoint', fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens' },
-  { key: 'agentSignal',         label: 'Agent Signal',         hint: 'The agentic entry engine (entry model “Agent Signal”). Runs a tool-calling loop per watchlist coin, so use a tool-calling-capable model.', endpointKey: 'llm_agentSignal_endpoint', maxTokensKey: 'llm_agentSignal_max_tokens', fbEndpointKey: 'llm_agentSignal_fb_endpoint', fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens' },
+  { key: 'analyst',             label: 'Analyst',              hint: 'Main BUY/SELL/HOLD decision per coin.',                   endpointKey: 'llm_analyst_endpoint',             maxTokensKey: 'llm_analyst_max_tokens',             fbEndpointKey: 'llm_analyst_fb_endpoint',             fbMaxTokensKey: 'llm_analyst_fb_max_tokens',             streamKey: 'llm_stream_analyst' },
+  { key: 'extractor',           label: 'Extractor',            hint: 'Compresses research articles into structured sentiment.', endpointKey: 'llm_extractor_endpoint',           maxTokensKey: 'llm_extractor_max_tokens',           fbEndpointKey: 'llm_extractor_fb_endpoint',           fbMaxTokensKey: 'llm_extractor_fb_max_tokens',           streamKey: 'llm_stream_extractor' },
+  { key: 'discoverer',          label: 'Discoverer',           hint: 'Scores new coin candidates during discovery.',            endpointKey: 'llm_discoverer_endpoint',          maxTokensKey: 'llm_discoverer_max_tokens',          fbEndpointKey: 'llm_discoverer_fb_endpoint',          fbMaxTokensKey: 'llm_discoverer_fb_max_tokens',          streamKey: 'llm_stream_discoverer' },
+  { key: 'discovererExtractor', label: 'Discoverer extractor', hint: 'Extractor used inside the discovery pipeline.',            endpointKey: 'llm_discoverer_extractor_endpoint', maxTokensKey: 'llm_discoverer_extractor_max_tokens', fbEndpointKey: 'llm_discoverer_extractor_fb_endpoint', fbMaxTokensKey: 'llm_discoverer_extractor_fb_max_tokens', streamKey: 'llm_stream_discovererExtractor' },
+  { key: 'monitorA',            label: 'Monitor A',            hint: 'Slot A — primary model that reviews open positions.',     endpointKey: 'llm_monitor_a_endpoint',           maxTokensKey: 'llm_monitor_a_max_tokens',           fbEndpointKey: 'llm_monitor_a_fb_endpoint',           fbMaxTokensKey: 'llm_monitor_a_fb_max_tokens',           streamKey: 'llm_stream_monitorA' },
+  { key: 'monitorB',            label: 'Monitor B',            hint: 'Slot B — second model for the position monitor (used in B / Alternate / A+B / A+B+C modes).', endpointKey: 'llm_monitor_b_endpoint', maxTokensKey: 'llm_monitor_b_max_tokens', fbEndpointKey: 'llm_monitor_b_fb_endpoint', fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens', streamKey: 'llm_stream_monitorB' },
+  { key: 'monitorC',            label: 'Monitor C',            hint: 'Slot C — the synthesizer in A+B+C mode. Sees A and B’s verdicts and writes the final decision. Use a strong, well-reasoned model.', endpointKey: 'llm_monitor_c_endpoint', maxTokensKey: 'llm_monitor_c_max_tokens', fbEndpointKey: 'llm_monitor_c_fb_endpoint', fbMaxTokensKey: 'llm_monitor_c_fb_max_tokens', streamKey: 'llm_stream_monitorC' },
+  { key: 'summary',             label: 'Portfolio Summary',    hint: 'Writes the scheduled portfolio briefing from holdings + Binance market data.', endpointKey: 'llm_summary_endpoint', maxTokensKey: 'llm_summary_max_tokens', fbEndpointKey: 'llm_summary_fb_endpoint', fbMaxTokensKey: 'llm_summary_fb_max_tokens', streamKey: 'llm_stream_summary' },
+  { key: 'entryAgent',          label: 'Entry Agent',          hint: 'The agentic per-coin entry engine: drives each deferred BUY (adjusts the band / fires / cancels) via tool calls. Use a tool-calling-capable model.', endpointKey: 'llm_entryAgent_endpoint', maxTokensKey: 'llm_entryAgent_max_tokens', fbEndpointKey: 'llm_entryAgent_fb_endpoint', fbMaxTokensKey: 'llm_entryAgent_fb_max_tokens', streamKey: 'llm_stream_entryAgent' },
+  { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens', streamKey: 'llm_stream_agent' },
+  { key: 'monitorD',            label: 'Agent D (monitor)',    hint: 'The Type D agentic position monitor (monitor model “Agent D”). Runs a tool-calling loop per open position, so use a tool-calling-capable model.', endpointKey: 'llm_monitor_d_endpoint', maxTokensKey: 'llm_monitor_d_max_tokens', fbEndpointKey: 'llm_monitor_d_fb_endpoint', fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens', streamKey: 'llm_stream_monitorD' },
+  { key: 'agentSignal',         label: 'Agent Signal',         hint: 'The agentic entry engine (entry model “Agent Signal”). Runs a tool-calling loop per watchlist coin, so use a tool-calling-capable model.', endpointKey: 'llm_agentSignal_endpoint', maxTokensKey: 'llm_agentSignal_max_tokens', fbEndpointKey: 'llm_agentSignal_fb_endpoint', fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens', streamKey: 'llm_stream_agentSignal' },
 ]
 
 type LLMModule = typeof LLM_MODULES[number]
@@ -575,6 +588,17 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
           placeholder={primaryDefaultTokens ? `${primaryDefaultTokens}` : 'max'}
           className="font-mono text-xs"
           aria-label={`${m.label} max tokens`}
+        />
+      </div>
+
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <span className="text-[11px] text-muted">
+          Stream tokens <span className="text-muted/60">— keeps the socket warm (avoids idle "Premature close" drops) and shows live tokens in LLM Debug.</span>
+        </span>
+        <Toggle
+          checked={(settings[m.streamKey] as boolean) !== false}
+          onChange={() => set(m.streamKey, ((settings[m.streamKey] as boolean) === false) as SettingsData[typeof m.streamKey])}
+          label={`${m.label} streaming`}
         />
       </div>
 

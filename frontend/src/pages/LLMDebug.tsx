@@ -270,7 +270,72 @@ function ToolCallsBlock({ calls }: { calls: ParsedToolCall[] }) {
 
 // ── Running detail panel ──────────────────────────────────────────────────────
 
-function RunningCallDetail({ call }: { call: LLMCall }) {
+// Live accumulation of a streaming call's tokens, keyed by temp_id in the page.
+interface LiveStream {
+  content: string
+  reasoning: string
+  tools: { index: number; name: string; args: string }[]
+}
+
+function hasLiveContent(live?: LiveStream): boolean {
+  return !!live && (!!live.content || !!live.reasoning || live.tools.length > 0)
+}
+
+// Live token view shown while a streaming call is in flight. Renders the model's
+// thinking, the answer text, and any tool calls as they form — each as its own
+// section — and keeps the newest tokens in view. Plain pre (not markdown) on
+// purpose: partial markdown mid-stream renders as broken syntax.
+function LiveStreamView({ live }: { live: LiveStream }) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+  }, [live.content, live.reasoning, live.tools])
+
+  return (
+    <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+      {live.reasoning && (
+        <div className="rounded-xl border border-violet-500/30 bg-surface-elevated overflow-hidden">
+          <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-violet-400 border-b border-violet-500/20">
+            Thinking
+          </div>
+          <pre className="px-4 py-3 text-sm whitespace-pre-wrap break-words font-mono leading-relaxed text-foreground/80">{live.reasoning}</pre>
+        </div>
+      )}
+
+      {live.tools.length > 0 && (
+        <div className="rounded-xl border border-accent2/30 bg-surface-elevated overflow-hidden">
+          <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent2 border-b border-accent2/20">
+            Tool calls
+          </div>
+          <div className="px-4 py-3 space-y-2">
+            {live.tools.map((t, i) => (
+              <div key={i} className="text-sm font-mono">
+                <span className="text-accent2 font-semibold">{t.name || '…'}</span>
+                <pre className="mt-0.5 whitespace-pre-wrap break-words text-foreground/70 leading-relaxed">{t.args}</pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {live.content && (
+        <div className="rounded-xl border border-buy/30 bg-surface-elevated overflow-hidden">
+          <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-buy border-b border-buy/20">
+            Response
+          </div>
+          <pre className="px-4 py-3 text-sm whitespace-pre-wrap break-words font-mono leading-relaxed text-foreground/90">{live.content}</pre>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 text-[11px] text-warn/80 px-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-warn animate-pulse" />
+        streaming…
+      </div>
+    </div>
+  )
+}
+
+function RunningCallDetail({ call, live }: { call: LLMCall; live?: LiveStream }) {
   const isQueued = call.status === 'queued'
   // While queued, count from enqueue (queue wait). Once in flight, count from
   // running_at so the live number reflects inference latency only — matching the
@@ -331,19 +396,23 @@ function RunningCallDetail({ call }: { call: LLMCall }) {
           </span>
         </div>
       </div>
-      <div className="flex-1 flex items-center justify-center">
-        {isQueued ? (
-          <div className="flex flex-col items-center gap-4 text-muted">
-            <ClockIcon className="w-8 h-8 text-accent2" />
-            <p className="text-sm">Queued — waiting for an open slot on this endpoint…</p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-4 text-muted">
-            <div className="w-8 h-8 border-2 border-warn border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm">Waiting for LLM response…</p>
-          </div>
-        )}
-      </div>
+      {!isQueued && hasLiveContent(live) ? (
+        <LiveStreamView live={live!} />
+      ) : (
+        <div className="flex-1 flex items-center justify-center">
+          {isQueued ? (
+            <div className="flex flex-col items-center gap-4 text-muted">
+              <ClockIcon className="w-8 h-8 text-accent2" />
+              <p className="text-sm">Queued — waiting for an open slot on this endpoint…</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-4 text-muted">
+              <div className="w-8 h-8 border-2 border-warn border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm">{call.stream ? 'Streaming — waiting for the first token…' : 'Waiting for LLM response…'}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -546,6 +615,9 @@ let _runningCounter = 0
 export default function LLMDebug() {
   const [calls, setCalls] = useState<LLMCall[]>([])
   const callsRef = useRef<LLMCall[]>([])
+  // Live streamed tokens for in-flight streaming calls, keyed by temp_id. Ephemeral:
+  // cleared when the call completes (the persisted transcript takes over) or on Clear.
+  const [streams, setStreams] = useState<Record<string, LiveStream>>({})
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -568,6 +640,7 @@ export default function LLMDebug() {
       await fetch('/api/llm-calls', { method: 'DELETE' })
       callsRef.current = []
       setCalls([])
+      setStreams({})
       setSelectedId(null)
     } finally {
       setClearing(false)
@@ -626,10 +699,35 @@ export default function LLMDebug() {
         duration_ms: 0,
         queue_ms: null,
         status: raw.status === 'queued' ? 'queued' : 'running',
+        stream: (raw as { stream?: boolean }).stream,
       }
       callsRef.current = [runningCall, ...callsRef.current]
       setCalls(callsRef.current)
       setSelectedId(prev => prev === null ? tempNumId : prev)
+      return
+    }
+
+    if (event === 'llm_call_chunk') {
+      // Incremental tokens for a streaming call — append by temp_id. The backend
+      // coalesces ~50ms of deltas per message; `tools` arrives as a full snapshot.
+      const { temp_id, content, reasoning, tools } = data as {
+        temp_id?: string
+        content?: string
+        reasoning?: string
+        tools?: { index: number; name: string; args: string }[]
+      }
+      if (!temp_id) return
+      setStreams(prev => {
+        const cur = prev[temp_id] ?? { content: '', reasoning: '', tools: [] }
+        return {
+          ...prev,
+          [temp_id]: {
+            content: cur.content + (content ?? ''),
+            reasoning: cur.reasoning + (reasoning ?? ''),
+            tools: tools ?? cur.tools,
+          },
+        }
+      })
       return
     }
 
@@ -667,6 +765,16 @@ export default function LLMDebug() {
       })()
       callsRef.current = next
       setCalls(next)
+      // The persisted transcript now exists — drop the ephemeral live stream.
+      if (call.temp_id) {
+        const tid = call.temp_id
+        setStreams(prev => {
+          if (!(tid in prev)) return prev
+          const n = { ...prev }
+          delete n[tid]
+          return n
+        })
+      }
       // If the running entry was selected, switch selection to the real id
       if (replacedTempId !== null) {
         const rId = replacedTempId
@@ -740,7 +848,8 @@ export default function LLMDebug() {
         ) : (() => {
           const selectedCall = calls.find(c => c.id === selectedId)
           if (selectedCall?.status === 'running' || selectedCall?.status === 'queued') {
-            return <RunningCallDetail key={selectedId} call={selectedCall} />
+            const live = selectedCall.temp_id ? streams[selectedCall.temp_id] : undefined
+            return <RunningCallDetail key={selectedId} call={selectedCall} live={live} />
           }
           return <CallDetail key={selectedId} callId={selectedId} />
         })()}

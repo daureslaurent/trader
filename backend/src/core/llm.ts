@@ -20,6 +20,9 @@ export interface RunningLLMCall {
   created_at: string
   /** 'queued' = waiting for the per-URL slot; 'running' = request in flight. */
   status: 'queued' | 'running'
+  /** True when this call streams its tokens — the UI shows a live token view and
+   *  expects `llm_call_chunk` events for this temp_id rather than a "waiting" spinner. */
+  stream?: boolean
   /**
    * When the request actually went in flight. Equals `created_at` when the call
    * never queued; `null` while still waiting in line. Lets the UI separate queue
@@ -340,6 +343,128 @@ export async function llmChat(
   throw lastErr
 }
 
+/** Per-module streaming flag (default ON). Keyed by the base module name so call
+ *  variants (e.g. `extractor-challenge`) follow their base module's setting. An
+ *  unmapped/absent key streams by default; only an explicit `false` disables it. */
+function streamEnabled(module: string): boolean {
+  const base = module.split('-')[0]
+  const val = (getSettings() as unknown as Record<string, unknown>)[`llm_stream_${base}`]
+  return val !== false
+}
+
+// In-progress accumulation of a streamed completion.
+interface StreamAcc {
+  content: string
+  reasoning: string
+  tools: { id?: string; type?: string; function: { name?: string; arguments: string } }[]
+}
+
+/**
+ * Run a chat completion in streaming mode and reconstruct the equivalent
+ * non-streaming `ChatCompletion`. Tokens are accumulated as they arrive and
+ * broadcast (throttled, keyed by `tempId`) as `llm_call_chunk` events for the live
+ * LLM Debug view. The returned object is shaped exactly like a normal completion
+ * (content / reasoning_content / tool_calls / usage / finish_reason), so callers
+ * are unaffected — only the transport changes. A mid-stream error propagates to the
+ * caller, so the existing transient-retry / failover paths still apply unchanged.
+ */
+async function runStreaming(
+  client: OpenAI,
+  params: OpenAI.ChatCompletionCreateParams,
+  tempId: string,
+): Promise<OpenAI.ChatCompletion> {
+  const streamParams = { ...params, stream: true, stream_options: { include_usage: true } }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stream = (await (client.chat.completions.create as any)(streamParams)) as AsyncIterable<OpenAI.ChatCompletionChunk>
+
+  const acc: StreamAcc = { content: '', reasoning: '', tools: [] }
+  let finishReason: string | null = null
+  let usage: OpenAI.CompletionUsage | undefined
+  let respId = `chatcmpl-${tempId}`
+  let created = Math.floor(Date.now() / 1000)
+  let model = params.model
+
+  // Throttle WS chunk broadcasts: coalesce deltas and flush at most every ~50ms,
+  // so a fast token stream produces ≤~20 messages/sec rather than one per token.
+  // No timers — a final forced flush guarantees the tail is delivered.
+  let pendingContent = ''
+  let pendingReasoning = ''
+  let toolsDirty = false
+  let lastFlush = 0
+  const flush = (force: boolean): void => {
+    const now = Date.now()
+    if (!force && now - lastFlush < 50) return
+    if (!pendingContent && !pendingReasoning && !toolsDirty) return
+    broadcast('llm_call_chunk', {
+      temp_id: tempId,
+      ...(pendingContent ? { content: pendingContent } : {}),
+      ...(pendingReasoning ? { reasoning: pendingReasoning } : {}),
+      ...(toolsDirty ? { tools: acc.tools.map((t, i) => ({ index: i, name: t.function.name ?? '', args: t.function.arguments })) } : {}),
+    })
+    pendingContent = ''
+    pendingReasoning = ''
+    toolsDirty = false
+    lastFlush = now
+  }
+
+  for await (const chunk of stream) {
+    if (chunk.id) respId = chunk.id
+    if (chunk.created) created = chunk.created
+    if (chunk.model) model = chunk.model
+    if (chunk.usage) usage = chunk.usage
+    const choice = chunk.choices?.[0]
+    if (!choice) continue // usage-only final chunk carries no choices
+    if (choice.finish_reason) finishReason = choice.finish_reason
+    const delta = choice.delta as (OpenAI.ChatCompletionChunk.Choice.Delta & { reasoning_content?: string }) | undefined
+    if (!delta) continue
+    if (delta.content) { acc.content += delta.content; pendingContent += delta.content }
+    if (delta.reasoning_content) { acc.reasoning += delta.reasoning_content; pendingReasoning += delta.reasoning_content }
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const i = tc.index ?? 0
+        let slot = acc.tools[i]
+        if (!slot) { slot = acc.tools[i] = { type: 'function', function: { name: undefined, arguments: '' } } }
+        if (tc.id) slot.id = tc.id
+        if (tc.type) slot.type = tc.type
+        if (tc.function?.name) slot.function.name = tc.function.name
+        if (tc.function?.arguments) slot.function.arguments += tc.function.arguments
+      }
+      toolsDirty = true
+    }
+    flush(false)
+  }
+  flush(true)
+
+  // Reassemble the message exactly as a non-streaming response would carry it:
+  // content null when empty (so the empty-content/tool-call detection downstream is
+  // unchanged), reasoning_content only when present, tool_calls only when requested.
+  const message: Record<string, unknown> = { role: 'assistant', content: acc.content ? acc.content : null }
+  if (acc.reasoning) message.reasoning_content = acc.reasoning
+  const tools = acc.tools.filter(Boolean)
+  if (tools.length) {
+    message.tool_calls = tools.map(t => ({
+      id: t.id ?? '',
+      type: t.type ?? 'function',
+      function: { name: t.function.name ?? '', arguments: t.function.arguments },
+    }))
+  }
+
+  return {
+    id: respId,
+    object: 'chat.completion',
+    created,
+    model,
+    choices: [{
+      index: 0,
+      finish_reason: (finishReason ?? 'stop') as OpenAI.ChatCompletion.Choice['finish_reason'],
+      message: message as unknown as OpenAI.ChatCompletionMessage,
+      logprobs: null,
+    }],
+    usage,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any as OpenAI.ChatCompletion
+}
+
 // Single attempt against one endpoint/model. Records the running call, serializes
 // per base URL, performs the request and logs the result to `llm_calls`. Throws
 // on transport/API errors so the caller (llmChat) can decide whether to fail over.
@@ -356,6 +481,7 @@ async function runChat(
   // A call that arrives while its gate is at capacity starts "queued" and flips to
   // "running" once it reaches the front of the waiting list.
   const gate = resolveGate(baseUrl, params.model)
+  const willStream = streamEnabled(meta.module)
 
   const toTs = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
   const enqueuedMs = Date.now()
@@ -371,6 +497,7 @@ async function runChat(
     created_at: toTs(enqueuedMs),
     status: queued ? 'queued' : 'running',
     running_at: queued ? null : toTs(enqueuedMs),
+    stream: willStream,
   }
   _runningCalls.set(tempId, callStart)
   broadcast('llm_call_start', callStart)
@@ -393,8 +520,12 @@ async function runChat(
     let errInfo: LLMErrorInfo | null = null
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      resp = (await (client.chat.completions.create as any)(params)) as OpenAI.ChatCompletion
+      if (willStream) {
+        resp = await runStreaming(client, params, tempId)
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        resp = (await (client.chat.completions.create as any)(params)) as OpenAI.ChatCompletion
+      }
       return resp
     } catch (err) {
       // Capture the full error+cause chain (transport code, HTTP status) — the

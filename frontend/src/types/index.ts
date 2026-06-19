@@ -559,6 +559,9 @@ export interface LLMCall {
   error_status?: number | null
   /** The `max_tokens` requested for this call. */
   max_tokens?: number | null
+  /** True when this call streams its tokens — LLM Debug shows a live token view and
+   *  consumes `llm_call_chunk` events for this call's temp_id while it's in flight. */
+  stream?: boolean
   prompt_tokens: number | null
   completion_tokens: number | null
   thinking_tokens: number | null

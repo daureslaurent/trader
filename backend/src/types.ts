@@ -247,6 +247,24 @@ export interface BotSettings {
   llm_monitor_d_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
+  /** Per-module streaming toggle. When true (default), the module's chat completions
+   *  are requested with `stream: true` — tokens arrive incrementally, which keeps the
+   *  socket warm (avoids idle-timeout "Premature close" drops on local servers) and
+   *  powers the live token view in LLM Debug. The streamed result is reconstructed
+   *  into an identical ChatCompletion, so module behavior is unchanged. Keyed by the
+   *  `LLMModule` name (e.g. `monitorD`), matching the `module` recorded on each call. */
+  llm_stream_analyst: boolean
+  llm_stream_extractor: boolean
+  llm_stream_discoverer: boolean
+  llm_stream_discovererExtractor: boolean
+  llm_stream_monitorA: boolean
+  llm_stream_monitorB: boolean
+  llm_stream_monitorC: boolean
+  llm_stream_summary: boolean
+  llm_stream_entryAgent: boolean
+  llm_stream_agent: boolean
+  llm_stream_monitorD: boolean
+  llm_stream_agentSignal: boolean
   /** Per-module failover endpoint selection (id into `llm_endpoints`; blank = no
    *  fallback) + max-tokens (0 = reuse the primary's effective max-tokens). Tried
    *  only if the primary LLM call throws (endpoint down, timeout, 5xx, unknown model). */
