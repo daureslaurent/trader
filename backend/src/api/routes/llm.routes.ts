@@ -73,7 +73,7 @@ router.get('/llm-calls', async (req: Request, res: Response) => {
 
     res.json(await llmCalls.find(filter, {
       sort: { created_at: -1 }, limit,
-      projection: { _id: 0, id: 1, module: 1, model: 1, base_url: 1, response: 1, reasoning_content: 1, error: 1, prompt_tokens: 1, completion_tokens: 1, thinking_tokens: 1, duration_ms: 1, queue_ms: 1, coin: 1, cycle_id: 1, created_at: 1 },
+      projection: { _id: 0, id: 1, module: 1, model: 1, base_url: 1, response: 1, reasoning_content: 1, error: 1, error_code: 1, error_status: 1, stream_dirty: 1, prompt_tokens: 1, completion_tokens: 1, thinking_tokens: 1, duration_ms: 1, queue_ms: 1, coin: 1, cycle_id: 1, created_at: 1 },
     }))
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })

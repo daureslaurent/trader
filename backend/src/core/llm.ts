@@ -29,6 +29,14 @@ export interface RunningLLMCall {
    * wait (created_at → running_at) from inference latency (running_at → done).
    */
   running_at: string | null
+  /**
+   * Tokens accumulated so far on a streaming call, mirrored into backend memory on
+   * each WS flush. A frontend that mounts or reloads mid-stream rehydrates its live
+   * token view from this (via `/llm-calls/running`) instead of being stuck on an
+   * empty "waiting for the first token" panel — the `llm_call_chunk` deltas it
+   * missed are not replayed.
+   */
+  stream_partial?: { content: string; reasoning: string; tools: { index: number; name: string; args: string }[] }
 }
 
 const _runningCalls = new Map<string, RunningLLMCall>()
@@ -401,6 +409,16 @@ async function runStreaming(
       ...(pendingReasoning ? { reasoning: pendingReasoning } : {}),
       ...(toolsDirty ? { tools: acc.tools.map((t, i) => ({ index: i, name: t.function.name ?? '', args: t.function.arguments })) } : {}),
     })
+    // Mirror the running total into backend memory so a frontend that reloads
+    // mid-stream can rehydrate the live token view from `/llm-calls/running`.
+    const entry = _runningCalls.get(tempId)
+    if (entry) {
+      entry.stream_partial = {
+        content: acc.content,
+        reasoning: acc.reasoning,
+        tools: acc.tools.map((t, i) => ({ index: i, name: t.function.name ?? '', args: t.function.arguments })),
+      }
+    }
     pendingContent = ''
     pendingReasoning = ''
     toolsDirty = false

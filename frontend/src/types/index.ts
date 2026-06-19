@@ -565,6 +565,9 @@ export interface LLMCall {
   /** True when this call streams its tokens — LLM Debug shows a live token view and
    *  consumes `llm_call_chunk` events for this call's temp_id while it's in flight. */
   stream?: boolean
+  /** Tokens accumulated so far on an in-flight streaming call (running calls only).
+   *  Lets LLM Debug rehydrate the live token view after a page reload mid-stream. */
+  stream_partial?: { content: string; reasoning: string; tools: { index: number; name: string; args: string }[] } | null
   prompt_tokens: number | null
   completion_tokens: number | null
   thinking_tokens: number | null

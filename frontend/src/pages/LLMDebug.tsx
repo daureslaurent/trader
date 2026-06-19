@@ -689,6 +689,18 @@ export default function LLMDebug() {
         ]
         callsRef.current = merged
         setCalls(merged)
+        // Rehydrate the live token view for calls still streaming — the backend
+        // mirrors each call's accumulated tokens into memory, so a reload mid-stream
+        // restores what was on screen rather than an empty "waiting" panel. Any live
+        // deltas already in state win over the (slightly older) seeded snapshot.
+        const seeded: Record<string, LiveStream> = {}
+        for (const c of filteredRunning) {
+          const p = c.stream_partial
+          if (c.temp_id && p && (p.content || p.reasoning || p.tools.length)) {
+            seeded[c.temp_id] = { content: p.content, reasoning: p.reasoning, tools: p.tools }
+          }
+        }
+        if (Object.keys(seeded).length) setStreams(prev => ({ ...seeded, ...prev }))
         if (merged.length > 0 && !selectedId) setSelectedId(merged[0].id)
         setLoading(false)
       })
