@@ -407,40 +407,70 @@ async function runStreaming(
     lastFlush = now
   }
 
-  for await (const chunk of stream) {
-    if (chunk.id) respId = chunk.id
-    if (chunk.created) created = chunk.created
-    if (chunk.model) model = chunk.model
-    if (chunk.usage) usage = chunk.usage
-    const choice = chunk.choices?.[0]
-    if (!choice) continue // usage-only final chunk carries no choices
-    if (choice.finish_reason) finishReason = choice.finish_reason
-    const delta = choice.delta as (OpenAI.ChatCompletionChunk.Choice.Delta & { reasoning_content?: string }) | undefined
-    if (!delta) continue
-    if (delta.content) { acc.content += delta.content; pendingContent += delta.content }
-    if (delta.reasoning_content) { acc.reasoning += delta.reasoning_content; pendingReasoning += delta.reasoning_content }
-    if (delta.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        const i = tc.index ?? 0
-        let slot = acc.tools[i]
-        if (!slot) { slot = acc.tools[i] = { type: 'function', function: { name: undefined, arguments: '' } } }
-        if (tc.id) slot.id = tc.id
-        if (tc.type) slot.type = tc.type
-        if (tc.function?.name) slot.function.name = tc.function.name
-        if (tc.function?.arguments) slot.function.arguments += tc.function.arguments
+  let streamThrew: unknown = null
+  try {
+    for await (const chunk of stream) {
+      if (chunk.id) respId = chunk.id
+      if (chunk.created) created = chunk.created
+      if (chunk.model) model = chunk.model
+      if (chunk.usage) usage = chunk.usage
+      const choice = chunk.choices?.[0]
+      if (!choice) continue // usage-only final chunk carries no choices
+      if (choice.finish_reason) finishReason = choice.finish_reason
+      const delta = choice.delta as (OpenAI.ChatCompletionChunk.Choice.Delta & { reasoning_content?: string }) | undefined
+      if (!delta) continue
+      if (delta.content) { acc.content += delta.content; pendingContent += delta.content }
+      if (delta.reasoning_content) { acc.reasoning += delta.reasoning_content; pendingReasoning += delta.reasoning_content }
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const i = tc.index ?? 0
+          let slot = acc.tools[i]
+          if (!slot) { slot = acc.tools[i] = { type: 'function', function: { name: undefined, arguments: '' } } }
+          if (tc.id) slot.id = tc.id
+          if (tc.type) slot.type = tc.type
+          if (tc.function?.name) slot.function.name = tc.function.name
+          if (tc.function?.arguments) slot.function.arguments += tc.function.arguments
+        }
+        toolsDirty = true
       }
-      toolsDirty = true
+      flush(false)
     }
-    flush(false)
+  } catch (err) {
+    streamThrew = err
   }
   flush(true)
+
+  const tools = acc.tools.filter(Boolean)
+
+  // Local llama.cpp servers frequently tear down the SSE socket uncleanly *after*
+  // the model has already finished a turn — especially tool-call turns (the trailing
+  // usage chunk path is the common offender) — which surfaces as
+  // ERR_STREAM_PREMATURE_CLOSE even though the whole response was already received.
+  // If we have a terminal signal (an explicit finish_reason, or fully-formed tool
+  // calls with parseable arguments), the result is complete, so trust what we
+  // accumulated. Otherwise the stream was genuinely cut mid-generation: rethrow and
+  // let the transient-retry / failover paths take over.
+  if (streamThrew) {
+    const argsParseable = (s: string): boolean => {
+      if (s.trim() === '') return false
+      try { JSON.parse(s); return true } catch { return false }
+    }
+    const toolsComplete = tools.length > 0 && tools.every(t => !!t.function.name && argsParseable(t.function.arguments))
+    if (!finishReason && !toolsComplete) throw streamThrew
+    logger.warn('LLM stream closed uncleanly after completion — using accumulated result', {
+      error: streamThrew instanceof Error ? streamThrew.message : String(streamThrew),
+      finish_reason: finishReason,
+      tool_calls: tools.length,
+      content_chars: acc.content.length,
+    })
+    if (!finishReason) finishReason = tools.length ? 'tool_calls' : 'stop'
+  }
 
   // Reassemble the message exactly as a non-streaming response would carry it:
   // content null when empty (so the empty-content/tool-call detection downstream is
   // unchanged), reasoning_content only when present, tool_calls only when requested.
   const message: Record<string, unknown> = { role: 'assistant', content: acc.content ? acc.content : null }
   if (acc.reasoning) message.reasoning_content = acc.reasoning
-  const tools = acc.tools.filter(Boolean)
   if (tools.length) {
     message.tool_calls = tools.map(t => ({
       id: t.id ?? '',
