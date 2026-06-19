@@ -106,7 +106,14 @@ function CallListItem({ call, selected, onClick }: { call: LLMCall; selected: bo
           </span>
         )}
         {!isQueued && !isRunning && hasError && (
-          <span className="text-[10px] font-semibold text-sell bg-sell/10 px-1.5 py-0.5 rounded">ERR</span>
+          <span className="flex items-center gap-1 text-[10px] font-semibold text-sell bg-sell/10 px-1.5 py-0.5 rounded">
+            ERR
+            {(call.error_code || call.error_status) && (
+              <span className="font-mono opacity-80" title={call.error_code ? `code ${call.error_code}` : `status ${call.error_status}`}>
+                {call.error_code ?? call.error_status}
+              </span>
+            )}
+          </span>
         )}
         {!isQueued && !isRunning && !hasError && toolCount > 0 && (
           <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">

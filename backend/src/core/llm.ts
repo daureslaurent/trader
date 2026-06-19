@@ -203,6 +203,50 @@ function isTransientTransportError(err: unknown): boolean {
   return TRANSIENT_RE.test(msg)
 }
 
+/**
+ * Structured diagnostics extracted from a thrown LLM error. "Premature close" and
+ * friends arrive wrapped by the OpenAI SDK (an `APIConnectionError`) around an
+ * undici fetch error whose *real* reason lives in a nested `.cause` chain — the
+ * surface `.message` alone ("Premature close") tells you nothing about whether the
+ * server reset the socket, hit a keep-alive timeout, or died mid-body. This walks
+ * the whole error+cause chain to surface the deepest transport `code`
+ * (ECONNRESET / UND_ERR_SOCKET / ETIMEDOUT …) and any HTTP `status`, and builds a
+ * multi-line description that records every link in the chain.
+ */
+interface LLMErrorInfo {
+  /** Human-readable, multi-line: every error/cause link with its name, code, message. */
+  message: string
+  /** Deepest transport/error code found in the chain (e.g. ECONNRESET, UND_ERR_SOCKET). */
+  code: string | null
+  /** HTTP status from an OpenAI APIError, if the failure was an API response (not transport). */
+  status: number | null
+}
+
+function describeLLMError(err: unknown): LLMErrorInfo {
+  if (!(err instanceof Error) && typeof err !== 'object') {
+    return { message: String(err), code: null, status: null }
+  }
+  const lines: string[] = []
+  let code: string | null = null
+  let status: number | null = null
+  let node: unknown = err
+  const seen = new Set<unknown>()
+  let depth = 0
+  // Cap the walk so a self-referential cause chain can't loop forever.
+  while (node && typeof node === 'object' && !seen.has(node) && depth < 8) {
+    seen.add(node)
+    const e = node as { name?: string; message?: string; code?: string; status?: number; cause?: unknown }
+    const name = e.name ?? (node instanceof Error ? 'Error' : 'Object')
+    const parts = [`${name}: ${e.message ?? String(node)}`]
+    if (e.code) { parts.push(`code=${e.code}`); code = String(e.code) }
+    if (typeof e.status === 'number') { parts.push(`status=${e.status}`); if (status === null) status = e.status }
+    lines.push(`${'  '.repeat(depth)}${parts.join(' ')}`)
+    node = e.cause
+    depth++
+  }
+  return { message: lines.join('\n'), code, status }
+}
+
 // Bounded same-endpoint retries for transient transport errors. 0 disables (failover only).
 const _envRetries = Number(process.env.LLM_TRANSPORT_RETRIES)
 const TRANSPORT_RETRIES = Number.isFinite(_envRetries) && _envRetries >= 0 ? _envRetries : 2
@@ -346,13 +390,17 @@ async function runChat(
     }
     let resp: OpenAI.ChatCompletion | null = null
     let errMsg: string | null = null
+    let errInfo: LLMErrorInfo | null = null
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       resp = (await (client.chat.completions.create as any)(params)) as OpenAI.ChatCompletion
       return resp
     } catch (err) {
-      errMsg = err instanceof Error ? err.message : String(err)
+      // Capture the full error+cause chain (transport code, HTTP status) — the
+      // surface message ("Premature close") loses the real reason otherwise.
+      errInfo = describeLLMError(err)
+      errMsg = errInfo.message
       throw err
     } finally {
       const durationMs = Date.now() - startMs
@@ -399,6 +447,12 @@ async function runChat(
           response: responseText,
           reasoning_content: reasoningContent,
           error: effectiveError,
+          // Structured failure diagnostics, queryable for triage (e.g. group the
+          // "Premature close" floods by error_code to see ECONNRESET vs timeout).
+          error_code: errInfo?.code ?? null,
+          error_status: errInfo?.status ?? null,
+          // Requested generation cap — long max_tokens correlates with mid-body drops.
+          max_tokens: typeof params.max_tokens === 'number' ? params.max_tokens : null,
           prompt_tokens: resp?.usage?.prompt_tokens ?? null,
           completion_tokens: resp?.usage?.completion_tokens ?? null,
           thinking_tokens: thinkingTokens,
@@ -420,6 +474,8 @@ async function runChat(
           reasoning_content: reasoningContent,
           tool_calls: toolCallsJson,
           error: effectiveError,
+          error_code: errInfo?.code ?? null,
+          error_status: errInfo?.status ?? null,
           prompt_tokens: resp?.usage?.prompt_tokens ?? null,
           completion_tokens: resp?.usage?.completion_tokens ?? null,
           thinking_tokens: thinkingTokens,

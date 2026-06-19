@@ -689,6 +689,12 @@ export interface LLMCall {
   user_prompt?: string
   response: string | null
   error: string | null
+  /** Deepest transport/error code from the failure's cause chain (ECONNRESET, UND_ERR_SOCKET, …). */
+  error_code?: string | null
+  /** HTTP status when the failure was an API response rather than a transport drop. */
+  error_status?: number | null
+  /** The `max_tokens` requested for this call (helps correlate big generations with mid-body drops). */
+  max_tokens?: number | null
   prompt_tokens: number | null
   completion_tokens: number | null
   duration_ms: number

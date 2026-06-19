@@ -162,7 +162,7 @@ const VIEWS = {
   intents:   { name: 'entry_intents',     filter: {},                       sort: { coin: 1 },
                columns: ['coin', 'signal_price', 'target_price', 'notional_usdc', 'atr', 'expires_at'] },
   llm:       { name: 'llm_calls',          filter: {},                       sort: { id: -1 }, limitDefault: 20,
-               columns: ['id', 'module', 'model', 'error', 'duration_ms', 'created_at'] },
+               columns: ['id', 'module', 'model', 'error_code', 'error_status', 'error', 'duration_ms', 'created_at'] },
 }
 
 async function cmdView(view, arg, flags) {
