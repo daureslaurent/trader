@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, Fragment } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
@@ -12,16 +12,56 @@ import { useWebSocket } from '../hooks/useWebSocket'
 // ── Icons ──────────────────────────────────────────────────────────────────
 
 const WalletIcon = () => (
-  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a2.25 2.25 0 00-2.25-2.25H15a3 3 0 11-6 0H5.25A2.25 2.25 0 003 12m18 0v6a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 9m18 0V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v3" />
   </svg>
 )
 
-const ChevronRightIcon = () => (
-  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+const TrendUpIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
   </svg>
 )
+
+const VaultIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9v7.5a2.25 2.25 0 002.25 2.25h15a2.25 2.25 0 002.25-2.25V9m-19.5 0V6.75A2.25 2.25 0 014.5 4.5h15a2.25 2.25 0 012.25 2.25V9" />
+  </svg>
+)
+
+const StackIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0l4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0l-5.571 3-5.571-3" />
+  </svg>
+)
+
+const ArrowUpRight = () => (
+  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+  </svg>
+)
+
+const ArrowDownRight = () => (
+  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5l15 15m0 0V8.25m0 11.25H8.25" />
+  </svg>
+)
+
+// ── Tone system (theme tokens + neon glow layer) ────────────────────────────
+
+type Tone = 'pos' | 'neg' | 'neutral' | 'accent'
+
+const TONE: Record<Tone, { text: string; glow: string; ring: string }> = {
+  pos:     { text: 'text-buy',       glow: 'shadow-buy/30',    ring: 'border-buy/25' },
+  neg:     { text: 'text-sell',      glow: 'shadow-sell/30',   ring: 'border-sell/25' },
+  accent:  { text: 'text-accent',    glow: 'shadow-accent/30', ring: 'border-accent/25' },
+  neutral: { text: 'text-foreground', glow: 'shadow-accent/10', ring: 'border-border' },
+}
+
+function pnlTone(v: number | null | undefined): Tone {
+  if (v == null) return 'neutral'
+  return v >= 0 ? 'pos' : 'neg'
+}
 
 // ── Source badge ───────────────────────────────────────────────────────────
 
@@ -40,7 +80,7 @@ function SourceBadge({ source }: { source?: string }) {
   )
 }
 
-// ── Table helpers ──────────────────────────────────────────────────────────
+// ── Table helpers (holdings + final gains) ──────────────────────────────────
 
 function Th({ children, right }: { children: React.ReactNode; right?: boolean }) {
   return (
@@ -60,11 +100,11 @@ function Td({ children, right, className }: { children: React.ReactNode; right?:
 
 // ── Action badge ───────────────────────────────────────────────────────────
 
-const ACTION_STYLES: Record<string, { cls: string; label: string; leftBorder: string }> = {
-  HOLD:   { cls: 'bg-surface-elevated text-muted border-border',   label: 'HOLD',   leftBorder: 'border-l-border' },
-  CLOSE:  { cls: 'bg-sell/10 text-sell border-sell/20',            label: 'CLOSE',  leftBorder: 'border-l-sell' },
-  REDUCE: { cls: 'bg-warn/10 text-warn border-warn/20',            label: 'REDUCE', leftBorder: 'border-l-warn' },
-  ADJUST: { cls: 'bg-accent/10 text-accent border-accent/20',      label: 'ADJUST', leftBorder: 'border-l-accent' },
+const ACTION_STYLES: Record<string, { cls: string; label: string }> = {
+  HOLD:   { cls: 'bg-surface-elevated text-muted border-border',   label: 'HOLD' },
+  CLOSE:  { cls: 'bg-sell/10 text-sell border-sell/20',            label: 'CLOSE' },
+  REDUCE: { cls: 'bg-warn/10 text-warn border-warn/20',            label: 'REDUCE' },
+  ADJUST: { cls: 'bg-accent/10 text-accent border-accent/20',      label: 'ADJUST' },
 }
 
 function ActionBadge({ action }: { action: string }) {
@@ -77,8 +117,6 @@ function ActionBadge({ action }: { action: string }) {
 }
 
 // ── Break-even badge ───────────────────────────────────────────────────────
-// Shown once a position's live price clears the fee-adjusted break-even, i.e.
-// closing now would lock in a net gain after round-trip fees.
 
 function BreakEvenBadge({ price, className }: { price?: number; className?: string }) {
   return (
@@ -101,6 +139,18 @@ function BreakEvenBadge({ price, className }: { price?: number; className?: stri
   )
 }
 
+// ── OCO chip ────────────────────────────────────────────────────────────────
+
+function OcoChip({ status }: { status: ActivePosition['oco_status'] }) {
+  if (status === 'ACTIVE') {
+    return <span className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-buy/10 text-buy border border-buy/20" title="Exchange-side OCO active">🛡 OCO</span>
+  }
+  if (status === 'FAILED') {
+    return <span className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-sell/10 text-sell border border-sell/20" title="OCO failed — software fallback">⚠ Fallback</span>
+  }
+  return null
+}
+
 // ── Confidence bar ─────────────────────────────────────────────────────────
 
 function ConfidenceBar({ value }: { value: number }) {
@@ -116,7 +166,40 @@ function ConfidenceBar({ value }: { value: number }) {
   )
 }
 
-// ── Price track (SL → entry → TP) ─────────────────────────────────────────
+// ── Live-flashing price ─────────────────────────────────────────────────────
+// Subtle pulse on every tick: flashes buy/sell for ~0.6s on change, then settles.
+
+function PriceTick({ value, className, base }: { value: number | null; className?: string; base?: string }) {
+  const prev = useRef<number | null>(null)
+  const [dir, setDir] = useState<'up' | 'down' | null>(null)
+
+  useEffect(() => {
+    if (value == null) return
+    if (prev.current != null && value !== prev.current) {
+      setDir(value > prev.current ? 'up' : 'down')
+      const t = setTimeout(() => setDir(null), 600)
+      prev.current = value
+      return () => clearTimeout(t)
+    }
+    prev.current = value
+  }, [value])
+
+  return (
+    <span
+      className={cn(
+        'tabular-nums transition-colors duration-500',
+        dir === 'up' && 'text-buy',
+        dir === 'down' && 'text-sell',
+        !dir && base,
+        className,
+      )}
+    >
+      {value != null ? fmtUSD(value) : '—'}
+    </span>
+  )
+}
+
+// ── Price track (SL → entry → TP) ───────────────────────────────────────────
 
 function PriceTrack({ sl, tp, current, entry }: { sl: number; tp: number | null; current: number | null; entry: number }) {
   if (!current || !tp || tp <= sl) return null
@@ -125,18 +208,22 @@ function PriceTrack({ sl, tp, current, entry }: { sl: number; tp: number | null;
   const entryPct = Math.max(2, Math.min(98, ((entry - sl) / range) * 100))
   const isAboveEntry = current >= entry
   return (
-    <div className="mt-2.5 relative h-1 rounded-full bg-surface-hover">
+    <div className="relative h-1.5 rounded-full bg-surface-hover">
       <div className="absolute inset-0 rounded-full overflow-hidden">
-        <div className="absolute inset-y-0 left-0 w-1/2 bg-gradient-to-r from-sell/20 to-transparent" />
-        <div className="absolute inset-y-0 right-0 w-1/2 bg-gradient-to-l from-buy/20 to-transparent" />
+        <div className="absolute inset-y-0 left-0 w-1/2 bg-gradient-to-r from-sell/25 to-transparent" />
+        <div className="absolute inset-y-0 right-0 w-1/2 bg-gradient-to-l from-buy/25 to-transparent" />
       </div>
       <div
-        className="absolute top-1/2 w-px h-3 bg-border"
+        className="absolute top-1/2 w-px h-3.5 bg-border"
         style={{ left: `${entryPct}%`, transform: 'translate(-50%, -50%)' }}
         title="Entry price"
       />
       <div
-        className={cn('absolute w-2.5 h-2.5 rounded-full border-2 border-surface-card shadow-sm', isAboveEntry ? 'bg-buy' : 'bg-sell')}
+        className={cn(
+          'absolute w-3 h-3 rounded-full border-2 border-surface-card',
+          'shadow-[0_0_10px_-1px_var(--tw-shadow-color)]',
+          isAboveEntry ? 'bg-buy shadow-buy/60' : 'bg-sell shadow-sell/60',
+        )}
         style={{ left: `${pct}%`, top: '50%', transform: 'translate(-50%, -50%)' }}
         title={`Current: ${fmtUSD(current)}`}
       />
@@ -144,32 +231,159 @@ function PriceTrack({ sl, tp, current, entry }: { sl: number; tp: number | null;
   )
 }
 
-// ── Overview stat card ─────────────────────────────────────────────────────
+// ── KPI / HUD card ──────────────────────────────────────────────────────────
 
-function OverviewStat({ label, value, sub, valueClass, icon }: {
+function KpiCard({ label, value, sub, tone = 'neutral', icon }: {
   label: string
   value: string
   sub?: string
-  valueClass?: string
+  tone?: Tone
   icon?: React.ReactNode
 }) {
+  const t = TONE[tone]
   return (
-    <div className="bg-surface-card border border-border rounded-2xl p-4 neon-border">
-      <div className="flex items-start justify-between gap-2">
+    <div
+      className={cn(
+        'group relative overflow-hidden rounded-2xl border p-4 sm:p-5',
+        'bg-surface-card/70 backdrop-blur-xl',
+        'shadow-[0_0_28px_-14px_var(--tw-shadow-color)] transition-all duration-300',
+        'hover:-translate-y-0.5',
+        t.ring, t.glow,
+      )}
+    >
+      {/* top accent hairline */}
+      <div className={cn('pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent to-transparent opacity-50', t.text, 'via-current')} />
+      {/* corner glow */}
+      <div className={cn('pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full blur-2xl opacity-10 transition-opacity duration-300 group-hover:opacity-20', t.text.replace('text-', 'bg-'))} />
+
+      <div className="relative flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-medium text-muted uppercase tracking-wider">{label}</p>
-          <p className={cn('mt-1.5 text-xl font-semibold tabular-nums leading-none', valueClass ?? 'text-foreground')}>
+          <p className={cn('mt-2 text-2xl font-bold tabular-nums leading-none tracking-tight', t.text)}>
             {value}
           </p>
-          {sub && <p className="mt-1.5 text-xs text-muted">{sub}</p>}
+          {sub && <p className="mt-2 text-xs text-muted">{sub}</p>}
         </div>
         {icon && (
-          <div className="shrink-0 p-2 rounded-xl bg-accent/10 text-accent mt-0.5">
+          <div className={cn('shrink-0 p-2 rounded-xl bg-surface-hover/60 border border-border/60', t.text)}>
             {icon}
           </div>
         )}
       </div>
     </div>
+  )
+}
+
+// ── Position card (spacious DeFi-wallet style) ──────────────────────────────
+
+function PositionCard({ pos, onSelect }: { pos: ActivePosition; onSelect: (p: ActivePosition) => void }) {
+  const coin = pos.coin.replace('/USDC', '')
+  const tone = pnlTone(pos.pnl)
+  const t = TONE[tone]
+  const pnlPos = (pos.pnl ?? 0) >= 0
+  const slPnl = pos.stop_loss ? Math.round((pos.stop_loss - pos.entry_price) * pos.quantity * 100) / 100 : null
+  const openedAt = pos.created_at ? new Date(pos.created_at.includes('T') ? pos.created_at : pos.created_at + 'Z') : null
+  const durationSec = openedAt ? Math.floor((Date.now() - openedAt.getTime()) / 1000) : null
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(pos)}
+      className={cn(
+        'group relative w-full overflow-hidden rounded-2xl border p-4 text-left',
+        'bg-surface-card/70 backdrop-blur-xl',
+        'shadow-[0_0_30px_-18px_var(--tw-shadow-color)] transition-all duration-300',
+        'hover:-translate-y-0.5 hover:border-accent/40',
+        t.ring, t.glow,
+      )}
+    >
+      {/* left status rail */}
+      <div className={cn('pointer-events-none absolute inset-y-0 left-0 w-0.5', pnlPos ? 'bg-buy/60' : 'bg-sell/60')} />
+
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-base font-bold tracking-tight text-foreground">{coin}</span>
+          <span className={cn(
+            'text-xs px-1.5 py-0.5 rounded-md font-medium border',
+            pos.status === 'OPEN' ? 'bg-buy/10 text-buy border-buy/20' : 'bg-muted/10 text-muted border-border',
+          )}>
+            {pos.status}
+          </span>
+          {pos.status === 'OPEN' && <OcoChip status={pos.oco_status} />}
+        </div>
+        <span className="shrink-0 text-xs px-1.5 py-0.5 rounded-md border border-border bg-surface-hover/60 text-muted font-medium capitalize">
+          {pos.horizon ?? 'medium'}
+        </span>
+      </div>
+
+      {pos.status === 'OPEN' && pos.past_break_even && (
+        <div className="mt-2">
+          <BreakEvenBadge price={pos.break_even_price} />
+        </div>
+      )}
+
+      {/* PnL hero */}
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <p className={cn('flex items-center gap-1.5 text-2xl font-bold tabular-nums leading-none', t.text)}>
+            {pos.pnl != null ? (
+              <>
+                <span className={cn('inline-flex', t.text)}>{pnlPos ? <ArrowUpRight /> : <ArrowDownRight />}</span>
+                {pnlPos ? '+' : ''}{fmtUSD(pos.pnl)}
+              </>
+            ) : <span className="text-muted">—</span>}
+          </p>
+          {pos.pnl_pct != null && (
+            <p className={cn('mt-1 text-sm font-semibold tabular-nums', t.text)}>{fmtPct(pos.pnl_pct)}</p>
+          )}
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] uppercase tracking-wide text-muted">Live</p>
+          <PriceTick value={pos.current_price} base="text-foreground" className="text-sm font-semibold" />
+          <p className="text-[10px] text-muted tabular-nums mt-0.5">entry {fmtUSD(pos.entry_price)}</p>
+        </div>
+      </div>
+
+      {/* SL → entry → TP track */}
+      {pos.stop_loss && pos.take_profit && pos.current_price ? (
+        <div className="mt-4">
+          <PriceTrack sl={pos.stop_loss} tp={pos.take_profit} current={pos.current_price} entry={pos.entry_price} />
+          <div className="mt-1.5 flex items-center justify-between text-[11px] tabular-nums">
+            <span className="text-sell">SL {fmtUSD(pos.stop_loss)}</span>
+            <span className="text-buy">TP {fmtUSD(pos.take_profit)}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 flex items-center justify-between text-[11px] tabular-nums">
+          <span className="text-sell">SL {fmtUSD(pos.stop_loss)}</span>
+          <span className="text-muted">{pos.take_profit != null ? `TP ${fmtUSD(pos.take_profit)}` : 'No TP set'}</span>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className="mt-4 flex items-center justify-between border-t border-border/60 pt-3 text-xs">
+        <div className="flex items-center gap-3 text-muted tabular-nums">
+          <span title="Time since opened">{durationSec != null ? fmtDuration(durationSec) : '—'}</span>
+          {pos.distance_to_sl_pct != null && (
+            <span className={cn(pos.distance_to_sl_pct < 2 ? 'text-sell font-semibold' : 'text-muted')} title="Distance to stop-loss">
+              {pos.distance_to_sl_pct.toFixed(1)}% to SL
+            </span>
+          )}
+        </div>
+        {slPnl != null && (
+          <span
+            title="Realised P&L in USDC if this position is closed at the stop-loss"
+            className={cn(
+              'inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold tabular-nums border',
+              slPnl >= 0 ? 'bg-buy/10 text-buy border-buy/20' : 'bg-sell/10 text-sell border-sell/20',
+            )}
+          >
+            {slPnl >= 0 ? '+' : ''}{fmtUSD(slPnl)} at stop
+          </span>
+        )}
+      </div>
+    </button>
   )
 }
 
@@ -250,12 +464,7 @@ function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClos
               'text-xs px-2 py-0.5 rounded-md font-medium',
               pos.status === 'OPEN' ? 'bg-buy/10 text-buy' : 'bg-muted/10 text-muted',
             )}>{pos.status}</span>
-            {pos.status === 'OPEN' && pos.oco_status === 'ACTIVE' && (
-              <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-buy/10 text-buy" title="Exchange-side OCO active">🛡 OCO</span>
-            )}
-            {pos.status === 'OPEN' && pos.oco_status === 'FAILED' && (
-              <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-sell/10 text-sell" title="OCO failed — software fallback">⚠ Fallback</span>
-            )}
+            {pos.status === 'OPEN' && <OcoChip status={pos.oco_status} />}
             {pos.status === 'OPEN' && pos.past_break_even && (
               <BreakEvenBadge price={pos.break_even_price} />
             )}
@@ -454,6 +663,32 @@ function PositionDetailModal({ pos, latestReview, note, closingCoin, markingClos
   )
 }
 
+// ── Loading skeletons ───────────────────────────────────────────────────────
+
+function KpiSkeleton() {
+  return (
+    <div className="rounded-2xl border border-border bg-surface-card/70 backdrop-blur-xl p-5 animate-pulse">
+      <div className="h-3 w-20 rounded bg-surface-hover" />
+      <div className="mt-3 h-7 w-28 rounded bg-surface-hover" />
+      <div className="mt-3 h-3 w-16 rounded bg-surface-hover" />
+    </div>
+  )
+}
+
+function PositionSkeleton() {
+  return (
+    <div className="rounded-2xl border border-border bg-surface-card/70 backdrop-blur-xl p-4 animate-pulse">
+      <div className="flex justify-between">
+        <div className="h-4 w-16 rounded bg-surface-hover" />
+        <div className="h-4 w-12 rounded bg-surface-hover" />
+      </div>
+      <div className="mt-4 h-7 w-32 rounded bg-surface-hover" />
+      <div className="mt-5 h-1.5 w-full rounded bg-surface-hover" />
+      <div className="mt-4 h-3 w-full rounded bg-surface-hover" />
+    </div>
+  )
+}
+
 // ── Component ──────────────────────────────────────────────────────────────
 
 export default function Portfolio() {
@@ -635,48 +870,76 @@ export default function Portfolio() {
   const totalTrades = gains?.positions.length ?? 0
   const winRate = totalTrades > 0 ? Math.round((winCount / totalTrades) * 100) : null
 
-  if (loading && !portfolio) {
-    return (
-      <div className="flex items-center justify-center h-40">
-        <div className="w-6 h-6 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-      </div>
-    )
-  }
+  const firstLoad = loading && !portfolio
 
   return (
     <div className="space-y-5 animate-fade-in">
 
-      {/* ── Overview stats strip ───────────────────────────────────────── */}
+      {/* ── HUD: KPI banners ───────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <OverviewStat
-          label="Total Value"
-          value={fmtUSD(livePrices.size > 0 ? totalValue : (portfolio?.total_value ?? 0))}
-          icon={<WalletIcon />}
-        />
-        <OverviewStat
-          label="Live P&L"
-          value={`${liveUsd >= 0 ? '+' : ''}${fmtUSD(liveUsd)}`}
-          valueClass={liveUsd >= 0 ? 'text-buy' : 'text-sell'}
-          sub={livePct != null ? fmtPct(livePct) + ' unrealized' : 'no open positions'}
-        />
-        <OverviewStat
-          label="Realized P&L"
-          value={`${realizedUsd >= 0 ? '+' : ''}${fmtUSD(realizedUsd)}`}
-          valueClass={realizedUsd >= 0 ? 'text-buy' : 'text-sell'}
-          sub={realizedPct != null ? fmtPct(realizedPct) + ' total return' : 'no closed trades'}
-        />
-        <OverviewStat
-          label="USDC Balance"
-          value={fmtUSD(usdcBalance)}
-          sub={portfolio?.binance_usdc != null ? `${fmtUSD(portfolio.available_usdc ?? 0)} available` : undefined}
-        />
-        <OverviewStat
-          label="Positions"
-          value={`${openCount} / ${maxPositions}`}
-          sub={openCount >= maxPositions ? 'limit reached' : `${maxPositions - openCount} slot${maxPositions - openCount !== 1 ? 's' : ''} free`}
-          valueClass={openCount >= maxPositions ? 'text-warn' : 'text-foreground'}
-        />
+        {firstLoad ? (
+          Array.from({ length: 5 }).map((_, i) => <KpiSkeleton key={i} />)
+        ) : (
+          <>
+            <KpiCard
+              label="Total Value"
+              value={fmtUSD(livePrices.size > 0 ? totalValue : (portfolio?.total_value ?? 0))}
+              tone="accent"
+              icon={<WalletIcon />}
+              sub="USDC + open holdings"
+            />
+            <KpiCard
+              label="Unrealized P&L"
+              value={`${liveUsd >= 0 ? '+' : ''}${fmtUSD(liveUsd)}`}
+              tone={pnlTone(liveUsd)}
+              icon={<TrendUpIcon />}
+              sub={livePct != null ? `${fmtPct(livePct)} open` : 'no open positions'}
+            />
+            <KpiCard
+              label="Realized P&L"
+              value={`${realizedUsd >= 0 ? '+' : ''}${fmtUSD(realizedUsd)}`}
+              tone={pnlTone(realizedUsd)}
+              sub={realizedPct != null ? `${fmtPct(realizedPct)} total return` : 'no closed trades'}
+            />
+            <KpiCard
+              label="USDC Balance"
+              value={fmtUSD(usdcBalance)}
+              tone="accent"
+              icon={<VaultIcon />}
+              sub={portfolio?.binance_usdc != null ? `${fmtUSD(portfolio.available_usdc ?? 0)} available` : undefined}
+            />
+            <KpiCard
+              label="Positions"
+              value={`${openCount} / ${maxPositions}`}
+              tone={openCount >= maxPositions ? 'neg' : 'neutral'}
+              icon={<StackIcon />}
+              sub={openCount >= maxPositions ? 'limit reached' : `${maxPositions - openCount} slot${maxPositions - openCount !== 1 ? 's' : ''} free`}
+            />
+          </>
+        )}
       </div>
+
+      {/* Win-rate strip */}
+      {totalTrades > 0 && (
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-2xl border border-border bg-surface-card/70 backdrop-blur-xl px-5 py-3 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="text-xs uppercase tracking-wider text-muted">Win Rate</span>
+            <span className={cn('text-lg font-bold tabular-nums', (winRate ?? 0) >= 50 ? 'text-buy' : 'text-sell')}>
+              {winRate}%
+            </span>
+            <span className="text-xs text-muted">({winCount}/{totalTrades})</span>
+          </div>
+          <div className="hidden sm:block h-5 w-px bg-border" />
+          <div className="flex-1 min-w-[140px] flex items-center gap-2">
+            <div className="flex-1 h-1.5 rounded-full bg-surface-hover overflow-hidden">
+              <div
+                className={cn('h-full rounded-full transition-all', (winRate ?? 0) >= 50 ? 'bg-buy' : 'bg-sell')}
+                style={{ width: `${winRate ?? 0}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {monitorError && (
         <div className="px-4 py-3 rounded-xl bg-sell/10 border border-sell/20 text-sell text-sm">
@@ -684,165 +947,38 @@ export default function Portfolio() {
         </div>
       )}
 
-      {/* ── Active Positions ───────────────────────────────────────────── */}
+      {/* ── Active Positions (card grid) ───────────────────────────────── */}
       <Card noPad>
         <div className="px-5 pt-5 pb-4">
           <CardHeader
             title="Active Positions"
             subtitle="Bot-managed trades with stop-loss and take-profit monitoring"
+            action={
+              <span className="text-xs px-2.5 py-1 rounded-md border border-border bg-surface-hover/60 text-muted font-medium tabular-nums">
+                {livePositions.length} open
+              </span>
+            }
           />
         </div>
 
-        {positions.length === 0 ? (
-          <div className="px-5 pb-8 text-center">
-            <p className="text-sm text-muted">No active bot positions.</p>
-            <p className="text-xs text-muted mt-1 opacity-70">The trading engine hasn't opened any monitored trades yet.</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto pb-2">
-            <table className="w-full text-sm min-w-[680px]">
-              <thead>
-                <tr className="border-b border-border">
-                  <Th>Asset</Th>
-                  <Th>Duration</Th>
-                  <Th right>P&L</Th>
-                  <Th right>Entry</Th>
-                  <Th right>Current</Th>
-                  <Th right>Stop Loss</Th>
-                  <Th right>Take Profit</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {livePositions.map(pos => {
-                  const pnlPos = (pos.pnl ?? 0) >= 0
-                  const pnlCls = pos.pnl != null ? (pnlPos ? 'text-buy' : 'text-sell') : 'text-muted'
-                  const coin = pos.coin.replace('/USDC', '')
-                  const slPct = pos.distance_to_sl_pct
-                  const tpPct = pos.distance_to_tp_pct
-                  const slPnl = pos.stop_loss ? Math.round((pos.stop_loss - pos.entry_price) * pos.quantity * 100) / 100 : null
-                  const openedAt = pos.created_at ? new Date(pos.created_at.includes('T') ? pos.created_at : pos.created_at + 'Z') : null
-                  const durationSec = openedAt ? Math.floor((Date.now() - openedAt.getTime()) / 1000) : null
-                  const hasPriceTrack = pos.stop_loss && pos.take_profit && pos.current_price
-
-                  return (
-                    <Fragment key={pos.id}>
-                      <tr
-                        onClick={() => setSelectedPos(pos)}
-                        className="border-b border-border cursor-pointer hover:bg-surface-elevated/50 transition-colors duration-100 group"
-                      >
-                        <Td>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-semibold">{coin}</span>
-                            <span className={cn(
-                              'text-xs px-1.5 py-0.5 rounded-md font-medium',
-                              pos.status === 'OPEN' ? 'bg-buy/10 text-buy' : 'bg-muted/10 text-muted',
-                            )}>
-                              {pos.status}
-                            </span>
-                            {pos.status === 'OPEN' && pos.oco_status === 'ACTIVE' && (
-                              <span className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-buy/10 text-buy" title="Exchange-side OCO active">
-                                🛡
-                              </span>
-                            )}
-                            {pos.status === 'OPEN' && pos.oco_status === 'FAILED' && (
-                              <span className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-sell/10 text-sell" title="OCO failed — software fallback">
-                                ⚠
-                              </span>
-                            )}
-                            {pos.status === 'OPEN' && pos.past_break_even && (
-                              <BreakEvenBadge price={pos.break_even_price} />
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1 mt-1">
-                            <span className={cn(
-                              'text-xs px-1.5 py-0.5 rounded border font-medium',
-                              pos.horizon === 'disabled' ? 'text-muted border-border bg-surface-hover' : 'text-muted border-border bg-surface-hover',
-                            )}>
-                              {pos.horizon ?? 'medium'}
-                            </span>
-                          </div>
-                        </Td>
-                        <Td>
-                          <span className="text-muted text-xs tabular-nums">
-                            {durationSec != null ? fmtDuration(durationSec) : '—'}
-                          </span>
-                        </Td>
-                        <Td right className={pnlCls}>
-                          {pos.pnl != null ? (
-                            <div>
-                              <div className="font-semibold">{pnlPos ? '+' : ''}{fmtUSD(pos.pnl)}</div>
-                              {pos.pnl_pct != null && <div className="text-xs opacity-75">{fmtPct(pos.pnl_pct)}</div>}
-                            </div>
-                          ) : <span className="text-muted">—</span>}
-                        </Td>
-                        <Td right>
-                          <span className="text-muted tabular-nums">{fmtUSD(pos.entry_price)}</span>
-                        </Td>
-                        <Td right>
-                          {pos.current_price != null ? (
-                            <span className={cn('font-medium tabular-nums', pnlCls)}>
-                              {fmtUSD(pos.current_price)}
-                            </span>
-                          ) : <span className="text-muted">—</span>}
-                        </Td>
-                        <Td right>
-                          <div className="flex flex-col items-end gap-1">
-                            <div className="font-medium text-sell tabular-nums">{fmtUSD(pos.stop_loss)}</div>
-                            {slPct != null && (
-                              <div className={cn('text-xs', slPct < 2 ? 'text-sell font-semibold' : 'text-muted')}>
-                                {slPct.toFixed(1)}% away
-                              </div>
-                            )}
-                            {slPnl != null && (
-                              <span
-                                title="Realised P&L in USDC if this position is closed at the stop-loss"
-                                className={cn(
-                                  'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-semibold tabular-nums border',
-                                  slPnl >= 0
-                                    ? 'bg-buy/10 text-buy border-buy/20'
-                                    : 'bg-sell/10 text-sell border-sell/20',
-                                )}
-                              >
-                                {slPnl >= 0 ? '+' : ''}{fmtUSD(slPnl)} at stop
-                              </span>
-                            )}
-                          </div>
-                        </Td>
-                        <Td right>
-                          {pos.take_profit != null ? (
-                            <div>
-                              <div className="font-medium text-buy tabular-nums">{fmtUSD(pos.take_profit)}</div>
-                              {tpPct != null && (
-                                <div className="text-xs text-buy">+{tpPct.toFixed(1)}%</div>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-end gap-1 text-muted">
-                              <span>—</span>
-                              <ChevronRightIcon />
-                            </div>
-                          )}
-                        </Td>
-                      </tr>
-                      {hasPriceTrack && (
-                        <tr className="border-b border-border bg-surface-elevated/20">
-                          <td colSpan={7} className="px-4 pb-2.5 pt-0">
-                            <PriceTrack
-                              sl={pos.stop_loss}
-                              tp={pos.take_profit}
-                              current={pos.current_price}
-                              entry={pos.entry_price}
-                            />
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <div className="px-5 pb-5">
+          {firstLoad ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {Array.from({ length: 3 }).map((_, i) => <PositionSkeleton key={i} />)}
+            </div>
+          ) : livePositions.length === 0 ? (
+            <div className="py-8 text-center">
+              <p className="text-sm text-muted">No active bot positions.</p>
+              <p className="text-xs text-muted mt-1 opacity-70">The trading engine hasn't opened any monitored trades yet.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {livePositions.map(pos => (
+                <PositionCard key={pos.id} pos={pos} onSelect={setSelectedPos} />
+              ))}
+            </div>
+          )}
+        </div>
       </Card>
 
       {/* ── Holdings + USDC ────────────────────────────────────────────── */}
@@ -893,7 +1029,7 @@ export default function Portfolio() {
                           <Td><SourceBadge source={h.source} /></Td>
                           <Td right className="text-muted">{fmt(h.quantity, 6)}</Td>
                           <Td right className="text-muted">{h.buy_price ? fmtUSD(h.buy_price) : '—'}</Td>
-                          <Td right>{h.current_price != null ? fmtUSD(h.current_price) : '—'}</Td>
+                          <Td right>{h.current_price != null ? <PriceTick value={h.current_price} base="text-foreground" /> : '—'}</Td>
                           <Td right className="font-medium">{value != null ? fmtUSD(value) : '—'}</Td>
                           <Td right className={pnlCls}>
                             {h.delta_usd != null ? (
