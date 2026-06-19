@@ -451,12 +451,25 @@ async function runStreaming(
   // accumulated. Otherwise the stream was genuinely cut mid-generation: rethrow and
   // let the transient-retry / failover paths take over.
   if (streamThrew) {
-    const argsParseable = (s: string): boolean => {
-      if (s.trim() === '') return false
-      try { JSON.parse(s); return true } catch { return false }
+    const parseable = (s: string): boolean => {
+      const t = s.trim()
+      if (!t) return false
+      try { JSON.parse(t); return true } catch { /* fall through to embedded-slice */ }
+      // Tolerate surrounding prose/fences: parse the outermost {...} or [...] slice.
+      const obj = t.slice(t.indexOf('{'), t.lastIndexOf('}') + 1)
+      if (obj.length > 1) { try { JSON.parse(obj); return true } catch { /* not it */ } }
+      const arr = t.slice(t.indexOf('['), t.lastIndexOf(']') + 1)
+      if (arr.length > 1) { try { JSON.parse(arr); return true } catch { /* not it */ } }
+      return false
     }
-    const toolsComplete = tools.length > 0 && tools.every(t => !!t.function.name && argsParseable(t.function.arguments))
-    if (!finishReason && !toolsComplete) throw streamThrew
+    // A turn is "complete" — and a dirty socket close is therefore harmless — if the
+    // model gave us a terminal signal (finish_reason), fully-formed tool calls, or a
+    // content body that parses as complete JSON (the structured modules' final answer
+    // streamed whole, the server just dropped the terminating chunk). A truncated
+    // mid-generation stream satisfies none of these → rethrow for retry/failover.
+    const toolsComplete = tools.length > 0 && tools.every(t => !!t.function.name && parseable(t.function.arguments))
+    const contentComplete = parseable(acc.content)
+    if (!finishReason && !toolsComplete && !contentComplete) throw streamThrew
     logger.warn('LLM stream closed uncleanly after completion — using accumulated result', {
       error: streamThrew instanceof Error ? streamThrew.message : String(streamThrew),
       finish_reason: finishReason,
