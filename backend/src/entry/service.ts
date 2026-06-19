@@ -20,6 +20,16 @@ const MAX_EVENTS = 100
 const MAX_BAND_HISTORY = 20
 let timer: ReturnType<typeof setInterval> | null = null
 
+/**
+ * Clamp a chosen TTL (minutes) to the global `entry_max_ttl_minutes` ceiling. Applied
+ * to every TTL source — static band, Entry Agent, manual edit — so no intent can outlive
+ * the cap regardless of who picked the band. A cap of 0 (or non-positive) disables it.
+ */
+function capTtl(ttlMinutes: number): number {
+  const cap = getSettings().entry_max_ttl_minutes
+  return cap > 0 ? Math.min(ttlMinutes, cap) : ttlMinutes
+}
+
 export function hasActiveIntent(coin: string): boolean {
   return intents.has(coin)
 }
@@ -63,6 +73,7 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band, market 
   }
 
   const now = Date.now()
+  const ttlMinutes = capTtl(band.ttlMinutes)
   const intent: EntryIntent = {
     id: `${now.toString(36)}-${coin}`,
     coin,
@@ -76,13 +87,13 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band, market 
     bandSource: band.source,
     planReason: band.reason,
     createdAt: now,
-    expiresAt: now + band.ttlMinutes * 60_000,
+    expiresAt: now + ttlMinutes * 60_000,
     bandHistory: [],
   }
   intent.bandHistory = [{
     at: now, source: band.source, signalPrice,
     targetPrice: intent.targetPrice, invalidatePrice: intent.invalidatePrice, chaseCapPrice: intent.chaseCapPrice,
-    ttlMinutes: band.ttlMinutes, reason: band.reason, market,
+    ttlMinutes, reason: band.reason, market,
   }]
 
   intents.set(coin, intent)
@@ -91,7 +102,7 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band, market 
   logger.info('Entry intent registered', {
     coin, signalPrice, target: intent.targetPrice,
     invalidate: intent.invalidatePrice, chaseCap: intent.chaseCapPrice,
-    expiresInMin: band.ttlMinutes, bandSource: band.source, planReason: band.reason,
+    expiresInMin: ttlMinutes, bandSource: band.source, planReason: band.reason,
   })
   recordEvent({ coin, type: 'registered', signalPrice, targetPrice: intent.targetPrice })
   broadcastIntents()
@@ -141,6 +152,7 @@ export async function applyAgentBand(
   }
 
   const now = Date.now()
+  const ttlMinutes = capTtl(band.ttlMinutes)
   const reason = band.reason?.slice(0, 200) || 'Entry Agent band'
   const targetPrice = livePrice * (1 - band.pullbackPct / 100)
   const invalidatePrice = livePrice * (1 - band.invalidatePct / 100)
@@ -148,7 +160,7 @@ export async function applyAgentBand(
   const snapshot: BandSnapshot = {
     at: now, source: 'agent', signalPrice: livePrice,
     targetPrice, invalidatePrice, chaseCapPrice,
-    ttlMinutes: band.ttlMinutes, reason, market,
+    ttlMinutes, reason, market,
   }
   const updated: EntryIntent = {
     ...intent,
@@ -159,7 +171,7 @@ export async function applyAgentBand(
     atr: market.atr14, // refresh ATR too — it feeds SL/TP sizing at fill
     bandSource: 'agent',
     planReason: reason,
-    expiresAt: now + band.ttlMinutes * 60_000,
+    expiresAt: now + ttlMinutes * 60_000,
     bandHistory: [...intent.bandHistory, snapshot].slice(-MAX_BAND_HISTORY),
   }
 
@@ -168,7 +180,7 @@ export async function applyAgentBand(
   logger.info('Entry intent band set by agent', {
     coin, signalPrice: livePrice, target: updated.targetPrice,
     invalidate: updated.invalidatePrice, chaseCap: updated.chaseCapPrice,
-    ttlMinutes: band.ttlMinutes, reason,
+    ttlMinutes, reason,
   })
   broadcastIntents()
   return { ok: true, intent: updated }
@@ -233,6 +245,10 @@ export function updateIntent(coin: string, edit: IntentEdit): { ok: boolean; err
   let expiresAt = intent.expiresAt
   if (edit.ttlMinutes != null) {
     if (!(edit.ttlMinutes > 0)) return { ok: false, error: 'TTL must be a positive number of minutes' }
+    const cap = getSettings().entry_max_ttl_minutes
+    if (cap > 0 && edit.ttlMinutes > cap) {
+      return { ok: false, error: `TTL must not exceed the ${cap}-minute cap (Settings → Entry timing)` }
+    }
     expiresAt = Date.now() + edit.ttlMinutes * 60_000
   }
 

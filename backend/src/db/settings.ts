@@ -121,6 +121,7 @@ export function getSettings(): BotSettings {
     entry_invalidate_pct: parseFloat(map.entry_invalidate_pct || '3'),
     entry_max_chase_pct: parseFloat(map.entry_max_chase_pct || '1.5'),
     entry_ttl_minutes: parseFloat(map.entry_ttl_minutes || '20'),
+    entry_max_ttl_minutes: parseFloat(map.entry_max_ttl_minutes || '200'),
     entry_on_expiry: (map.entry_on_expiry === 'cancel' ? 'cancel' : 'market'),
     entry_poll_seconds: parseFloat(map.entry_poll_seconds || '3'),
     entry_model: (map.entry_model === 'agent' ? 'agent' : 'static') as 'static' | 'agent',

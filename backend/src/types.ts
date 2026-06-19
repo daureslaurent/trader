@@ -192,6 +192,9 @@ export interface BotSettings {
   entry_max_chase_pct: number
   /** How long an entry intent stays live before it expires, in minutes. */
   entry_ttl_minutes: number
+  /** Hard cap on an entry intent's TTL, in minutes, regardless of source (static/agent/manual).
+   *  Any chosen TTL is clamped to this ceiling. 0 disables the cap. */
+  entry_max_ttl_minutes: number
   /** On expiry: 'market' fires at the current (in-band) price; 'cancel' drops the intent. */
   entry_on_expiry: 'market' | 'cancel'
   /** How often the entry engine evaluates intents against the live price, in seconds. */

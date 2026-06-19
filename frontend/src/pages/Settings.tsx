@@ -56,6 +56,7 @@ interface SettingsData {
   entry_invalidate_pct: number
   entry_max_chase_pct: number
   entry_ttl_minutes: number
+  entry_max_ttl_minutes: number
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
   entry_model: 'static' | 'agent'
@@ -1449,6 +1450,12 @@ export default function Settings() {
                 hint="How long to wait for a good entry before the intent expires."
               >
                 <UnitInput type="number" step="1" min="1" max="240" unit="min" value={settings.entry_ttl_minutes} onChange={e => set('entry_ttl_minutes', parseFloat(e.target.value) || 0)} />
+              </Row>
+              <Row
+                label="Max intent lifetime"
+                hint="Hard ceiling on an intent's TTL, applied to every source — static, Entry Agent, and manual edits. Any longer lifetime is clamped to this. Set 0 to disable the cap."
+              >
+                <UnitInput type="number" step="10" min="0" max="600" unit="min" value={settings.entry_max_ttl_minutes} onChange={e => set('entry_max_ttl_minutes', parseFloat(e.target.value) || 0)} />
               </Row>
               <Row label="On expiry" hint="When the intent expires still in-band: fill at market so you don't keep missing valid setups, or cancel and wait for a fresh signal.">
                 <select
