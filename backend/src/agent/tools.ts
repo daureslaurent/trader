@@ -17,6 +17,7 @@ import {
 import { getDiscoveries } from '../discoverer/index.js'
 import { researchCoin } from '../researcher/index.js'
 import { extractResearch } from '../extractor/index.js'
+import { webSearch } from '../webSearch/index.js'
 import { getReviews } from '../monitor/index.js'
 import { getLatestSummary } from '../summary/index.js'
 import { getActiveIntents, applyAgentBand, fireNow as fireEntryIntent, cancel as cancelEntryIntent } from '../entry/index.js'
@@ -603,6 +604,41 @@ async function getCoinSentiment(args: Record<string, unknown>): Promise<unknown>
   }
 }
 
+// Generic internet research for an ARBITRARY query (not coin-scoped): searches the web,
+// fetches the top pages, and runs a per-page LLM extraction that summarizes each against
+// the query. Heavy (a crawl + one LLM call per page); per-page extractions are cached by
+// query+URL. Use for any open-ended question — macro news, a protocol/event, a non-coin
+// topic — where the chart/coin-sentiment tools don't fit.
+const RECENCY_MAP: Record<string, 'd' | 'w' | 'm'> = { day: 'd', week: 'w', month: 'm' }
+
+async function webSearchTool(args: Record<string, unknown>): Promise<unknown> {
+  const query = String(args.query ?? '').trim()
+  if (!query) return { error: 'Provide a search query.' }
+  const dateFilter = RECENCY_MAP[String(args.recency ?? '').trim().toLowerCase()] ?? ''
+  const maxResults = clampLimit(args.max_results, 6, 10)
+
+  try {
+    const { articles } = await webSearch(query, { dateFilter, maxResults })
+    if (!articles.length) {
+      return { query, result_count: 0, note: 'No relevant pages found for this query.' }
+    }
+    return {
+      query,
+      result_count: articles.length,
+      articles: articles.map(a => ({
+        title: a.title,
+        url: a.url,
+        relevance: a.relevance_score,
+        summary: a.summary,
+        key_points: a.key_points,
+      })),
+    }
+  } catch (err) {
+    logger.warn('Agent web_search failed', { query, error: (err as Error).message })
+    return { query, error: `Web search failed: ${(err as Error).message}` }
+  }
+}
+
 // ── Agent Signal long-term per-coin memory ─────────────────────────────────────
 // The Agent Signal engine keeps one memory doc per coin (_id = coin): structured fields
 // (thesis / conviction % / key levels / last verdict) it rewrites each run, plus a freeform
@@ -1007,6 +1043,21 @@ export const TOOLS: AgentTool[] = [
     handler: getCoinSentiment,
   },
   {
+    name: 'web_search',
+    description: 'Search the internet for ANY query (not coin-specific) and get back LLM-extracted, query-relevant articles: per result a title, URL, relevance score, a short summary and key points. Heavy (crawls the web + an LLM pass per page; several seconds) — call once per question. Use for open-ended research: macro/market news, a protocol/event/company, or any non-coin topic the chart and coin-sentiment tools don\'t cover.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query / question, in natural language.' },
+        recency: { type: 'string', description: 'Optional recency filter: "day", "week" or "month". Omit for any time.' },
+        max_results: { type: 'number', description: 'How many pages to fetch & summarize (default 6, max 10).' },
+      },
+      required: ['query'],
+    },
+    readOnly: true,
+    handler: webSearchTool,
+  },
+  {
     name: 'get_coin_notes',
     description: "Read the position monitor's persistent note for a coin — its own memory from prior reviews (what it decided and why, what it's watching). Use for continuity and to avoid flip-flopping against past decisions.",
     parameters: {
@@ -1124,7 +1175,7 @@ const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]))
 // mid-review, so the trigger_*/watchlist tools are excluded.
 export const MONITOR_D_TOOL_NAMES = [
   'get_portfolio', 'list_open_positions', 'get_market', 'get_candle_data',
-  'get_position_history', 'get_coin_sentiment', 'get_coin_notes', 'list_position_reviews',
+  'get_position_history', 'get_coin_sentiment', 'web_search', 'get_coin_notes', 'list_position_reviews',
   'list_recent_trades', 'list_recent_signals',
 ] as const
 
@@ -1132,7 +1183,7 @@ export const MONITOR_D_TOOL_NAMES = [
 // decide BUY/HOLD plus its own long-term memory (read + write). Deliberately coin-scoped —
 // it must never trigger engines or mutate the watchlist mid-review, so those tools are excluded.
 export const AGENT_SIGNAL_TOOL_NAMES = [
-  'get_market', 'get_candle_data', 'get_coin_sentiment', 'get_position_history',
+  'get_market', 'get_candle_data', 'get_coin_sentiment', 'web_search', 'get_position_history',
   'list_recent_signals', 'recall_signal_memory', 'remember_signal', 'get_coin_signal_history',
 ] as const
 
@@ -1141,7 +1192,7 @@ export const AGENT_SIGNAL_TOOL_NAMES = [
 // the three ACTION tools (set band / fire / cancel) that let it drive the deferred BUY. It must
 // never trigger engines or mutate the watchlist mid-pass, so those tools are excluded.
 export const ENTRY_AGENT_TOOL_NAMES = [
-  'get_entry_intent', 'get_market', 'get_candle_data', 'get_coin_sentiment',
+  'get_entry_intent', 'get_market', 'get_candle_data', 'get_coin_sentiment', 'web_search',
   'recall_signal_memory', 'get_coin_signal_history', 'list_recent_signals', 'list_entry_events',
   'set_entry_band', 'fire_entry_now', 'cancel_entry',
 ] as const

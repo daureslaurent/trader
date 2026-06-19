@@ -46,6 +46,7 @@ router.get('/llm/defaults', (_req: Request, res: Response) => {
     agent: { baseURL: config.agent.baseURL, model: config.agent.model, maxTokens: config.agent.maxTokens },
     monitorD: { baseURL: config.monitorD.baseURL, model: config.monitorD.model, maxTokens: config.monitorD.maxTokens },
     agentSignal: { baseURL: config.agentSignal.baseURL, model: config.agentSignal.model, maxTokens: config.agentSignal.maxTokens },
+    webSearch: { baseURL: config.webSearch.baseURL, model: config.webSearch.model, maxTokens: config.webSearch.maxTokens },
   })
 })
 

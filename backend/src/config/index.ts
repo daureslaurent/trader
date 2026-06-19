@@ -108,6 +108,14 @@ export const config = {
     model: opt('AGENT_SIGNAL_MODEL', llamaModel),
     maxTokens: num('AGENT_SIGNAL_MAX_TOKENS', 4096),
   },
+  webSearch: {
+    // Generic web_search agent tool — per-page extraction that summarizes search results
+    // against the caller's free-text query (no coin coupling). Falls back to llama.
+    baseURL: opt('WEB_SEARCH_BASE_URL', llamaBaseURL),
+    model: opt('WEB_SEARCH_MODEL', llamaModel),
+    maxTokens: num('WEB_SEARCH_MAX_TOKENS', 2048),
+    maxArticleChars: num('WEB_SEARCH_MAX_ARTICLE_CHARS', 2000),
+  },
   telegram: {
     botToken: opt('TELEGRAM_BOT_TOKEN', ''),
     chatId: opt('TELEGRAM_CHAT_ID', ''),

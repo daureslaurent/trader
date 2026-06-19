@@ -1,5 +1,5 @@
 import { logger } from '../core/logger.js'
-import { fetchPageText } from '../scraper/utils/fetchPageText.js'
+import { searchAndFetch } from '../webSearch/index.js'
 
 export interface ArticleContent {
   title: string
@@ -28,46 +28,17 @@ export async function researchCoin(coin: string): Promise<ResearchResult> {
   const fullName = COIN_NAMES[symbol] ?? symbol
 
   try {
-    const { search } = await import('../scraper/search.js')
-
-    // Two parallel queries: breaking news from today, deeper coverage from the week
-    const [todayResults, weekResults] = await Promise.allSettled([
-      search(`${fullName} crypto news price`, { count: 6, dateFilter: 'd' }),
-      search(`${symbol} ${fullName} cryptocurrency latest update`, { count: 6, dateFilter: 'w' }),
-    ])
-
-    // Merge and deduplicate by URL — today's results take priority
-    const seen = new Set<string>()
-    const merged: { title: string; url: string }[] = []
-
-    for (const batch of [todayResults, weekResults]) {
-      if (batch.status !== 'fulfilled') continue
-      for (const r of batch.value as { title: string; url: string }[]) {
-        if (!seen.has(r.url)) {
-          seen.add(r.url)
-          merged.push(r)
-        }
-      }
-    }
-
-    const headlines = merged.map(r => r.title)
-
-    // Fetch article content in parallel, cap at 10
-    const toFetch = merged.slice(0, 10)
-    const articleResults = await Promise.allSettled(
-      toFetch.map(async r => ({
-        title: r.title,
-        url: r.url,
-        content: await fetchPageText(r.url),
-      }))
+    // Delegate the crawl plumbing (search → dedupe → fetch) to the shared web-search
+    // core. Two queries, today's breaking news prioritized over the week's coverage.
+    const articles = await searchAndFetch(
+      [
+        { query: `${fullName} crypto news price`, dateFilter: 'd' },
+        { query: `${symbol} ${fullName} cryptocurrency latest update`, dateFilter: 'w' },
+      ],
+      { perQuery: 6, maxResults: 10 },
     )
 
-    const articles: ArticleContent[] = []
-    for (const result of articleResults) {
-      if (result.status === 'fulfilled' && result.value.content) {
-        articles.push(result.value)
-      }
-    }
+    const headlines = articles.map(a => a.title)
 
     logger.debug('Research results', {
       coin,

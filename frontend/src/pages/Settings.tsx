@@ -88,6 +88,8 @@ interface SettingsData {
   llm_monitor_d_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
+  llm_webSearch_endpoint: string
+  llm_webSearch_max_tokens: number
   llm_stream_analyst: boolean
   llm_stream_extractor: boolean
   llm_stream_discoverer: boolean
@@ -100,6 +102,7 @@ interface SettingsData {
   llm_stream_agent: boolean
   llm_stream_monitorD: boolean
   llm_stream_agentSignal: boolean
+  llm_stream_webSearch: boolean
   llm_analyst_fb_endpoint: string
   llm_analyst_fb_max_tokens: number
   llm_extractor_fb_endpoint: string
@@ -124,6 +127,8 @@ interface SettingsData {
   llm_monitor_d_fb_max_tokens: number
   llm_agentSignal_fb_endpoint: string
   llm_agentSignal_fb_max_tokens: number
+  llm_webSearch_fb_endpoint: string
+  llm_webSearch_fb_max_tokens: number
   agent_title_context_messages: number
   agent_tool_permissions: AgentToolPermissions
   summary_auto_run: boolean
@@ -464,6 +469,7 @@ const LLM_MODULES: {
   { key: 'agent',               label: 'Agent',                hint: 'Conversational assistant on the Agent page. Use a tool-calling-capable model.', endpointKey: 'llm_agent_endpoint', maxTokensKey: 'llm_agent_max_tokens', fbEndpointKey: 'llm_agent_fb_endpoint', fbMaxTokensKey: 'llm_agent_fb_max_tokens', streamKey: 'llm_stream_agent' },
   { key: 'monitorD',            label: 'Agent D (monitor)',    hint: 'The Type D agentic position monitor (monitor model “Agent D”). Runs a tool-calling loop per open position, so use a tool-calling-capable model.', endpointKey: 'llm_monitor_d_endpoint', maxTokensKey: 'llm_monitor_d_max_tokens', fbEndpointKey: 'llm_monitor_d_fb_endpoint', fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens', streamKey: 'llm_stream_monitorD' },
   { key: 'agentSignal',         label: 'Agent Signal',         hint: 'The agentic entry engine (entry model “Agent Signal”). Runs a tool-calling loop per watchlist coin, so use a tool-calling-capable model.', endpointKey: 'llm_agentSignal_endpoint', maxTokensKey: 'llm_agentSignal_max_tokens', fbEndpointKey: 'llm_agentSignal_fb_endpoint', fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens', streamKey: 'llm_stream_agentSignal' },
+  { key: 'webSearch',           label: 'Web Search',           hint: 'The generic web_search agent tool: per-page extraction that summarizes search results against the query. Used by the chat agent and the signal/monitor/entry agents.', endpointKey: 'llm_webSearch_endpoint', maxTokensKey: 'llm_webSearch_max_tokens', fbEndpointKey: 'llm_webSearch_fb_endpoint', fbMaxTokensKey: 'llm_webSearch_fb_max_tokens', streamKey: 'llm_stream_webSearch' },
 ]
 
 type LLMModule = typeof LLM_MODULES[number]

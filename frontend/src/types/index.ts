@@ -491,6 +491,7 @@ export type LLMModuleKey =
   | 'agent'
   | 'monitorD'
   | 'agentSignal'
+  | 'webSearch'
 
 /** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */
 export interface LLMDefault {

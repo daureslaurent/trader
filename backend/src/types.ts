@@ -247,6 +247,9 @@ export interface BotSettings {
   llm_monitor_d_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
+  /** Generic web_search agent tool — per-page query-relevant extraction. */
+  llm_webSearch_endpoint: string
+  llm_webSearch_max_tokens: number
   /** Per-module streaming toggle. When true (default), the module's chat completions
    *  are requested with `stream: true` — tokens arrive incrementally, which keeps the
    *  socket warm (avoids idle-timeout "Premature close" drops on local servers) and
@@ -265,6 +268,7 @@ export interface BotSettings {
   llm_stream_agent: boolean
   llm_stream_monitorD: boolean
   llm_stream_agentSignal: boolean
+  llm_stream_webSearch: boolean
   /** Per-module failover endpoint selection (id into `llm_endpoints`; blank = no
    *  fallback) + max-tokens (0 = reuse the primary's effective max-tokens). Tried
    *  only if the primary LLM call throws (endpoint down, timeout, 5xx, unknown model). */
@@ -292,6 +296,8 @@ export interface BotSettings {
   llm_monitor_d_fb_max_tokens: number
   llm_agentSignal_fb_endpoint: string
   llm_agentSignal_fb_max_tokens: number
+  llm_webSearch_fb_endpoint: string
+  llm_webSearch_fb_max_tokens: number
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
    *  of the most recent (non-tool) messages — bounds the tokens spent per title. */
   agent_title_context_messages: number

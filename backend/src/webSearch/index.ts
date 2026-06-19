@@ -1,0 +1,6 @@
+export { webSearch } from './service.js'
+export type { WebSearchOptions } from './service.js'
+export { searchAndFetch } from './search.js'
+export type { SearchQuery, SearchFetchOptions } from './search.js'
+export { extractForQuery } from './extract.js'
+export type { WebArticle, WebSearchResult, WebArticleSkipReason } from './types.js'

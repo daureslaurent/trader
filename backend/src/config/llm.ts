@@ -22,6 +22,7 @@ export type LLMModule =
   | 'agent'
   | 'monitorD'
   | 'agentSignal'
+  | 'webSearch'
 
 interface ModuleSpec {
   /** Settings key holding the selected endpoint id (blank = use the env fallback). */
@@ -122,6 +123,13 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     fbEndpointKey: 'llm_agentSignal_fb_endpoint',
     fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens',
     fallback: config.agentSignal,
+  },
+  webSearch: {
+    endpointKey: 'llm_webSearch_endpoint',
+    maxTokensKey: 'llm_webSearch_max_tokens',
+    fbEndpointKey: 'llm_webSearch_fb_endpoint',
+    fbMaxTokensKey: 'llm_webSearch_fb_max_tokens',
+    fallback: config.webSearch,
   },
 }
 
