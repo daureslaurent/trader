@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { Sidebar } from './components/layout/Sidebar'
 import { ThemeSelector } from './components/layout/ThemeSelector'
+import { PnLBadge } from './components/layout/PnLBadge'
 import { ControlRoomBadge } from './components/layout/ControlRoomBadge'
 import { EndpointStatusBadge } from './components/layout/EndpointStatusBadge'
 import { Page, Toast, ApprovalRequest, UpdateInfo } from './types'
@@ -205,6 +206,7 @@ function AppInner() {
               <span className={cn('w-1.5 h-1.5 rounded-full bg-current', wsConnected && 'animate-pulse')} />
               {wsConnected ? 'Live' : 'Offline'}
             </span>
+            <PnLBadge onOpen={() => setPage('portfolio')} />
             <ControlRoomBadge onOpen={() => setPage('control-room')} />
             <EndpointStatusBadge />
             <ThemeSelector />
