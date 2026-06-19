@@ -711,6 +711,9 @@ export interface LLMCall {
   error_code?: string | null
   /** HTTP status when the failure was an API response rather than a transport drop. */
   error_status?: number | null
+  /** True when a streamed response was salvaged after the socket closed uncleanly
+   *  (succeeded, but the token counts are estimated rather than server-reported). */
+  stream_dirty?: boolean | null
   /** The `max_tokens` requested for this call (helps correlate big generations with mid-body drops). */
   max_tokens?: number | null
   prompt_tokens: number | null

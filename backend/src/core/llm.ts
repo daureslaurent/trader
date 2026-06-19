@@ -492,7 +492,23 @@ async function runStreaming(
     }))
   }
 
-  return {
+  // Estimate usage when the server never sent the usage chunk — i.e. the dirty-close
+  // turns salvaged above. Clean streams keep the server's real usage. ~4 chars/token,
+  // matching the thinking-token fallback; completion counts content + reasoning +
+  // tool-call payloads (the model generated all of it).
+  if (!usage) {
+    const toks = (s: string): number => Math.ceil(s.length / 4)
+    const promptChars = params.messages.reduce(
+      (n, m) => n + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length),
+      0,
+    )
+    const completionText = acc.content + acc.reasoning + tools.map(t => (t.function.name ?? '') + t.function.arguments).join('')
+    const prompt_tokens = Math.ceil(promptChars / 4)
+    const completion_tokens = toks(completionText)
+    usage = { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens }
+  }
+
+  const completion = {
     id: respId,
     object: 'chat.completion',
     created,
@@ -506,6 +522,10 @@ async function runStreaming(
     usage,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any as OpenAI.ChatCompletion
+  // Flag a salvaged dirty close so the row/UI can warn that the socket dropped
+  // mid-stream after the response arrived (usage is estimated, not the server's).
+  ;(completion as unknown as { __stream_dirty?: boolean }).__stream_dirty = !!streamThrew
+  return completion
 }
 
 // Single attempt against one endpoint/model. Records the running call, serializes
@@ -607,6 +627,10 @@ async function runChat(
         effectiveError = `Empty content (finish_reason: ${finish})\n\nRaw response:\n${JSON.stringify(resp, null, 2)}`
       }
 
+      // A streamed turn whose socket dropped after the response arrived (salvaged in
+      // runStreaming) — succeeded, but its usage is estimated. Flagged for the UI.
+      const streamDirty = (resp as unknown as { __stream_dirty?: boolean })?.__stream_dirty === true
+
       logger.debug('llmChat base_url', { module: meta.module, baseUrl, meta_base_url: meta.base_url, client_base_url: (client as unknown as { baseURL: string }).baseURL })
 
       _runningCalls.delete(tempId)
@@ -625,6 +649,9 @@ async function runChat(
           // "Premature close" floods by error_code to see ECONNRESET vs timeout).
           error_code: errInfo?.code ?? null,
           error_status: errInfo?.status ?? null,
+          // True when the stream closed uncleanly but the response was salvaged
+          // (token counts below are estimated, not the server's reported usage).
+          stream_dirty: streamDirty || null,
           // Requested generation cap — long max_tokens correlates with mid-body drops.
           max_tokens: typeof params.max_tokens === 'number' ? params.max_tokens : null,
           prompt_tokens: resp?.usage?.prompt_tokens ?? null,
@@ -650,6 +677,7 @@ async function runChat(
           error: effectiveError,
           error_code: errInfo?.code ?? null,
           error_status: errInfo?.status ?? null,
+          stream_dirty: streamDirty || null,
           prompt_tokens: resp?.usage?.prompt_tokens ?? null,
           completion_tokens: resp?.usage?.completion_tokens ?? null,
           thinking_tokens: thinkingTokens,

@@ -65,6 +65,18 @@ function ClockIcon({ className }: { className?: string }) {
   )
 }
 
+function WarnTriangle({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      <path d="M12 9v4M12 17h.01" />
+    </svg>
+  )
+}
+
+// Shared tooltip text for the "dirty stream" warning surfaced on salvaged calls.
+const DIRTY_STREAM_HINT = 'Stream closed early — the response was salvaged after the socket dropped, so token counts are estimated, not server-reported.'
+
 // ── Module badge ─────────────────────────────────────────────────────────────
 
 function ModuleBadge({ module }: { module: string }) {
@@ -93,36 +105,43 @@ function CallListItem({ call, selected, onClick }: { call: LLMCall; selected: bo
     >
       <div className="flex items-center justify-between gap-2">
         <ModuleBadge module={call.module} />
-        {isQueued && (
-          <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">
-            <ClockIcon className="w-2.5 h-2.5" />
-            QUEUED
-          </span>
-        )}
-        {isRunning && (
-          <span className="flex items-center gap-1 text-[10px] font-semibold text-warn bg-warn/10 px-1.5 py-0.5 rounded">
-            <span className="w-1.5 h-1.5 rounded-full bg-warn animate-pulse" />
-            RUN
-          </span>
-        )}
-        {!isQueued && !isRunning && hasError && (
-          <span className="flex items-center gap-1 text-[10px] font-semibold text-sell bg-sell/10 px-1.5 py-0.5 rounded">
-            ERR
-            {(call.error_code || call.error_status) && (
-              <span className="font-mono opacity-80" title={call.error_code ? `code ${call.error_code}` : `status ${call.error_status}`}>
-                {call.error_code ?? call.error_status}
-              </span>
-            )}
-          </span>
-        )}
-        {!isQueued && !isRunning && !hasError && toolCount > 0 && (
-          <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">
-            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" />
-            </svg>
-            {toolCount}
-          </span>
-        )}
+        <div className="flex items-center gap-1">
+          {!isQueued && !isRunning && call.stream_dirty && (
+            <span title={DIRTY_STREAM_HINT} className="flex items-center text-warn bg-warn/10 px-1 py-0.5 rounded">
+              <WarnTriangle className="w-2.5 h-2.5" />
+            </span>
+          )}
+          {isQueued && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">
+              <ClockIcon className="w-2.5 h-2.5" />
+              QUEUED
+            </span>
+          )}
+          {isRunning && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-warn bg-warn/10 px-1.5 py-0.5 rounded">
+              <span className="w-1.5 h-1.5 rounded-full bg-warn animate-pulse" />
+              RUN
+            </span>
+          )}
+          {!isQueued && !isRunning && hasError && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-sell bg-sell/10 px-1.5 py-0.5 rounded">
+              ERR
+              {(call.error_code || call.error_status) && (
+                <span className="font-mono opacity-80" title={call.error_code ? `code ${call.error_code}` : `status ${call.error_status}`}>
+                  {call.error_code ?? call.error_status}
+                </span>
+              )}
+            </span>
+          )}
+          {!isQueued && !isRunning && !hasError && toolCount > 0 && (
+            <span className="flex items-center gap-1 text-[10px] font-semibold text-accent2 bg-accent2/10 px-1.5 py-0.5 rounded">
+              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085" />
+              </svg>
+              {toolCount}
+            </span>
+          )}
+        </div>
       </div>
       <div className="flex items-center gap-1.5 text-xs flex-wrap">
         {call.coin && (
@@ -461,6 +480,12 @@ function CallDetail({ callId }: { callId: number }) {
           {detail.error && (
             <span className="text-xs font-semibold text-sell bg-sell/10 px-2 py-0.5 rounded-lg">Error</span>
           )}
+          {detail.stream_dirty && (
+            <span title={DIRTY_STREAM_HINT} className="flex items-center gap-1 text-xs font-semibold text-warn bg-warn/10 px-2 py-0.5 rounded-lg">
+              <WarnTriangle className="w-3 h-3" />
+              Dirty stream
+            </span>
+          )}
           <span className="text-xs text-muted font-mono ml-auto">{formatTime(detail.created_at)}</span>
         </div>
 
@@ -487,14 +512,15 @@ function CallDetail({ callId }: { callId: number }) {
           {totalTokens > 0 && (
             <>
               <span>·</span>
-              <span>
+              <span title={detail.stream_dirty ? 'Token counts are estimated — the stream closed before the server reported usage' : undefined}>
+                {detail.stream_dirty && <span className="text-warn font-semibold" title={DIRTY_STREAM_HINT}>~</span>}
                 <span className="text-accent">↑</span> {(detail.prompt_tokens ?? 0).toLocaleString()}
                 <span className="mx-1 text-muted/40">+</span>
                 <span className="text-buy">↓</span> {(detail.completion_tokens ?? 0).toLocaleString()}
                 {(detail.thinking_tokens ?? 0) > 0 && (
                   <span className="ml-1 text-violet-400">({(detail.thinking_tokens!).toLocaleString()} think)</span>
                 )}
-                <span className="ml-1 text-muted/60">= {totalTokens.toLocaleString()} tokens</span>
+                <span className="ml-1 text-muted/60">= {totalTokens.toLocaleString()} tokens{detail.stream_dirty ? ' (est.)' : ''}</span>
               </span>
             </>
           )}
