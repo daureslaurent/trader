@@ -10,7 +10,6 @@ import { PositionReview, MonitorNote, MonitorResponse, ActivePosition, PositionA
 import { cn, timeAgo, formatDate } from '../lib/utils'
 
 const SELL = 'rgb(var(--sell-rgb))'
-const WARN = 'rgb(var(--warn-rgb))'
 const ACCENT = 'rgb(var(--accent-rgb))'
 const MUTED = 'var(--muted-fg)'
 
@@ -25,7 +24,6 @@ const TOOLTIP_STYLE = {
 const ACTION_STYLES: Record<string, { cls: string; leftBorder: string; chart: string }> = {
   HOLD:   { cls: 'bg-surface-elevated text-muted border-border', leftBorder: 'border-l-border', chart: MUTED },
   CLOSE:  { cls: 'bg-sell/10 text-sell border-sell/20',          leftBorder: 'border-l-sell',   chart: SELL },
-  REDUCE: { cls: 'bg-warn/10 text-warn border-warn/20',          leftBorder: 'border-l-warn',   chart: WARN },
   ADJUST: { cls: 'bg-accent/10 text-accent border-accent/20',    leftBorder: 'border-l-accent', chart: ACCENT },
 }
 
@@ -119,9 +117,6 @@ function ReviewCard({ review, note }: { review: PositionReview; note: MonitorNot
           <span className={cn(mdata.change24h >= 0 ? 'text-buy' : 'text-sell')}>
             24h {mdata.change24h >= 0 ? '+' : ''}{mdata.change24h.toFixed(2)}%
           </span>
-        )}
-        {review.action === 'REDUCE' && review.reduce_to_pct != null && (
-          <span className="text-warn">Keep {review.reduce_to_pct}%</span>
         )}
       </div>
 
@@ -284,7 +279,7 @@ export default function Monitor() {
   const stats = useMemo(() => {
     const counts = new Map<string, number>()
     for (const r of lastCycle) counts.set(r.action, (counts.get(r.action) ?? 0) + 1)
-    const breakdown = ['CLOSE', 'REDUCE', 'ADJUST', 'HOLD']
+    const breakdown = ['CLOSE', 'ADJUST', 'HOLD']
       .filter(a => counts.has(a))
       .map(a => `${counts.get(a)} ${a}`)
       .join(' · ')
@@ -304,7 +299,7 @@ export default function Monitor() {
   const actionMix = useMemo(() => {
     const counts = new Map<string, number>()
     for (const r of reviews) counts.set(r.action, (counts.get(r.action) ?? 0) + 1)
-    return ['HOLD', 'ADJUST', 'REDUCE', 'CLOSE']
+    return ['HOLD', 'ADJUST', 'CLOSE']
       .filter(a => counts.has(a))
       .map(a => ({ name: a, value: counts.get(a)!, color: ACTION_STYLES[a].chart }))
   }, [reviews])

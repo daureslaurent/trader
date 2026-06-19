@@ -29,7 +29,6 @@ interface SettingsData {
   monitor_d_retain_runs: number
   monitor_cron: string
   monitor_adjust_sltp: boolean
-  monitor_reduce_enabled: boolean
   monitor_auto_approve: boolean
   monitor_sl_pct_short: number
   monitor_sl_pct_medium: number
@@ -1155,7 +1154,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_reduce_enabled' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1637,10 +1636,6 @@ export default function Settings() {
             <Toggle label="Adapt SL/TP" checked={settings.monitor_adjust_sltp} onChange={() => toggle('monitor_adjust_sltp')} />
           </Row>
 
-          <Row label="Partial exits (REDUCE)" hint="Allow the monitor to sell part of a position to lock in gains or de-risk. When off, REDUCE is removed from the prompt and never executed (the monitor uses CLOSE / ADJUST only).">
-            <Toggle label="Partial exits (REDUCE)" checked={settings.monitor_reduce_enabled} onChange={() => toggle('monitor_reduce_enabled')} />
-          </Row>
-
           {settings.monitor_adjust_sltp && (
             <Row label="Auto-approve adjustments" hint="Apply SL/TP changes immediately without waiting for manual approval, even when approval mode is on">
               <Toggle label="Auto-approve adjustments" checked={settings.monitor_auto_approve} onChange={() => toggle('monitor_auto_approve')} />
@@ -1682,7 +1677,7 @@ export default function Settings() {
             </div>
           </Row>
 
-          <Row label="Min confidence to sell" hint="Minimum LLM confidence (0–1) required to execute a monitor CLOSE or REDUCE. Lower-confidence proposals are recorded as HOLD instead.">
+          <Row label="Min confidence to sell" hint="Minimum LLM confidence (0–1) required to execute a monitor CLOSE. Lower-confidence proposals are recorded as HOLD instead.">
             <Input
               type="number"
               step="0.05"

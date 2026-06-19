@@ -240,13 +240,12 @@ export async function runPortfolioSummary(cycleId: string): Promise<void> {
 
     const monitorActions: SummaryMonitorAction[] = ((await positionReviews.find(
       {},
-      { sort: { created_at: -1 }, limit: 12, projection: { coin: 1, action: 1, confidence: 1, reasoning: 1, reduce_to_pct: 1, new_stop_loss: 1, new_take_profit: 1, created_at: 1 } },
-    )) as unknown as { coin: string; action: string; confidence: number; reasoning: string; reduce_to_pct: number | null; new_stop_loss: number | null; new_take_profit: number | null; created_at: string }[]).map(r => ({
+      { sort: { created_at: -1 }, limit: 12, projection: { coin: 1, action: 1, confidence: 1, reasoning: 1, new_stop_loss: 1, new_take_profit: 1, created_at: 1 } },
+    )) as unknown as { coin: string; action: string; confidence: number; reasoning: string; new_stop_loss: number | null; new_take_profit: number | null; created_at: string }[]).map(r => ({
       coin: r.coin,
       action: r.action as SummaryMonitorAction['action'],
       confidence: r.confidence,
       reasoning: r.reasoning,
-      reduceToPct: r.reduce_to_pct,
       newStopLoss: r.new_stop_loss,
       newTakeProfit: r.new_take_profit,
       createdAt: r.created_at,

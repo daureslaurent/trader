@@ -93,7 +93,6 @@ export function getSettings(): BotSettings {
     monitor_d_retain_runs: parseInt(map.monitor_d_retain_runs || '200', 10),
     monitor_cron: map.monitor_cron || '0 */4 * * *',
     monitor_adjust_sltp: (map.monitor_adjust_sltp ?? 'true') === 'true',
-    monitor_reduce_enabled: map.monitor_reduce_enabled === 'true',
     monitor_auto_approve: map.monitor_auto_approve === 'true',
     monitor_sl_pct_short: parseFloat(map.monitor_sl_pct_short || '3'),
     monitor_sl_pct_medium: parseFloat(map.monitor_sl_pct_medium || '5'),

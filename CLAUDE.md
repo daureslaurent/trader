@@ -45,7 +45,7 @@ Monorepo with two independent Node packages: `backend/` (Node.js + TypeScript ES
 
 1. **Pipeline** (`pipeline_cron`) — the entry engine. For each watched/held coin runs: **Researcher** (Puppeteer/DuckDuckGo web search) → **Extractor** (LLM compresses articles to structured sentiment) → article **selection** (LLM) → **Analyst** (LLM produces BUY/SELL/HOLD + confidence + SL/TP %). A BUY passes a gauntlet of gates (max positions, already-held, pending-intent, min-USDC, position size, **fee-edge** gate) before executing or being handed to the entry-timing engine. Coins already held are **skipped** — they belong to the monitor.
 2. **Discoverer** (`discover_cron`, `discoverer/`) — LLM-scored search for new candidate coins; approved discoveries feed the watchlist.
-3. **Monitor** (`monitor_cron`, `monitor/`) — reviews **open positions** and proposes SL/TP adjustments, CLOSE, or REDUCE. This is the only engine that manages held coins.
+3. **Monitor** (`monitor_cron`, `monitor/`) — reviews **open positions** and proposes SL/TP adjustments (ADJUST) or a full exit (CLOSE). This is the only engine that manages held coins.
 4. **Summary** (`summary_cron`, `summary/`) — when `summary_auto_run`, an LLM portfolio strategist that bundles the whole portfolio + per-coin live Binance market context (price, 24h, RSI, trend, regime), recent trades, and recently closed positions into a narrative + structured briefing (health, risk level, observations, suggestions). Read-only: it never trades. Rows persist to `portfolio_summaries` (pruned by `summary_retain_days`), broadcast to the Summary page, and pushed to Telegram via `portfolio_summary_created`.
 5. **Position check** — a 30s `setInterval` (not cron) reconciling open positions against live prices and exchange OCO fills.
 
@@ -57,7 +57,7 @@ When the frontend saves settings, `settings_updated` reschedules the affected cr
 - `entry_fire` → deferred BUY fires at a good price (re-checks all gates first).
 - `trade_approved` / `trade_rejected` → resolves a pending human approval.
 - `position_adjustment_proposed` / `adjustment_approved` → applies monitor SL/TP changes.
-- `monitor_close_requested` / `monitor_reduce_requested` → monitor exits.
+- `monitor_close_requested` → monitor-initiated full exit.
 
 **`submitTrade()` is the single choke point** for all real exchange orders. It guards concurrent exits with an in-memory `exitsInFlight` set (only one path may market-sell a given position at once), cancels the exchange OCO before selling, and does all DB writes (trade record + position + portfolio entries) inside one `withTransaction()`. SL/TP percentages from the analyst are applied at the **real fill price**, falling back to ATR sizing only when absent.
 

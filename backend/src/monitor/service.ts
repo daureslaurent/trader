@@ -12,7 +12,7 @@ import * as priceCache from '../market/index.js'
 import { getOHLCV, isTimeframe } from '../market/index.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
-import { PositionReview, BotSettings } from '../types.js'
+import { PositionReview, BotSettings, ReviewRiskFields, ThesisStatus, MarketRegime } from '../types.js'
 import { buildMonitorPrompt, buildSynthesizerUser, fmtOffsetLabel, PositionContext, HorizonConfigs, MonitorNotes } from './prompts.js'
 import { LLMError } from '../core/errors.js'
 import { resolveLLM } from '../config/llm.js'
@@ -98,12 +98,12 @@ async function buildEnsemble(): Promise<MonitorEnsemble> {
 
 // Action severity for tie-breaking the confidence-weighted A+B merge: when both
 // models report the same confidence, the more capital-protective action wins.
-const ACTION_SEVERITY: Record<string, number> = { CLOSE: 3, REDUCE: 2, ADJUST: 1, HOLD: 0 }
+const ACTION_SEVERITY: Record<string, number> = { CLOSE: 3, ADJUST: 1, HOLD: 0 }
 
 interface Opinion { llm: MonitorLLM; review: RawReview }
 
 // A+B confidence-weighted merge: keep the higher-confidence verdict wholesale (so its
-// SL/TP/reduce numbers stay coherent). Ties break toward the more protective action,
+// SL/TP numbers stay coherent). Ties break toward the more protective action,
 // then toward slot A for determinism.
 function pickHigherConfidence(opinions: Opinion[]): Opinion {
   return [...opinions].sort((x, y) => {
@@ -114,16 +114,33 @@ function pickHigherConfidence(opinions: Opinion[]): Opinion {
   })[0]
 }
 
-export interface RawReview {
-  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+export interface RawReview extends Partial<ReviewRiskFields> {
+  action: 'HOLD' | 'CLOSE' | 'ADJUST'
   confidence: number
   reasoning: string
-  reduce_to_pct?: number | null
   // #2a: LLM returns percentages relative to current price — engine converts to abs prices
   new_stop_loss_pct?: number | null
   new_take_profit_pct?: number | null
   // Persistent per-coin memory: a non-empty string replaces the stored note, null keeps it
   notes?: string | null
+}
+
+// Defensive coercion for the optional structured risk fields (Agent D emits them; the
+// classic monitor leaves them absent). A missing or malformed field never invalidates a
+// verdict — it just resolves to null.
+const THESIS_STATUSES: ThesisStatus[] = ['intact', 'weakening', 'invalidated']
+const MARKET_REGIMES: MarketRegime[] = ['risk_on', 'risk_off', 'neutral']
+function parseRiskFields(c: Record<string, unknown>): ReviewRiskFields {
+  const thesis = typeof c.thesis_status === 'string' ? c.thesis_status.trim().toLowerCase() : null
+  const regimeRaw = typeof c.regime === 'string' ? c.regime.trim().toLowerCase().replace(/[\s-]/g, '_') : null
+  const rr = typeof c.risk_reward === 'number' && Number.isFinite(c.risk_reward) && c.risk_reward >= 0
+    ? Math.round(c.risk_reward * 100) / 100
+    : null
+  return {
+    thesis_status: thesis && (THESIS_STATUSES as string[]).includes(thesis) ? thesis as ThesisStatus : null,
+    risk_reward: rr,
+    regime: regimeRaw && (MARKET_REGIMES as string[]).includes(regimeRaw) ? regimeRaw as MarketRegime : null,
+  }
 }
 
 // Hard cap on stored note size — the prompt asks for ≤500 chars, this guards
@@ -148,12 +165,12 @@ export function parseReview(content: string): RawReview {
   const candidate = obj as Record<string, unknown>
   if (
     typeof candidate !== 'object' || candidate === null ||
-    !['HOLD', 'CLOSE', 'REDUCE', 'ADJUST'].includes(candidate.action as string) ||
+    !['HOLD', 'CLOSE', 'ADJUST'].includes(candidate.action as string) ||
     typeof candidate.confidence !== 'number' ||
     typeof candidate.reasoning !== 'string'
   ) throw new LLMError('Invalid review in monitor response')
 
-  return candidate as unknown as RawReview
+  return { ...(candidate as unknown as RawReview), ...parseRiskFields(candidate) }
 }
 
 // Approximate review cadence from the monitor cron expression, for the prompt.
@@ -193,7 +210,6 @@ export interface MonitorEntry { coin: string; quantity: number; avg_buy_price: n
 export interface CycleParams {
   ensemble: MonitorEnsemble
   adjustEnabled: boolean
-  reduceEnabled: boolean
   trustLlm: boolean
   useHorizon: boolean
   utcOffsetHours: number
@@ -307,7 +323,7 @@ export async function buildReviewContext(coin: string, entry: MonitorEntry, p: C
   const effectiveUseHorizon = horizon === 'llm' ? false : p.useHorizon
   const { system, synthSystem, user } = buildMonitorPrompt(
     ctx, history, p.horizonConfigs, effectiveUseHorizon, p.utcOffsetHours,
-    candles, tf, p.reviewIntervalMin, storedNotes, p.breakevenPct, p.reduceEnabled,
+    candles, tf, p.reviewIntervalMin, storedNotes, p.breakevenPct,
   )
 
   return { ctx, system, synthSystem, user, history, effectiveUseHorizon }
@@ -427,7 +443,7 @@ async function monitorCoin(
     const voterSummaries = opinions.map(o => ({
       label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence,
       reasoning: o.review.reasoning, new_stop_loss_pct: o.review.new_stop_loss_pct,
-      new_take_profit_pct: o.review.new_take_profit_pct, reduce_to_pct: o.review.reduce_to_pct,
+      new_take_profit_pct: o.review.new_take_profit_pct,
     }))
     const synthPrompt = async () => { const c = await getContext(); return { system: c.synthSystem, user: buildSynthesizerUser(c.user, voterSummaries) } }
     raw = await askModel(ensemble.synthesizer, synthPrompt, coin, cycleId)
@@ -461,7 +477,7 @@ async function monitorCoin(
         }
       : null
 
-  // Hand the resolved verdict to the shared safety net: confidence gates, REDUCE/ADJUST
+  // Hand the resolved verdict to the shared safety net: confidence gates, ADJUST
   // downgrades, OCO half-leg seeding, adjust cooldown, persistence and event emission.
   return finalizeReview({
     ctx, raw, effectiveUseHorizon, modelName: finalLlm.model, cycleId, disagreement,
@@ -492,41 +508,25 @@ export interface FinalizeReviewInput {
 
 // The shared post-decision safety net. Takes a resolved verdict + the live position
 // context and applies every guard the classic monitor enforces before it acts:
-// confidence threshold, REDUCE/ADJUST downgrades, OCO half-leg seeding, adjust cooldown,
-// then persists a position_reviews row and emits the close/reduce/adjust bus events.
+// confidence threshold, ADJUST downgrades, OCO half-leg seeding, adjust cooldown,
+// then persists a position_reviews row and emits the close/adjust bus events.
 // Returns the stored review, or null if the position closed mid-analysis.
 export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams): Promise<PositionReview | null> {
   const { ctx, effectiveUseHorizon: useHorizon, cycleId } = input
   let raw = input.raw
 
   const confidence = Math.min(1, Math.max(0, raw.confidence))
-  let reduceToPct = raw.action === 'REDUCE' && typeof raw.reduce_to_pct === 'number'
-    ? Math.min(99, Math.max(1, Math.round(raw.reduce_to_pct)))
-    : null
 
   // Downgrade actions the engine cannot or should not execute. The stored review keeps
-  // an honest record — otherwise the LLM sees its own unexecuted CLOSE/REDUCE in the
+  // an honest record — otherwise the LLM sees its own unexecuted CLOSE in the
   // decision history and assumes it already happened.
   if (raw.action !== 'HOLD' && ctx.positionId == null) {
     logger.warn('Monitor action has no position record to act on — storing as HOLD', { coin: ctx.coin, action: raw.action })
     raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} not executable — no position record] ${raw.reasoning}` }
-    reduceToPct = null
   }
-  // REDUCE disabled in settings: the prompt no longer offers it, but downgrade defensively
-  // in case the LLM returns it anyway, so a partial exit is never executed.
-  if (raw.action === 'REDUCE' && !p.reduceEnabled) {
-    logger.warn('Monitor REDUCE disabled by setting — storing as HOLD', { coin: ctx.coin })
-    raw = { ...raw, action: 'HOLD', reasoning: `[REDUCE disabled — not executed] ${raw.reasoning}` }
-    reduceToPct = null
-  }
-  if (raw.action === 'REDUCE' && reduceToPct == null) {
-    logger.warn('Monitor REDUCE missing reduce_to_pct — storing as HOLD', { coin: ctx.coin })
-    raw = { ...raw, action: 'HOLD', reasoning: `[REDUCE missing reduce_to_pct — not executed] ${raw.reasoning}` }
-  }
-  if ((raw.action === 'CLOSE' || raw.action === 'REDUCE') && confidence < p.minConfidence) {
+  if (raw.action === 'CLOSE' && confidence < p.minConfidence) {
     logger.warn('Monitor action below confidence threshold — storing as HOLD', { coin: ctx.coin, action: raw.action, confidence, minConfidence: p.minConfidence })
     raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} suppressed: confidence ${confidence.toFixed(2)} < required ${p.minConfidence.toFixed(2)}] ${raw.reasoning}` }
-    reduceToPct = null
   }
 
   // Adjustment cooldown: one applied SL/TP change per window, scaled by horizon.
@@ -669,9 +669,15 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
     logger.info('Monitor notes updated', { coin: ctx.coin, length: notes.length })
   }
 
+  const riskFields: ReviewRiskFields = {
+    thesis_status: raw.thesis_status ?? null,
+    risk_reward: raw.risk_reward ?? null,
+    regime: raw.regime ?? null,
+  }
+
   const reviewId = await positionReviews.insert({
     coin: ctx.coin, action: raw.action, confidence, reasoning: raw.reasoning,
-    reduce_to_pct: reduceToPct, old_stop_loss: ctx.stopLoss ?? null, old_take_profit: ctx.takeProfit ?? null,
+    ...riskFields, old_stop_loss: ctx.stopLoss ?? null, old_take_profit: ctx.takeProfit ?? null,
     new_stop_loss: newStopLoss, new_take_profit: newTakeProfit, market_data: marketData,
     model: input.modelName, cycle_id: cycleId, created_at: nowSql(),
   })
@@ -682,7 +688,7 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
     action: raw.action,
     confidence,
     reasoning: raw.reasoning,
-    reduce_to_pct: reduceToPct,
+    ...riskFields,
     old_stop_loss: ctx.stopLoss ?? null,
     old_take_profit: ctx.takeProfit ?? null,
     new_stop_loss: newStopLoss,
@@ -723,18 +729,6 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
     })
   }
 
-  // Fire partial exit immediately — don't wait for other coins
-  if (raw.action === 'REDUCE' && ctx.positionId != null && reduceToPct != null) {
-    bus.emit('monitor_reduce_requested', {
-      positionId: ctx.positionId,
-      coin: ctx.coin,
-      currentPrice: ctx.currentPrice,
-      reduceToPct,
-      reasoning: raw.reasoning,
-      confidence,
-      cycleId,
-    })
-  }
 
   // Fire adjustment immediately — don't wait for other coins
   if (proposalToEmit && ctx.positionId != null) {
@@ -818,7 +812,6 @@ export function buildCycleParams(s: BotSettings, ensemble: MonitorEnsemble): Cyc
   return {
     ensemble,
     adjustEnabled: s.monitor_adjust_sltp,
-    reduceEnabled: s.monitor_reduce_enabled,
     trustLlm: s.monitor_trust_llm_sltp,
     useHorizon: s.monitor_use_horizon,
     utcOffsetHours: s.utc_offset_hours,

@@ -103,7 +103,6 @@ function Td({ children, right, className }: { children: React.ReactNode; right?:
 const ACTION_STYLES: Record<string, { cls: string; label: string }> = {
   HOLD:   { cls: 'bg-surface-elevated text-muted border-border',   label: 'HOLD' },
   CLOSE:  { cls: 'bg-sell/10 text-sell border-sell/20',            label: 'CLOSE' },
-  REDUCE: { cls: 'bg-warn/10 text-warn border-warn/20',            label: 'REDUCE' },
   ADJUST: { cls: 'bg-accent/10 text-accent border-accent/20',      label: 'ADJUST' },
 }
 

@@ -377,13 +377,24 @@ export interface DiscoverResponse {
   discoveries: DiscoveryResult[]
 }
 
-export interface PositionReview {
+export type ThesisStatus = 'intact' | 'weakening' | 'invalidated'
+export type MarketRegime = 'risk_on' | 'risk_off' | 'neutral'
+
+/** Optional structured risk metadata a reviewer may attach to a verdict (Agent D emits
+ *  these; the classic monitor leaves them null). */
+export interface ReviewRiskFields {
+  thesis_status?: ThesisStatus | null
+  /** Remaining reward:risk as an R-multiple from the current price. */
+  risk_reward?: number | null
+  regime?: MarketRegime | null
+}
+
+export interface PositionReview extends ReviewRiskFields {
   id: number
   coin: string
-  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+  action: 'HOLD' | 'CLOSE' | 'ADJUST'
   confidence: number
   reasoning: string
-  reduce_to_pct: number | null
   old_stop_loss: number | null
   old_take_profit: number | null
   new_stop_loss?: number | null

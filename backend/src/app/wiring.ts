@@ -4,7 +4,7 @@ import { logger } from '../core/logger.js'
 import {
   approveTrade, rejectTrade,
   proposeAdjustment, approveAdjustment, rejectAdjustment,
-  executeMonitorClose, executeMonitorReduce, executeFallbackExit,
+  executeMonitorClose, executeFallbackExit,
 } from '../execution/index.js'
 import {
   executeEntryFire, runSimulatedSignal,
@@ -63,13 +63,6 @@ export function registerEventHandlers(): void {
     logger.warn('Monitor CLOSE requested', { coin, positionId, currentPrice })
     executeMonitorClose(positionId, coin, currentPrice, reasoning).catch(err =>
       logger.error('Monitor close handler error', { coin, error: errMsg(err) })
-    )
-  })
-
-  bus.on('monitor_reduce_requested', ({ positionId, coin, currentPrice, reduceToPct, reasoning }) => {
-    logger.warn('Monitor REDUCE requested', { coin, positionId, reduceToPct, currentPrice })
-    executeMonitorReduce(positionId, coin, reduceToPct, currentPrice, reasoning).catch(err =>
-      logger.error('Monitor reduce handler error', { coin, error: errMsg(err) })
     )
   })
 

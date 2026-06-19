@@ -48,21 +48,15 @@ export function fmtOffsetLabel(offsetHours: number): string {
   return m > 0 ? `UTC${sign}${h}:${m.toString().padStart(2, '0')}` : `UTC${sign}${h}`
 }
 
-// Per-horizon behaviour guidance. The short/long blocks reference REDUCE; when partial
-// exits are disabled those lines are swapped for stop-trailing equivalents so the prompt
-// never advertises an action the engine won't execute.
-function horizonBehavior(horizon: 'short' | 'medium' | 'long', reduceEnabled: boolean): string {
+// Per-horizon behaviour guidance.
+function horizonBehavior(horizon: 'short' | 'medium' | 'long'): string {
   switch (horizon) {
     case 'short':
       return `SHORT horizon (days to weeks):
   - Prioritise capital protection and quick profit-taking over patience.
-  - ${reduceEnabled
-        ? 'CLOSE or REDUCE on the first sign of trend weakness'
-        : 'CLOSE on the first sign of trend weakness'}; don't wait for a full reversal.
+  - CLOSE on the first sign of trend weakness; don't wait for a full reversal.
   - Trail stops aggressively — move SL up to break-even or just below SMA7 early.
-  - ${reduceEnabled
-        ? 'If in profit ≥ TP target, REDUCE to lock in gains rather than holding for more.'
-        : 'If in profit ≥ TP target, tighten the stop hard (ADJUST) to lock in gains rather than holding for more.'}
+  - If in profit ≥ TP target, tighten the stop hard (ADJUST) to lock in gains rather than holding for more.
   - Accept less upside to avoid giving back gains.`
 
     case 'medium':
@@ -77,9 +71,7 @@ function horizonBehavior(horizon: 'short' | 'medium' | 'long', reduceEnabled: bo
   - Patient positioning — short-term noise should not trigger action.
   - Only CLOSE on major macro trend reversals; a 5–10% dip in an uptrend is normal.
   - Widen stops only when structurally justified (e.g. new higher low on weekly chart).
-  - ${reduceEnabled
-        ? 'Prefer HOLD or mild ADJUST over REDUCE; preserving position size matters more.'
-        : 'Prefer HOLD or mild ADJUST; preserving position size matters more.'}
+  - Prefer HOLD or mild ADJUST; preserving position size matters more.
   - Act on RSI extremes (>80 or <30) combined with clear trend change, not either alone.`
   }
 }
@@ -95,12 +87,11 @@ export function buildMonitorPrompt(
   reviewIntervalMin: number | null = null,
   notes: MonitorNotes | null = null,
   breakevenPct = 3,
-  reduceEnabled = true,
 ): { system: string; synthSystem: string; user: string } {
   const effectiveHorizon: 'short' | 'medium' | 'long' =
     (position.horizon === 'disabled' || position.horizon === 'llm') ? 'medium' : position.horizon
   const cfg = horizonConfigs[effectiveHorizon]
-  const behavior = horizonBehavior(effectiveHorizon, reduceEnabled)
+  const behavior = horizonBehavior(effectiveHorizon)
 
   const horizonSection = useHorizon ? `
 ── Horizon: ${position.horizon.toUpperCase()} ─────────────────────────────────────────────────────
@@ -160,26 +151,21 @@ ${behavior}
       : `every ${Math.round(reviewIntervalMin / 60)} hour(s)`
     : 'periodically'
 
-  const reduceAction = reduceEnabled ? `
-REDUCE     Partial exit now (market sell of part of the position). REQUIRED:
-           reduce_to_pct (integer: % of current size to KEEP, e.g. 50 = keep half, sell half).
-           Use to lock in gains near TP, or to de-risk a weakening position.` : ''
-
   // The system prompt is one shared `body` (actions, rules, schema — identical for
   // every model) preceded by a role-specific opener. Voters (A/B) get the reviewer
   // opener; the synthesizer (C) gets an arbiter opener that frames its job as deciding
   // FROM the two voter verdicts rather than reviewing from scratch. Same body so C is
   // bound by the exact same rules and answers in the exact same schema.
-  const reviewerOpener = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST,${reduceEnabled ? ' REDUCE,' : ''} or CLOSE.`
+  const reviewerOpener = `You are a professional crypto trading risk manager. Review one open long position and recommend exactly one action: HOLD, ADJUST, or CLOSE.`
 
-  const synthesizerOpener = `You are the senior risk manager and FINAL ARBITER for one open long position. Two independent analysts have each already reviewed this exact position and proposed an action; their verdicts are appended after the position data below. Your job is to SYNTHESIZE, not to review from scratch: weigh both opinions against the market data and issue the single authoritative decision — exactly one action: HOLD, ADJUST,${reduceEnabled ? ' REDUCE,' : ''} or CLOSE. Reason explicitly from the two analysts — state where they agree, adjudicate where they conflict, and decide. You may adopt one analyst's call, blend the two, or override both when the evidence demands it, but never merely average their numbers. The same rules below that bounded their reviews bind your verdict identically.`
+  const synthesizerOpener = `You are the senior risk manager and FINAL ARBITER for one open long position. Two independent analysts have each already reviewed this exact position and proposed an action; their verdicts are appended after the position data below. Your job is to SYNTHESIZE, not to review from scratch: weigh both opinions against the market data and issue the single authoritative decision — exactly one action: HOLD, ADJUST, or CLOSE. Reason explicitly from the two analysts — state where they agree, adjudicate where they conflict, and decide. You may adopt one analyst's call, blend the two, or override both when the evidence demands it, but never merely average their numbers. The same rules below that bounded their reviews bind your verdict identically.`
 
   const body = `── Actions ──────────────────────────────────────────────────────────────────
 CLOSE      Exit the whole position now (market sell). Use on confirmed trend reversal
            with negative momentum, or when deeply underwater with no recovery signals.
            Do NOT close merely because price is approaching the stop-loss — the
            exchange-side stop exists exactly for that; closing early converts every
-           ordinary dip into a realized loss.${reduceAction}
+           ordinary dip into a realized loss.
 ADJUST     Keep the position but update stop-loss and/or take-profit.
            Use to trail the stop UP as price rises, extend TP in a strong trend,
            or tighten risk when momentum weakens.
@@ -222,7 +208,7 @@ Return a single JSON object — no markdown, no extra keys:
 {
   "action": "ADJUST",
   "confidence": 0.8,
-  "reasoning": "Up 6.2%, uptrend intact, RSI 61. Trailing stop to 3% below current price.",${reduceEnabled ? '\n  "reduce_to_pct": null,' : ''}
+  "reasoning": "Up 6.2%, uptrend intact, RSI 61. Trailing stop to 3% below current price.",
   "new_stop_loss_pct": -3.0,
   "new_take_profit_pct": null,
   "notes": "Thesis: breakout above $3.20 held. Trailing vs swing high $3.42. Invalidation: 1h close below $3.05. Watch RSI cooling from 70."
@@ -335,7 +321,6 @@ export interface EnsembleOpinion {
   reasoning: string
   new_stop_loss_pct?: number | null
   new_take_profit_pct?: number | null
-  reduce_to_pct?: number | null
 }
 
 // Builds model C's user prompt in 'abc' mode: the same position review the A/B models
@@ -348,7 +333,6 @@ export function buildSynthesizerUser(baseUser: string, opinions: EnsembleOpinion
     const extras: string[] = []
     if (typeof o.new_stop_loss_pct === 'number') extras.push(`SL ${o.new_stop_loss_pct > 0 ? '+' : ''}${o.new_stop_loss_pct}%`)
     if (typeof o.new_take_profit_pct === 'number') extras.push(`TP ${o.new_take_profit_pct > 0 ? '+' : ''}${o.new_take_profit_pct}%`)
-    if (typeof o.reduce_to_pct === 'number') extras.push(`reduce_to ${o.reduce_to_pct}%`)
     const extraText = extras.length ? ` · ${extras.join(' · ')}` : ''
     return `Analyst ${o.label} (${o.model}): ${o.action} conf=${o.confidence.toFixed(2)}${extraText}\n  "${o.reasoning}"`
   }).join('\n\n')

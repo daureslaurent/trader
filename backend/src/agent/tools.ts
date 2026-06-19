@@ -847,7 +847,7 @@ export const TOOLS: AgentTool[] = [
   },
   {
     name: 'list_position_reviews',
-    description: 'List recent position-monitor reviews (HOLD/CLOSE/REDUCE/ADJUST proposals) with reasoning and confidence.',
+    description: 'List recent position-monitor reviews (HOLD/CLOSE/ADJUST proposals) with reasoning and confidence.',
     parameters: {
       type: 'object',
       properties: { limit: { type: 'number', description: 'How many (default 12, max 50).' } },

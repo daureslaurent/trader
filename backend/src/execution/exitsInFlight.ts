@@ -1,4 +1,4 @@
-// Exit claims: only one path (analyst SELL, monitor CLOSE/REDUCE, software SL/TP
+// Exit claims: only one path (analyst SELL, monitor CLOSE, software SL/TP
 // fallback) may be market-selling a given position at a time. Without this, two
 // near-simultaneous triggers both pass the status='OPEN' check before either
 // closes the position, and the same exit gets sold/recorded twice.

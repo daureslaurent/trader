@@ -23,7 +23,6 @@ interface EventMap {
   adjustment_approved: [number]
   adjustment_rejected: [number]
   monitor_close_requested: [{ positionId: number; coin: string; currentPrice: number; reasoning: string; confidence: number; cycleId: string }]
-  monitor_reduce_requested: [{ positionId: number; coin: string; currentPrice: number; reduceToPct: number; reasoning: string; confidence: number; cycleId: string }]
   coin_discovered: [{ id: number; coin: string; score: number; reasoning: string; market_data: string; status: string; cycle_id: string; created_at: string }]
   entry_fire: [{ signal: Signal; price: number; atr: number }]
   /** A deferred BUY was just registered on the Entry Desk — the Entry Agent does an

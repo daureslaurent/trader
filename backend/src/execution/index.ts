@@ -5,5 +5,5 @@
 export { submitTrade } from './submitTrade.js'
 export { isExitInFlight, claimExit, releaseExit } from './exitsInFlight.js'
 export { handleTradeSignal, getPendingApprovals, approveTrade, rejectTrade } from './approvals.js'
-export { executeMonitorClose, executeMonitorReduce, executeFallbackExit } from './exits.js'
+export { executeMonitorClose, executeFallbackExit } from './exits.js'
 export { applyAdjustment, proposeAdjustment, approveAdjustment, rejectAdjustment } from './adjustments.js'

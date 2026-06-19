@@ -186,7 +186,7 @@ function SignalMarker(props: any) {
 function reviewColor(action: ReviewMark['action']): string {
   if (action === 'CLOSE') return 'rgb(var(--sell-rgb))'
   if (action === 'HOLD') return 'rgb(var(--accent-rgb))'
-  return 'rgb(var(--warn-rgb))' // REDUCE / ADJUST
+  return 'rgb(var(--warn-rgb))' // ADJUST
 }
 
 // Monitor review marker: a glowing diamond above the candle (stacked above any SELL

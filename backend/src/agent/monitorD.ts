@@ -7,11 +7,11 @@
 // Where the classic monitor asks one model for a single-shot JSON verdict, Type D runs a
 // native tool-calling loop per open position: the model reads candles, position history
 // and sentiment through the shared agent tool belt, reasons across up to MAX_TOOL_ROUNDS
-// rounds, then commits to one verdict — Hold, Adjust, Reduce or Close.
+// rounds, then commits to one verdict — Hold, Adjust or Close.
 //
 // It reuses the classic engine's position set + per-cycle params and, crucially, the SAME
-// post-decision safety net (finalizeReview): confidence gates, REDUCE/ADJUST downgrades,
-// OCO half-leg seeding, adjust cooldown, persistence, and the same close/reduce/adjust bus
+// post-decision safety net (finalizeReview): confidence gates, ADJUST downgrades,
+// OCO half-leg seeding, adjust cooldown, persistence, and the same close/adjust bus
 // events index.ts acts on. Type D never executes a trade itself.
 //
 // Every coin's review is also persisted to `monitor_d_runs` (verdict + the full transcript)
@@ -29,7 +29,7 @@ import {
 } from '../monitor/index.js'
 import type { MonitorEntry, RawReview } from '../monitor/index.js'
 import type { PositionContext } from '../monitor/prompts.js'
-import type { MonitorDRun, MonitorDRunFrame, PositionReview } from '../types.js'
+import type { MonitorDRun, MonitorDRunFrame, PositionReview, ReviewRiskFields } from '../types.js'
 import { isReadOnlyTool } from './tools.js'
 import { getAgentToolSchemas, getAgentToolPrompt, runAgentTool } from './registry.js'
 
@@ -145,29 +145,45 @@ class Recorder {
 // Agentic Tools) — never hardcode a tool name/blurb here, or it can drift from the catalog
 // and describe a tool that's actually disabled.
 function buildSystemPrompt(toolPrompt: string): string {
-  return `You are "Type D", an autonomous risk manager reviewing ONE open crypto position at a time.
+  return `You are "Type D", a SENIOR crypto portfolio risk manager reviewing ONE open long position at a time. You think in probabilities and asymmetry, not hope. Your mandate is to protect capital and let winners run — never to churn.
 
-Your job: decide whether to HOLD, ADJUST (move stop-loss / take-profit), REDUCE (trim the position) or CLOSE it now.
+Your job: decide exactly one action — HOLD, ADJUST (move stop-loss / take-profit), or CLOSE it now.
 
 Method — gather evidence with your tools BEFORE deciding:
 ${toolPrompt}
 Call the tools you actually need; don't pad. You have at most ${MAX_TOOL_ROUNDS} tool rounds.
+You can read ANY symbol's market/candles — pull BTC (and the position's own coin) to judge the backdrop, not just the headline numbers.
 
-Decision guidance:
-- HOLD when the thesis is intact and risk is already well-placed.
-- ADJUST to trail a stop into profit or re-target. While the position is in profit the stop only ratchets UP (never loosen a winner). When it is BELOW break-even you MAY widen the stop back toward the target distance to give the trade room — but don't loosen merely to dodge a justified, imminent exit.
-- REDUCE to de-risk a winner or a thesis that is weakening but not broken (give reduce_to_pct = the % of the position to KEEP, 1-99).
-- CLOSE when the thesis is invalidated, momentum has clearly rolled over, or risk now outweighs reward.
-- Be decisive but conservative: protecting capital beats churn. Each ADJUST costs an exchange OCO replace.
+Reason like a desk PM, working these four lenses in order:
+
+1. RISK/REWARD (R-multiple, from the CURRENT price — not from entry):
+   - Downside = distance from current price to a sensible stop. Upside = distance to a realistic target.
+   - Compute reward:risk as upside ÷ downside. Below ~1:1 the trade no longer pays to hold — tighten the stop (ADJUST) or CLOSE. Strong asymmetry (≥2:1) with an intact thesis argues HOLD.
+
+2. MARKET REGIME & BTC BETA:
+   - Read BTC's trend/momentum (use get_market / get_candle_data on BTC). Risk-on or risk-off?
+   - High-beta alts mostly track BTC. Discount alt "strength" that is merely the whole market drifting up, and respect alt weakness that BTC is masking. A long into a risk-off BTC tape carries extra tail risk.
+
+3. VOLATILITY-ADJUSTED STOPS (ATR / structure — never a fixed % inside the noise):
+   - Anchor any stop/target to realized volatility (ATR, recent range) and structure (swing highs/lows), so the stop sits OUTSIDE normal noise. A stop inside the noise band guarantees a fee-paying scratch exit.
+   - While in profit the stop only ratchets UP — never loosen a winner. When BELOW break-even you MAY widen the stop back toward the volatility-justified distance to give the trade room, but never loosen merely to dodge a justified, imminent exit.
+
+4. THESIS & MOMENTUM STRUCTURE:
+   - Re-validate the original entry thesis. Is price still making higher highs / higher lows? Is momentum (RSI, trend) confirming or diverging / rolling over?
+   - CLOSE when the thesis is invalidated or momentum has clearly broken down; HOLD when it is intact and risk is well-placed.
+
+Discipline: the DEFAULT action is HOLD. Act only when something structural changed. Each ADJUST costs an exchange OCO cancel+replace, so skip cosmetic tweaks (<0.5% level moves). Be decisive but conservative — protecting capital beats churn.
 
 When — and only when — you are done gathering evidence, reply with ONE JSON object and NOTHING else:
 {
-  "action": "HOLD" | "ADJUST" | "REDUCE" | "CLOSE",
+  "action": "HOLD" | "ADJUST" | "CLOSE",
   "confidence": 0.0-1.0,
-  "reasoning": "one or two sentences citing the concrete evidence",
+  "reasoning": "one or two sentences citing the concrete evidence (numbers, levels, BTC backdrop)",
+  "thesis_status": "intact" | "weakening" | "invalidated",   // your re-validation of the entry thesis
+  "risk_reward": number,                // remaining reward:risk as an R-multiple from the CURRENT price (e.g. 2.5 = 2.5:1)
+  "regime": "risk_on" | "risk_off" | "neutral",              // the BTC/market backdrop you read
   "new_stop_loss_pct": number | null,   // % relative to CURRENT price, e.g. -3 = stop 3% below; null = leave unchanged
   "new_take_profit_pct": number | null, // % relative to CURRENT price, e.g. 8 = target 8% above; null = leave unchanged
-  "reduce_to_pct": number | null,       // only for REDUCE: % of the position to KEEP (1-99)
   "notes": string | null                // optional <=500 char memo to your future self about this coin
 }`
 }
@@ -183,7 +199,7 @@ function buildUserBriefing(ctx: PositionContext): string {
     `Age: ${f(ctx.ageHours, 1)}h   Horizon: ${ctx.horizon}`,
     `Indicators — RSI14: ${f(ctx.rsi14, 1)}, trend: ${ctx.trend}, volatility: ${ctx.volatility}, 24h: ${f(ctx.change24h)}%, 7d: ${f(ctx.perf7d)}%`,
     '',
-    'Investigate with your tools, then return your verdict as the single JSON object specified.',
+    'Work the four lenses: compute reward:risk from HERE (distance-to-TP vs distance-to-SL), read the BTC backdrop, anchor any stop to volatility/structure, and re-validate the thesis. Then return your verdict as the single JSON object specified.',
   ].join('\n')
 }
 
@@ -294,15 +310,21 @@ async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: strin
   const confidence = review?.confidence ?? verdict.confidence
   const reasoning = review?.reasoning ?? verdict.reasoning
   const discarded = review == null
+  // Structured risk metadata: prefer the persisted (parsed/coerced) review, fall back to the raw verdict.
+  const riskFields: ReviewRiskFields = {
+    thesis_status: review?.thesis_status ?? verdict.thesis_status ?? null,
+    risk_reward: review?.risk_reward ?? verdict.risk_reward ?? null,
+    regime: review?.regime ?? verdict.regime ?? null,
+  }
 
-  const tone: Tone = action === 'CLOSE' ? 'sell' : action === 'REDUCE' ? 'warn' : action === 'ADJUST' ? 'accent' : 'buy'
-  const icon = action === 'HOLD' ? '✋' : action === 'CLOSE' ? '🚪' : action === 'REDUCE' ? '✂️' : '🎯'
-  rec.push('decision', icon, `Decision: ${action} (${Math.round(confidence * 100)}%)`, tone, { action, confidence, reasoning, discarded })
+  const tone: Tone = action === 'CLOSE' ? 'sell' : action === 'ADJUST' ? 'accent' : 'buy'
+  const icon = action === 'HOLD' ? '✋' : action === 'CLOSE' ? '🚪' : '🎯'
+  rec.push('decision', icon, `Decision: ${action} (${Math.round(confidence * 100)}%)`, tone, { action, confidence, reasoning, discarded, ...riskFields })
 
   // Persist the run (verdict + full transcript) and broadcast the saved record. The
   // repository allocates the integer id on insert; we echo it back in the broadcast.
   const runDoc: Omit<MonitorDRun, 'id'> = {
-    cycle_id: cycleId, coin, action, confidence, reasoning, discarded,
+    cycle_id: cycleId, coin, action, confidence, reasoning, discarded, ...riskFields,
     model, frames: rec.frames,
     prompt_tokens: rec.promptTokens, completion_tokens: rec.completionTokens, peak_context_tokens: rec.peakContext,
     started_at_ms: rec.startedAt, created_at: nowSql(),

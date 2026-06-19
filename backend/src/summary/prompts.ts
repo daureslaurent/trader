@@ -59,10 +59,9 @@ export interface SummaryClosed {
 
 export interface SummaryMonitorAction {
   coin: string
-  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+  action: 'HOLD' | 'CLOSE' | 'ADJUST'
   confidence: number
   reasoning: string
-  reduceToPct: number | null
   newStopLoss: number | null
   newTakeProfit: number | null
   createdAt: string
@@ -83,7 +82,7 @@ export interface SummaryContext {
   holdings: SummaryHolding[]
   recentTrades: SummaryTrade[]
   recentlyClosed: SummaryClosed[]
-  /** Recent decisions from the position-monitor engine (HOLD/CLOSE/REDUCE/ADJUST). */
+  /** Recent decisions from the position-monitor engine (HOLD/CLOSE/ADJUST). */
   monitorActions: SummaryMonitorAction[]
 }
 
@@ -97,7 +96,7 @@ function fmtPct(n: number | null): string {
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
 }
 
-const SYSTEM = `You are the portfolio strategist for an automated crypto trading bot that trades <COIN>/USDC pairs on Binance. You receive the current portfolio, live Binance market data per holding (price, 24h change, RSI, trend, volatility regime), the bot's open protective orders (stop-loss / take-profit), the recent trade log, recently closed positions with realized P&L, and the latest decisions from the bot's position-monitor engine (HOLD/CLOSE/REDUCE/ADJUST and why).
+const SYSTEM = `You are the portfolio strategist for an automated crypto trading bot that trades <COIN>/USDC pairs on Binance. You receive the current portfolio, live Binance market data per holding (price, 24h change, RSI, trend, volatility regime), the bot's open protective orders (stop-loss / take-profit), the recent trade log, recently closed positions with realized P&L, and the latest decisions from the bot's position-monitor engine (HOLD/CLOSE/ADJUST and why).
 
 Write a clear, useful briefing for the human operator. Be concrete and quantitative — cite real numbers, coins, and percentages from the data. Do not invent prices or events that aren't in the data. Explain WHAT HAS HAPPENED recently (fills, exits, gains/losses, notable price moves, and what the position monitor decided — e.g. tightened a stop, trimmed, or closed — and its stated reasoning) and WHY the portfolio looks the way it does, then assess health and risk and give actionable suggestions.
 
@@ -174,8 +173,7 @@ export function buildSummaryPrompt(ctx: SummaryContext): { system: string; user:
     for (const a of ctx.monitorActions) {
       const coin = a.coin.replace('/USDC', '')
       const detail =
-        a.action === 'REDUCE' && a.reduceToPct != null ? ` → trim to ${a.reduceToPct}%`
-        : a.action === 'ADJUST'
+        a.action === 'ADJUST'
           ? ` → ${[a.newStopLoss != null ? `SL ${fmtPrice(a.newStopLoss)}` : null, a.newTakeProfit != null ? `TP ${fmtPrice(a.newTakeProfit)}` : null].filter(Boolean).join(' · ') || 'SL/TP'}`
           : ''
       const reason = a.reasoning.length > 220 ? a.reasoning.slice(0, 220) + '…' : a.reasoning

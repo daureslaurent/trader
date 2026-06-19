@@ -2,7 +2,7 @@ import { Markup } from 'telegraf'
 import { getReviews, getNotes, isRunning } from '../../../monitor/index.js'
 import { formatCurrency, esc, coinLabel, confidenceBar, timeAgo } from '../../components/formatting.js'
 
-const ACTION_EMOJI: Record<string, string> = { HOLD: '⚪', CLOSE: '🔴', REDUCE: '🟠', ADJUST: '⚙️' }
+const ACTION_EMOJI: Record<string, string> = { HOLD: '⚪', CLOSE: '🔴', ADJUST: '⚙️' }
 
 function fmtChange(oldVal: number | null, newVal: number | null): string | null {
   if (oldVal == null && newVal == null) return null
@@ -35,9 +35,6 @@ export async function render(_ctx: any) {
       const conf = Number(r.confidence)
       lines.push(`${emoji} <b>${coin}</b> → <b>${r.action}</b>  ${(conf * 100).toFixed(0)}%`)
       lines.push(`  <code>${confidenceBar(conf)}</code>`)
-      if (r.action === 'REDUCE' && r.reduce_to_pct != null) {
-        lines.push(`  Reduce to ${Number(r.reduce_to_pct).toFixed(0)}%`)
-      }
       const sl = fmtChange(r.old_stop_loss, r.new_stop_loss)
       const tp = fmtChange(r.old_take_profit, r.new_take_profit)
       if (sl) lines.push(`  SL ${sl}`)

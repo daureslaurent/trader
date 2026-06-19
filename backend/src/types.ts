@@ -134,9 +134,6 @@ export interface BotSettings {
   monitor_d_retain_runs: number
   monitor_cron: string
   monitor_adjust_sltp: boolean
-  /** When true, the monitor may propose/execute partial exits (REDUCE). When false, REDUCE is
-   *  removed from the prompt entirely and any REDUCE the LLM still returns is downgraded to HOLD. */
-  monitor_reduce_enabled: boolean
   monitor_auto_approve: boolean
   /** Per-horizon stop-loss distance as % below entry price */
   monitor_sl_pct_short: number
@@ -160,7 +157,7 @@ export interface BotSettings {
   monitor_history_tf: string
   /** Number of historical candles to include in the monitor prompt (1–100). */
   monitor_history_count: number
-  /** Minimum LLM confidence required to execute a monitor CLOSE or REDUCE; lower-confidence proposals are downgraded to HOLD. */
+  /** Minimum LLM confidence required to execute a monitor CLOSE; lower-confidence proposals are downgraded to HOLD. */
   monitor_min_confidence: number
   /** P&L % above which the monitor prompt requires the stop-loss to sit at break-even or better (profit protection trigger).
    *  Applies when horizon guidance is off (or the position uses the 'llm' horizon); with horizon guidance on, the trigger is half the horizon's TP target.
@@ -507,13 +504,28 @@ export interface RiskConfig {
   maxOpenPositions: number
 }
 
-export interface PositionReview {
+/** The original entry thesis re-validated at review time. */
+export type ThesisStatus = 'intact' | 'weakening' | 'invalidated'
+/** The prevailing BTC/market regime the reviewer read the position against. */
+export type MarketRegime = 'risk_on' | 'risk_off' | 'neutral'
+
+/** Optional structured risk metadata a reviewer may attach to a verdict, for auditability.
+ *  Produced by the agentic Type D monitor; the classic monitor leaves these null. */
+export interface ReviewRiskFields {
+  /** Entry-thesis re-validation. */
+  thesis_status: ThesisStatus | null
+  /** Remaining reward:risk as an R-multiple computed from the CURRENT price (upside-to-TP ÷ downside-to-SL). */
+  risk_reward: number | null
+  /** BTC/market regime read at review time. */
+  regime: MarketRegime | null
+}
+
+export interface PositionReview extends ReviewRiskFields {
   id: number
   coin: string
-  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+  action: 'HOLD' | 'CLOSE' | 'ADJUST'
   confidence: number
   reasoning: string
-  reduce_to_pct: number | null
   old_stop_loss: number | null
   old_take_profit: number | null
   new_stop_loss: number | null
@@ -540,11 +552,11 @@ export interface MonitorDRunFrame {
   detail?: { tool: string; args?: Record<string, unknown>; result?: unknown }
 }
 
-export interface MonitorDRun {
+export interface MonitorDRun extends ReviewRiskFields {
   id: number
   cycle_id: string
   coin: string
-  action: 'HOLD' | 'CLOSE' | 'REDUCE' | 'ADJUST'
+  action: 'HOLD' | 'CLOSE' | 'ADJUST'
   confidence: number
   reasoning: string
   /** True when the position closed mid-analysis and the verdict was not applied. */

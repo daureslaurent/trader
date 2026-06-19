@@ -28,6 +28,9 @@ interface MonitorDRun {
   confidence: number
   reasoning: string
   discarded: boolean
+  thesis_status?: 'intact' | 'weakening' | 'invalidated' | null
+  risk_reward?: number | null
+  regime?: 'risk_on' | 'risk_off' | 'neutral' | null
   model: string
   frames: Frame[]
   prompt_tokens: number
@@ -58,7 +61,15 @@ interface AgentStep extends Partial<Frame> {
 }
 
 const ACTION_VARIANT: Record<string, 'buy' | 'sell' | 'warning' | 'accent' | 'neutral'> = {
-  HOLD: 'neutral', CLOSE: 'sell', REDUCE: 'warning', ADJUST: 'accent',
+  HOLD: 'neutral', CLOSE: 'sell', ADJUST: 'accent',
+}
+
+// Presentation for the structured risk metadata Agent D attaches to a verdict.
+const THESIS_VARIANT: Record<string, 'buy' | 'warning' | 'sell'> = {
+  intact: 'buy', weakening: 'warning', invalidated: 'sell',
+}
+const REGIME_LABEL: Record<string, string> = {
+  risk_on: 'Risk-on', risk_off: 'Risk-off', neutral: 'Neutral',
 }
 
 const TONE_CLASS: Record<Tone, string> = {
@@ -364,6 +375,23 @@ export default function AgentMonitor() {
                   {detail.verdict && (
                     <div className="rounded-xl border border-border bg-surface-elevated/40 p-4">
                       <p className="text-[11px] uppercase tracking-wide text-muted/70 mb-1.5">Verdict reasoning</p>
+                      {(detail.verdict.thesis_status || detail.verdict.regime || detail.verdict.risk_reward != null) && (
+                        <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
+                          {detail.verdict.thesis_status && (
+                            <Badge variant={THESIS_VARIANT[detail.verdict.thesis_status] ?? 'neutral'}>
+                              Thesis: {detail.verdict.thesis_status}
+                            </Badge>
+                          )}
+                          {detail.verdict.risk_reward != null && (
+                            <Badge variant={detail.verdict.risk_reward >= 1.5 ? 'buy' : detail.verdict.risk_reward >= 1 ? 'neutral' : 'warning'}>
+                              R:R {detail.verdict.risk_reward.toFixed(2)}
+                            </Badge>
+                          )}
+                          {detail.verdict.regime && (
+                            <Badge variant="neutral">{REGIME_LABEL[detail.verdict.regime] ?? detail.verdict.regime}</Badge>
+                          )}
+                        </div>
+                      )}
                       <p className="text-sm leading-relaxed text-foreground/90">{detail.verdict.reasoning}</p>
                       {detail.verdict.discarded && (
                         <p className="mt-2 text-xs text-warn">Position closed during analysis — verdict was not applied.</p>
