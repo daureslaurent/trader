@@ -9,6 +9,7 @@
     "build": "tsc",
     "lint": "tsc --noEmit",
     "migrate:mongo": "tsx scripts/migrate-sqlite-to-mongo.ts",
+    "auth:hash": "tsx scripts/hash-password.ts",
     "test": "tsx --test \"test/**/*.test.ts\"",
     "coverage": "node --experimental-test-coverage --import tsx --test \"test/**/*.test.ts\""
   },

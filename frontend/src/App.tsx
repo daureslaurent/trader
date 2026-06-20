@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { ThemeProvider } from './contexts/ThemeContext'
+import { AuthProvider, useAuth } from './contexts/AuthContext'
+import Login from './pages/Login'
 import { Sidebar } from './components/layout/Sidebar'
 import { ThemeSelector } from './components/layout/ThemeSelector'
 import { PnLBadge } from './components/layout/PnLBadge'
@@ -96,6 +98,7 @@ function ToastList({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: num
 }
 
 function AppInner() {
+  const { authEnabled, logout } = useAuth()
   const [page, setPage] = useState<Page>('dashboard')
   const [wsConnected, setWsConnected] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -210,6 +213,18 @@ function AppInner() {
             <ControlRoomBadge onOpen={() => setPage('control-room')} />
             <EndpointStatusBadge />
             <ThemeSelector />
+            {authEnabled && (
+              <button
+                onClick={logout}
+                title="Sign out"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border border-border text-muted hover:text-foreground hover:border-accent/50 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
+                </svg>
+                Sign out
+              </button>
+            )}
           </div>
         </header>
 
@@ -244,10 +259,25 @@ function AppInner() {
   )
 }
 
+function AuthGate() {
+  const { phase } = useAuth()
+  if (phase === 'loading') {
+    return (
+      <div className="flex items-center justify-center h-full bg-surface-base">
+        <div className="w-6 h-6 rounded-full border-2 border-border border-t-accent animate-spin" />
+      </div>
+    )
+  }
+  if (phase === 'login') return <Login />
+  return <AppInner />
+}
+
 export default function App() {
   return (
     <ThemeProvider>
-      <AppInner />
+      <AuthProvider>
+        <AuthGate />
+      </AuthProvider>
     </ThemeProvider>
   )
 }

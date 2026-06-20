@@ -111,4 +111,14 @@ export const config = {
   port: num('PORT', 3000),
   approvalsEnabled: process.argv.includes('--approval'),
   pipelineCron: opt('PIPELINE_CRON', ''),
+  // Authentication gateway. Raw env values; resolved/validated in auth/config.ts.
+  // Auth turns ON automatically once a password (hash or plaintext) is configured.
+  auth: {
+    enabled: process.env.AUTH_ENABLED, // explicit 'true'|'false' override (optional)
+    username: opt('AUTH_USERNAME', 'admin'),
+    password: opt('AUTH_PASSWORD', ''), // plaintext convenience — hashed at boot
+    passwordHash: opt('AUTH_PASSWORD_HASH', ''), // preferred: a precomputed scrypt hash
+    secret: opt('AUTH_SECRET', ''), // HMAC signing secret for bearer tokens
+    tokenTtlMinutes: num('AUTH_TOKEN_TTL_MINUTES', 720), // 12h default
+  },
 }

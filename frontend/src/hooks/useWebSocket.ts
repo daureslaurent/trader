@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
+import { getToken } from '../lib/auth'
 
 let sharedSocket: WebSocket | null = null
 let listenerCount = 0
@@ -16,7 +17,11 @@ function notifyConnect(connected: boolean) {
 function start() {
   if (sharedSocket?.readyState === WebSocket.OPEN || sharedSocket?.readyState === WebSocket.CONNECTING) return
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  sharedSocket = new WebSocket(`${protocol}//${window.location.host}/ws`)
+  // Browsers can't set headers on a WS handshake, so the bearer token rides as a
+  // query param; the backend verifies it before accepting the connection.
+  const token = getToken()
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  sharedSocket = new WebSocket(`${protocol}//${window.location.host}/ws${query}`)
 
   sharedSocket.onopen = () => {
     retries = 0

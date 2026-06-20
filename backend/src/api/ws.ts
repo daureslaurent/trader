@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { Server } from 'http'
 import { logger } from '../core/logger.js'
 import { eventBuffer } from '../core/eventBuffer.js'
+import { isWsRequestAuthorized } from '../auth/index.js'
 
 let wss: WebSocketServer
 
@@ -18,7 +19,16 @@ function replayEventStream(ws: WebSocket, lastSeq: number): void {
 export function initWS(server: Server): WebSocketServer {
   wss = new WebSocketServer({ server, path: '/ws' })
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, req) => {
+    // Authenticate the handshake (token passed as ?token= on the /ws URL, since
+    // browsers can't set headers on a WebSocket). Reject with 1008 (policy
+    // violation) when unauthorized; no-op when auth is disabled.
+    if (!isWsRequestAuthorized(req)) {
+      logger.warn('Rejected unauthenticated WebSocket connection')
+      ws.close(1008, 'Unauthorized')
+      return
+    }
+
     logger.info('Frontend connected via WebSocket')
     ws.send(JSON.stringify({ type: 'connected' }))
 

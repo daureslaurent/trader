@@ -7,6 +7,7 @@ import { logger } from '../core/logger.js'
 import { router } from './routes.js'
 import { initWS } from './ws.js'
 import { initEventStream } from './eventStream.js'
+import { authRouter, requireAuth, getAuthState } from '../auth/index.js'
 
 export function startAPI() {
   const app = express()
@@ -27,7 +28,17 @@ export function startAPI() {
   })
   app.use('/api', apiLimiter)
 
-  app.use('/api', router)
+  // Resolve auth config once at startup (validates and logs enabled/disabled).
+  getAuthState()
+
+  // Public auth endpoints (login / status) — mounted BEFORE the guard so they
+  // remain reachable without a token. The login route carries its own strict
+  // rate limiter internally.
+  app.use('/api/auth', authRouter)
+
+  // Everything else under /api requires a valid bearer token (no-op if auth is
+  // disabled). The guard sits in front of the full domain router.
+  app.use('/api', requireAuth, router)
 
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     logger.error('Unhandled API error', { error: err.message })

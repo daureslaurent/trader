@@ -195,6 +195,10 @@ LLAMA_MODEL=llama3
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 PORT=3000
+
+# Optional — login gateway (see "Lock it down" below). Off until a password is set.
+AUTH_PASSWORD_HASH=
+AUTH_SECRET=
 ```
 
 Per-module LLM overrides (`EXTRACTOR_*`, `ANALYST_*`, `MONITOR_*`, `SUMMARY_*`, `ENTRY_PLANNER_*`, `AGENT_*`, …) all fall back to `LLAMA_*` — set them only to run different models per engine. Most of this is also editable live from **Settings → LLM Models**.
@@ -227,6 +231,32 @@ cd frontend && npm install && npm run dev
 Then open **http://localhost:5173** → backend on **:3000**, frontend on **:5173**, Mongo on **:27017**.
 
 > 🔐 **Start safe:** launch the backend with `--approval` (or set `approval_required`) to require human approval for *every* trade signal until you trust its behavior.
+
+### 🔒 Lock it down — enable authentication
+
+By default the API and dashboard are **open to anyone who can reach the port** (a warning is logged on every boot). Since this app places real orders, put a login in front of it before exposing it beyond `localhost`.
+
+The gateway guards the whole API **and** the WebSocket behind a username + password. Sessions are stateless **HS256 bearer tokens**; the password is stored only as a **scrypt hash** (never plaintext); the login route is rate-limited against brute force. It's built on Node's `crypto` — no extra dependencies.
+
+**1. Generate credentials** (the plaintext never touches `.env`):
+
+```bash
+cd backend && npm run auth:hash -- 'your-strong-password'
+```
+
+**2. Paste the two printed lines into your `.env`** and restart:
+
+```ini
+AUTH_PASSWORD_HASH=scrypt$16384$8$1$…    # from the command above
+AUTH_SECRET=…                            # token signing secret (≥16 chars)
+# Optional:
+AUTH_USERNAME=admin                      # default: admin
+AUTH_TOKEN_TTL_MINUTES=720               # session lifetime, default 12h
+```
+
+Auth turns **on automatically** once `AUTH_PASSWORD_HASH` (or `AUTH_PASSWORD`) is set — the dashboard then shows a login screen and a **Sign out** button. Leave them blank to keep auth off (local-only use). Set `AUTH_ENABLED=false` to force it off, or `AUTH_ENABLED=true` to require it (boots with an error if no password is configured).
+
+> ⚠️ If you skip `AUTH_SECRET`, an ephemeral one is generated each boot — logins survive until the next restart. Set it for stable sessions.
 
 ---
 
