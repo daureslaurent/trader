@@ -159,6 +159,15 @@ export interface BotSettings {
   monitor_history_count: number
   /** Minimum LLM confidence required to execute a monitor CLOSE; lower-confidence proposals are downgraded to HOLD. */
   monitor_min_confidence: number
+  /** Profit-protection guard: when on, a monitor CLOSE on a position that is in profit, whose stop is
+   *  NOT threatened (price ≥ `monitor_protect_winners_atr` × ATR above the stop) and whose trend has not
+   *  reversed (uptrend) is downgraded to HOLD — UNLESS the model's own verdict justifies it
+   *  (thesis_status = 'invalidated' or regime = 'risk_off'). Stops the engine from exiting healthy winners
+   *  on a thin reward:risk reading alone. */
+  monitor_protect_winners: boolean
+  /** Stop-buffer for `monitor_protect_winners`, in ATR(14) multiples: a CLOSE is only guarded while the
+   *  current price sits at least this many ATRs above the stop-loss (i.e. the stop is not imminent). */
+  monitor_protect_winners_atr: number
   /** P&L % above which the monitor prompt requires the stop-loss to sit at break-even or better (profit protection trigger).
    *  Applies when horizon guidance is off (or the position uses the 'llm' horizon); with horizon guidance on, the trigger is half the horizon's TP target.
    *  Also enforced engine-side: break-even-or-better stops proposed below this P&L are rejected. */

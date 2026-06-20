@@ -108,6 +108,8 @@ export function getSettings(): BotSettings {
     monitor_history_tf: map.monitor_history_tf || '1h',
     monitor_history_count: parseInt(map.monitor_history_count || '24', 10),
     monitor_min_confidence: parseFloat(map.monitor_min_confidence || '0.6'),
+    monitor_protect_winners: (map.monitor_protect_winners ?? 'true') === 'true',
+    monitor_protect_winners_atr: parseFloat(map.monitor_protect_winners_atr || '1'),
     monitor_breakeven_pct: parseFloat(map.monitor_breakeven_pct || '3'),
     monitor_adjust_cooldown_min: parseFloat(map.monitor_adjust_cooldown_min || '60'),
     monitor_review_retain_cycles: parseInt(map.monitor_review_retain_cycles || '20', 10),

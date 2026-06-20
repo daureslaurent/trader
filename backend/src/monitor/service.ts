@@ -217,6 +217,8 @@ export interface CycleParams {
   historyTf: string
   historyCount: number
   minConfidence: number
+  protectWinners: boolean
+  protectWinnersAtr: number
   reviewIntervalMin: number | null
   breakevenPct: number
   feeRate: number
@@ -529,6 +531,34 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
     raw = { ...raw, action: 'HOLD', reasoning: `[${raw.action} suppressed: confidence ${confidence.toFixed(2)} < required ${p.minConfidence.toFixed(2)}] ${raw.reasoning}` }
   }
 
+  // Profit-protection guard: don't let the engine close a healthy winner on a thin
+  // reward:risk reading alone (the failure mode that exited a +4% trending SOL right before
+  // it ran further). A CLOSE on a position that is (a) in profit, (b) whose stop is NOT
+  // threatened — price sits ≥ protectWinnersAtr × ATR(14) above the SL — and (c) whose trend
+  // has not reversed (still an uptrend) is downgraded to HOLD, UNLESS the model's own verdict
+  // justifies the exit (thesis invalidated, or a risk-off regime turning against the position).
+  // Cross-checking the action against the model's structured fields blocks only
+  // self-contradictory exits (close a winner while calling the thesis intact / regime neutral),
+  // never a CLOSE the model actually backs with a reversal/risk-off reason. With no stop set or
+  // no ATR, the guard stays inert and the CLOSE proceeds (it may be the only protection).
+  if (raw.action === 'CLOSE' && p.protectWinners && ctx.positionId != null) {
+    const stopGapAtr = ctx.stopLoss != null && ctx.atr14 > 0
+      ? (ctx.currentPrice - ctx.stopLoss) / ctx.atr14
+      : null
+    const inProfit = ctx.pnlPct > 0
+    const stopSafe = stopGapAtr != null && stopGapAtr >= p.protectWinnersAtr
+    const trendIntact = ctx.trend === 'uptrend'
+    const modelJustifies = raw.thesis_status === 'invalidated' || raw.regime === 'risk_off'
+    if (inProfit && stopSafe && trendIntact && !modelJustifies) {
+      logger.info('Monitor CLOSE suppressed by profit-protection guard — storing as HOLD', {
+        coin: ctx.coin, positionId: ctx.positionId, pnlPct: Number(ctx.pnlPct.toFixed(2)),
+        stopGapAtr: Number(stopGapAtr.toFixed(2)), trend: ctx.trend,
+        thesis_status: raw.thesis_status ?? null, regime: raw.regime ?? null,
+      })
+      raw = { ...raw, action: 'HOLD', reasoning: `[CLOSE suppressed: profit-protection — winner +${ctx.pnlPct.toFixed(1)}%, stop ${stopGapAtr.toFixed(1)}×ATR away, trend intact, model thesis ${raw.thesis_status ?? 'n/a'}/regime ${raw.regime ?? 'n/a'}] ${raw.reasoning}` }
+    }
+  }
+
   // Adjustment cooldown: one applied SL/TP change per window, scaled by horizon.
   // The 5-min review cadence runs a different clock than a medium/long-horizon
   // trade — without this, the LLM re-trails the stop dozens of times per position
@@ -823,6 +853,8 @@ export function buildCycleParams(s: BotSettings, ensemble: MonitorEnsemble): Cyc
     historyTf: s.monitor_history_tf,
     historyCount: s.monitor_history_count,
     minConfidence: Math.min(1, Math.max(0, s.monitor_min_confidence)),
+    protectWinners: s.monitor_protect_winners,
+    protectWinnersAtr: s.monitor_protect_winners_atr >= 0 ? s.monitor_protect_winners_atr : 1,
     reviewIntervalMin: s.monitor_auto_run ? cronIntervalMinutes(s.monitor_cron) : null,
     breakevenPct: s.monitor_breakeven_pct > 0 ? s.monitor_breakeven_pct : 3,
     feeRate: s.fee_rate,

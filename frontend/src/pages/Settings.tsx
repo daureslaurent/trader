@@ -41,6 +41,8 @@ interface SettingsData {
   monitor_history_tf: string
   monitor_history_count: number
   monitor_min_confidence: number
+  monitor_protect_winners: boolean
+  monitor_protect_winners_atr: number
   monitor_breakeven_pct: number
   monitor_adjust_cooldown_min: number
   monitor_review_retain_cycles: number
@@ -1184,7 +1186,7 @@ export default function Settings() {
   }
 
   // Toggles save immediately and don't mark the form dirty
-  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_d_sequential' | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
+  async function toggle(key: keyof SettingsData & ('approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve' | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_protect_winners' | 'monitor_d_sequential' | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url' | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup' | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted' | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary' | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors' | 'telegram_notify_update' | 'update_enabled')) {
     if (!settings) return
     const next = !settings[key]
     setSettings(s => s ? { ...s, [key]: next } : s)
@@ -1717,6 +1719,24 @@ export default function Settings() {
               onChange={e => set('monitor_min_confidence', parseFloat(e.target.value) || 0)}
             />
           </Row>
+
+          <Row label="Protect winners" hint="Downgrade a monitor CLOSE to HOLD when the position is in profit, its stop is not threatened (price far enough above the SL — see ATR buffer), and the trend is still up — unless the model itself flags the thesis invalidated or a risk-off regime. Stops the engine from exiting healthy winners on a thin reward:risk reading alone.">
+            <Toggle label="Keep healthy winners" checked={settings.monitor_protect_winners} onChange={() => toggle('monitor_protect_winners')} />
+          </Row>
+
+          {settings.monitor_protect_winners && (
+            <Row label="Protect-winners stop buffer" hint="A CLOSE is only protected while the current price sits at least this many ATR(14) multiples above the stop-loss (i.e. the stop is not imminent). Higher = protects more aggressively; with no stop set or no ATR the guard stays off.">
+              <UnitInput
+                type="number"
+                step="0.25"
+                min="0"
+                max="10"
+                unit="×ATR"
+                value={settings.monitor_protect_winners_atr}
+                onChange={e => set('monitor_protect_winners_atr', parseFloat(e.target.value) || 0)}
+              />
+            </Row>
+          )}
 
           <Row label="Break-even trigger" hint="Once a position's P&L passes this %, the monitor LLM must move the stop-loss to break-even or better (profit protection). Below it, break-even stops are rejected by the engine. Used when horizon guidance is off or the position has the LLM horizon; with horizon guidance on, the trigger is half the horizon's TP target.">
             <UnitInput
