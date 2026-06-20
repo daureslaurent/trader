@@ -24,10 +24,18 @@ const llamaBaseURL = req('LLAMA_BASE_URL')
 const llamaModel = req('LLAMA_MODEL')
 
 export const config = {
+  // Binance keys are OPTIONAL here: when empty, the first-run setup wizard
+  // collects them and stores them (encrypted) in the DB. When set, they seed the
+  // credential store and skip the wizard. Read effective keys via the credentials
+  // module (getBinanceKeys), not these raw values.
   binance: {
-    apiKey: req('BINANCE_API_KEY'),
-    secret: req('BINANCE_SECRET'),
+    apiKey: opt('BINANCE_API_KEY', ''),
+    secret: opt('BINANCE_SECRET', ''),
   },
+  // Master key for encrypting secrets at rest (the Binance secret). Optional —
+  // when unset, a key is generated and stored in the DB (with a warning). Set
+  // this (e.g. a k8s secret) for real protection against a DB dump.
+  encryptionKey: opt('APP_ENCRYPTION_KEY', ''),
   llama: {
     baseURL: llamaBaseURL,
     model: llamaModel,

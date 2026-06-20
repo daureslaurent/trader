@@ -1,22 +1,54 @@
 import ccxt, { Exchange } from 'ccxt'
-import { config } from '../config/index.js'
 import { logger } from '../core/logger.js'
 import { Signal } from '../types.js'
 import { MarketData, AccountBalance, TradeResult, CoinTradeResult, OrderBook, OrderBookAnalysis } from './types.js'
 import { TradeError } from '../core/errors.js'
+import { getBinanceKeys } from '../credentials/index.js'
 
-let exchange: Exchange
+let exchange: Exchange | undefined
 let marketsLoaded = false
 
 export function getExchange(): Exchange {
   if (!exchange) {
+    const keys = getBinanceKeys()
+    if (!keys) {
+      throw new TradeError('Binance API keys are not configured — complete the setup wizard first')
+    }
     exchange = new ccxt.binance({
-      apiKey: config.binance.apiKey,
-      secret: config.binance.secret,
+      apiKey: keys.apiKey,
+      secret: keys.secret,
       enableRateLimit: true,
     })
   }
   return exchange
+}
+
+/**
+ * Drop the cached exchange client so the next getExchange() rebuilds it with the
+ * current keys. Call after the Binance keys are (re)configured via the setup
+ * wizard or rotation, so new keys take effect without a restart.
+ */
+export function resetExchange(): void {
+  exchange = undefined
+  marketsLoaded = false
+}
+
+/**
+ * Validate a candidate Binance API key/secret by making one authenticated call
+ * (fetchBalance) against a throwaway client. Returns null on success, or a
+ * human-readable error string on failure — used by the setup wizard / key
+ * rotation so we never persist keys that don't actually work.
+ */
+export async function validateBinanceKeys(apiKey: string, secret: string): Promise<string | null> {
+  try {
+    const probe = new ccxt.binance({ apiKey, secret, enableRateLimit: true })
+    await probe.fetchBalance()
+    return null
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.warn('Binance key validation failed', { error: msg })
+    return msg
+  }
 }
 
 async function ensureMarkets(): Promise<void> {

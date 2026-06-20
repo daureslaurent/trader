@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import Login from './pages/Login'
+import Setup from './pages/Setup'
 import { Sidebar } from './components/layout/Sidebar'
 import { ThemeSelector } from './components/layout/ThemeSelector'
 import { PnLBadge } from './components/layout/PnLBadge'
@@ -268,6 +269,7 @@ function AuthGate() {
       </div>
     )
   }
+  if (phase === 'setup') return <Setup />
   if (phase === 'login') return <Login />
   return <AppInner />
 }

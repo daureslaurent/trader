@@ -36,6 +36,9 @@ interface EventMap {
   position_closed: [{ positionId: number; coin: string; status: string; fillPrice: number; fillQty: number; pnl: number | null; reason: string; entryPrice: number | null; openedAt: string | null }]
   sl_tp_adjusted: [{ coin: string; positionId: number; oldStopLoss: number | null; oldTakeProfit: number | null; newStopLoss: number | null; newTakeProfit: number | null; currentPrice: number | null; entryPrice: number | null }]
   update_available: [{ updateCount: number; currentShortSha: string; remoteShortSha: string; latestSubject: string }]
+  /** First-run setup wizard just configured Binance keys + the admin login — the
+   *  lifecycle starts the trading engines (which need the exchange) in response. */
+  setup_completed: []
 }
 
 class BotEventBus extends EventEmitter {

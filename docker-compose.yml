@@ -5,8 +5,10 @@ services:
     # required for MongoDB multi-document transactions, which submitTrade() relies
     # on for atomic trade + position + portfolio writes.
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
-    ports:
-      - "27017:27017"
+    # Not published to the host — reachable only inside the compose network at
+    # mongo:27017 (used by the backend's MONGO_URL).
+    networks:
+      - internal
     volumes:
       - ./data/mongodb:/data/db
     healthcheck:
@@ -27,8 +29,10 @@ services:
 
   backend:
     build: ./backend
-    ports:
-      - "3000:3000"
+    # Not published to the host — reachable only inside the compose network at
+    # backend:3000, which the frontend's nginx proxies /api and /ws to.
+    networks:
+      - internal
     env_file: .env
     environment:
       # In-network single node; directConnection bypasses replica-set host
@@ -55,8 +59,16 @@ services:
 
   frontend:
     build: ./frontend
+    # The only host-exposed port. nginx serves the SPA and reverse-proxies
+    # /api and /ws to backend:3000 over the internal network.
     ports:
       - "5173:5173"
+    networks:
+      - internal
     depends_on:
       - backend
     restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge

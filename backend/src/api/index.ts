@@ -8,6 +8,7 @@ import { router } from './routes.js'
 import { initWS } from './ws.js'
 import { initEventStream } from './eventStream.js'
 import { authRouter, requireAuth, getAuthState } from '../auth/index.js'
+import { setupRouter } from './routes/setup.routes.js'
 
 export function startAPI() {
   const app = express()
@@ -35,6 +36,11 @@ export function startAPI() {
   // remain reachable without a token. The login route carries its own strict
   // rate limiter internally.
   app.use('/api/auth', authRouter)
+
+  // Public first-run setup endpoints (status + the wizard POST). Mounted BEFORE
+  // the guard so a fresh, credential-less deployment can configure itself; the
+  // wizard locks itself once configured.
+  app.use('/api', setupRouter)
 
   // Everything else under /api requires a valid bearer token (no-op if auth is
   // disabled). The guard sits in front of the full domain router.

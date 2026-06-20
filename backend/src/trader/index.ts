@@ -28,7 +28,7 @@ export function fetchOrderBook(symbol: string, depth?: number): Promise<OrderBoo
 }
 
 // analyzeOrderBook is pure — always use the real implementation
-export { analyzeOrderBook } from './service.js'
+export { analyzeOrderBook, getExchange, resetExchange, validateBinanceKeys } from './service.js'
 
 export function placeOco(symbol: string, quantity: number, levels: OcoLevels): Promise<OcoResult> {
   return realOco.placeOco(symbol, quantity, levels)

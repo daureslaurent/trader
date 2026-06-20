@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto'
 import { config } from '../config/index.js'
 import { BotError } from '../core/errors.js'
 import { logger } from '../core/logger.js'
-import { hashPassword } from './password.js'
+import { getAuthCreds } from '../credentials/index.js'
 
 export interface AuthState {
   enabled: boolean
@@ -27,26 +27,27 @@ export interface AuthState {
 
 function resolve(): AuthState {
   const a = config.auth
-  const hasCredential = !!a.passwordHash || !!a.password
+  // The credential store merges DB (setup wizard / rotation) over env, and owns
+  // the signing secret (a stable, persisted one once the wizard has run).
+  const creds = getAuthCreds()
+  const hasCredential = creds !== null
   const explicit = a.enabled === 'true' ? true : a.enabled === 'false' ? false : undefined
 
   if (explicit === true && !hasCredential) {
-    throw new BotError('AUTH_ENABLED=true requires AUTH_PASSWORD or AUTH_PASSWORD_HASH', 'AUTH_MISCONFIGURED')
+    throw new BotError('AUTH_ENABLED=true requires an admin login (set up via the wizard or AUTH_PASSWORD)', 'AUTH_MISCONFIGURED')
   }
 
   const enabled = explicit ?? hasCredential
 
-  if (!enabled) {
+  if (!enabled || !creds) {
     logger.warn(
       'Authentication is DISABLED — the API and WebSocket are open to anyone who can reach this port. ' +
-      'Set AUTH_PASSWORD (or AUTH_PASSWORD_HASH) to protect the trader.',
+      'Complete the setup wizard (or set AUTH_PASSWORD) to protect the trader.',
     )
     return { enabled: false, username: a.username, passwordHash: '', secret: '', tokenTtlSeconds: 0 }
   }
 
-  const passwordHash = a.passwordHash || hashPassword(a.password)
-
-  let secret = a.secret
+  let secret = creds.secret
   if (!secret) {
     secret = randomBytes(48).toString('hex')
     logger.warn(
@@ -57,11 +58,11 @@ function resolve(): AuthState {
     throw new BotError('AUTH_SECRET must be at least 16 characters', 'AUTH_MISCONFIGURED')
   }
 
-  logger.info('Authentication gateway enabled', { username: a.username, tokenTtlMinutes: a.tokenTtlMinutes })
+  logger.info('Authentication gateway enabled', { username: creds.username, tokenTtlMinutes: a.tokenTtlMinutes })
   return {
     enabled: true,
-    username: a.username,
-    passwordHash,
+    username: creds.username,
+    passwordHash: creds.passwordHash,
     secret,
     tokenTtlSeconds: Math.max(60, a.tokenTtlMinutes * 60),
   }
@@ -69,8 +70,17 @@ function resolve(): AuthState {
 
 let cached: AuthState | null = null
 
-/** The resolved auth state (computed once, on first access). */
+/** The resolved auth state (computed once, then cached). */
 export function getAuthState(): AuthState {
   if (!cached) cached = resolve()
   return cached
+}
+
+/**
+ * Drop the cached auth state so the next getAuthState() re-resolves from the
+ * credential store. Call after the setup wizard creates the admin, or after a
+ * password change, so the gateway picks up the new credential without a restart.
+ */
+export function refreshAuthState(): void {
+  cached = null
 }

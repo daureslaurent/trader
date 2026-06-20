@@ -27,6 +27,10 @@ export const agentSignalMemory  = new Repository<Row>('agent_signal_memory', fal
 export const entryIntents       = new Repository<Row>('entry_intents', false)        // _id = intent id
 export const entryEvents        = new Repository<Row>('entry_events', false)          // _id = event id
 export const settings           = new Repository<Row>('settings', false)             // _id = key
+// App configuration & secrets (Binance keys, admin login, signing/encryption keys).
+// Kept OUT of the settings collection on purpose so secrets never flow through the
+// settings cache that GET /api/settings broadcasts to the frontend. _id = config key.
+export const appConfig          = new Repository<Row>('app_config', false)            // _id = config key
 
 // ── Pipeline ────────────────────────────────────────────────────────────────
 export const pipelineEvents     = new Repository<Row>('pipeline_events')

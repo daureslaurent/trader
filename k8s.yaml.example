@@ -1,0 +1,58 @@
+---
+# 1. The Service (No Selector)
+apiVersion: v1
+kind: Service
+metadata:
+  name: cryptobot-frontend-svc
+  namespace: default
+spec:
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 5173
+
+---
+# 2. The Endpoints (Bridges K8s to your Docker Host)
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: cryptobot-frontend-svc # Must match the Service name exactly
+  namespace: default
+subsets:
+  - addresses:
+      - ip: xx.xx.xx.xx # <--- CHANGE THIS to your OVH Public IP
+    ports:
+      - name: http
+        port: 5173
+
+---
+# 3. The Ingress (Handles SSL and External Traffic)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cryptobot-ingress
+  namespace: default
+  annotations:
+    # Requests an SSL certificate from Let's Encrypt
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Prevents WebSocket connections from dropping too quickly
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cryptobot.yourdomain.com # <--- CHANGE THIS to your domain
+      secretName: cryptobot-tls-secret
+  rules:
+    - host: cryptobot.yourdomain.com # <--- CHANGE THIS to your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cryptobot-frontend-svc
+                port:
+                  number: 80

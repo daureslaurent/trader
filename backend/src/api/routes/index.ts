@@ -17,6 +17,7 @@ import { router as databaseRoutes } from './database.routes.js'
 import { router as hostRoutes } from './host.routes.js'
 import { router as eventsRoutes } from './events.routes.js'
 import { router as routingRoutes } from './routing.routes.js'
+import { accountRouter } from './setup.routes.js'
 
 // Single API router composed of per-domain sub-routers. All sub-routers declare
 // absolute paths and are mounted at the root, so the public URL surface is
@@ -42,3 +43,4 @@ router.use(databaseRoutes)
 router.use(hostRoutes)
 router.use(eventsRoutes)
 router.use(routingRoutes)
+router.use(accountRouter)

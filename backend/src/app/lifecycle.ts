@@ -13,13 +13,17 @@ import { logPipelineEvent } from '../pipeline/index.js'
 import { startSchedulers, stopSchedulers } from './scheduler.js'
 import { initRouting, fireRoutingStartup } from '../routing/index.js'
 import { resumeDurableJobs } from '../core/llmScheduler.js'
+import { bus } from '../core/events.js'
+import { loadCredentials, isConfigured } from '../credentials/index.js'
 
 let server: ReturnType<typeof startAPI> | undefined
+let enginesStarted = false
 
 export async function start(): Promise<void> {
   logger.info('Starting CryptoBot...')
   await initDB()
   await loadSettings()
+  await loadCredentials()
 
   // Orphaned PENDING trades can't be executed after a restart (signal state is lost)
   const orphaned = await trades.updateMany({ status: 'PENDING' }, { status: 'FAILED' })
@@ -49,6 +53,33 @@ export async function start(): Promise<void> {
   }
 
   server = startAPI()
+
+  // Wire deferred engine startup before any early return, so completing the
+  // first-run wizard launches the engines without a restart.
+  bus.on('setup_completed', () => {
+    startEngines().catch(err =>
+      logger.error('Failed to start engines after setup', { error: err instanceof Error ? err.message : String(err) }))
+  })
+
+  if (!isConfigured()) {
+    logger.warn(
+      'Not configured yet — running in SETUP MODE. The API serves only the setup wizard; ' +
+      'trading engines stay paused until Binance keys and an admin login are configured.',
+    )
+    return
+  }
+
+  await startEngines()
+}
+
+// The trading engines proper — everything that needs the exchange / live market.
+// Split out of start() so the first-run wizard can launch them once Binance keys
+// exist, without a process restart. Idempotent (guarded by enginesStarted).
+export async function startEngines(): Promise<void> {
+  if (enginesStarted) return
+  enginesStarted = true
+  logger.info('Starting trading engines...')
+
   startTelegramBot()
   startNotifier()
 

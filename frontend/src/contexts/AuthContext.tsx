@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react'
 import { fetchAuthStatus, login as apiLogin, logout as apiLogout, onAuthChange, getToken } from '../lib/auth'
+import { fetchSetupStatus } from '../lib/setup'
 
-type Phase = 'loading' | 'login' | 'authed'
+type Phase = 'loading' | 'setup' | 'login' | 'authed'
 
 interface AuthContextValue {
   phase: Phase
@@ -16,14 +17,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<Phase>('loading')
   const [authEnabled, setAuthEnabled] = useState(false)
 
-  // Resolve initial state from the server: is auth on, and is our token valid?
+  // Resolve initial state from the server: needs first-run setup? is auth on, and
+  // is our token valid? The setup check comes first — an unconfigured backend has
+  // no admin to log into yet.
   useEffect(() => {
     let cancelled = false
-    fetchAuthStatus()
-      .then(status => {
-        if (cancelled) return
-        setAuthEnabled(status.authEnabled)
-        setPhase(!status.authEnabled || status.authenticated ? 'authed' : 'login')
+    fetchSetupStatus()
+      .then(setup => {
+        if (cancelled) return undefined
+        if (!setup.configured) { setPhase('setup'); return undefined }
+        return fetchAuthStatus().then(status => {
+          if (cancelled) return
+          setAuthEnabled(status.authEnabled)
+          setPhase(!status.authEnabled || status.authenticated ? 'authed' : 'login')
+        })
       })
       .catch(() => {
         // Server unreachable — assume gated so we don't expose the app blindly,
