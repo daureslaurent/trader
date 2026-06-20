@@ -735,6 +735,7 @@ export default function Portfolio() {
   const [benchmark, setBenchmark] = useState<BenchmarkResponse | null>(null)
   const [benchCoin, setBenchCoin] = useState('BTC')
   const [benchLoading, setBenchLoading] = useState(true)
+  const [snapshotting, setSnapshotting] = useState(false)
 
   const livePrices = usePrices()
 
@@ -768,6 +769,18 @@ export default function Portfolio() {
       if (b?.coin) setBenchCoin(b.coin)
     }).catch(() => {}).finally(() => setBenchLoading(false))
   }, [])
+
+  // Manually capture a snapshot now, then reload the benchmark. Seeds the "vs HODL"
+  // strip when there's no portfolio history yet (the pipeline only snapshots on a
+  // full cycle, which can be a long wait).
+  function handleSnapshotNow() {
+    setSnapshotting(true)
+    fetch('/api/portfolio/snapshot', { method: 'POST' })
+      .then(r => r.json())
+      .then(() => loadBenchmark(benchCoin))
+      .catch(() => {})
+      .finally(() => setSnapshotting(false))
+  }
 
   function handleBenchCoinChange(coin: string) {
     setBenchCoin(coin)
@@ -1017,11 +1030,23 @@ export default function Portfolio() {
             </div>
           </>
         ) : (
-          <span className="text-xs text-muted">
-            {benchLoading
-              ? 'Loading benchmark…'
-              : `Not enough portfolio history yet to benchmark against ${benchCoin}.`}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted">
+              {benchLoading
+                ? 'Loading benchmark…'
+                : `Not enough portfolio history yet to benchmark against ${benchCoin}.`}
+            </span>
+            {!benchLoading && (
+              <button
+                onClick={handleSnapshotNow}
+                disabled={snapshotting}
+                title="Capture a portfolio snapshot now to seed the benchmark (normally written at the end of each pipeline cycle)."
+                className="text-xs font-medium px-2.5 py-1 rounded-lg border border-border text-accent hover:border-accent/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {snapshotting ? 'Snapshotting…' : 'Snapshot now'}
+              </button>
+            )}
+          </div>
         )}
       </div>
 

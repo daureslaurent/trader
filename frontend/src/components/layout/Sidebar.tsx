@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Page } from '../../types'
 import { cn } from '../../lib/utils'
 import { useTheme } from '../../contexts/ThemeContext'
+import { VersionBadge } from './VersionBadge'
 
 interface SidebarProps {
   active: Page
@@ -357,6 +358,7 @@ export function Sidebar({ active, onNavigate, wsConnected, pendingCount, updateA
             <p className="text-[10px] text-muted">{wsConnected ? 'Real-time stream active' : 'Reconnecting…'}</p>
           </div>
         </div>
+        <VersionBadge />
       </div>
     </aside>
   )

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { positions as positionsRepo, portfolioSnapshots, trades, getSettings } from '../../db/index.js'
+import { positions as positionsRepo, portfolioSnapshots, trades, getSettings, nowSql } from '../../db/index.js'
 import { getExchange } from '../../trader/service.js'
 import { logger } from '../../core/logger.js'
 import { PortfolioEntry } from '../../types.js'
@@ -69,6 +69,40 @@ router.get('/portfolio', async (_req: Request, res: Response) => {
       binance_usdc: binanceUsdc,
       available_usdc: binanceUsdc !== null ? Math.max(0, binanceUsdc - localUsdc) : null,
     })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Manually capture a portfolio snapshot now (the same row the pipeline writes at
+// the end of a full cycle). Useful to seed the "vs HODL" benchmark, which needs
+// at least one snapshot before it can render. Values come from live cached prices.
+router.post('/portfolio/snapshot', async (_req: Request, res: Response) => {
+  try {
+    const entries = await getOpenEntries()
+    const symbols = entries.filter(e => e.coin !== 'USDC').map(e => e.coin)
+    priceCache.subscribe(symbols)
+    const allPrices = priceCache.getAll()
+
+    let total = 0
+    const holdings: Record<string, number> = {}
+    for (const entry of entries) {
+      if (entry.coin === 'USDC') {
+        total += entry.quantity
+        holdings[entry.coin] = entry.quantity
+      } else {
+        const price = allPrices.get(entry.coin)?.price
+        if (price) {
+          total += entry.quantity * price
+          holdings[entry.coin] = entry.quantity
+        }
+      }
+    }
+
+    const created_at = nowSql()
+    await portfolioSnapshots.insert({ total_value_usd: total, holdings: JSON.stringify(holdings), created_at })
+    logger.info('Manual portfolio snapshot captured', { totalValue: total })
+    res.json({ ok: true, total_value_usd: Math.round(total * 100) / 100, created_at })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
