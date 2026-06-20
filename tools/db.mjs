@@ -1,31 +1,47 @@
 #!/usr/bin/env node
-// Agent DB tool — inspect and (carefully) mutate the bot's MongoDB data.
+// Agent DB tool — inspect the bot's data over the backend's read-only debug API.
 //
-// The app now stores everything in a single MongoDB database (one collection per
-// former table). Unlike the old sql.js setup, Mongo is a real shared datastore:
-//   1. Reads are safe any time — the server handles concurrency.
-//   2. Writes are safe live too — no need to stop the bot or back up a file; the
-//      backend reads from the same server, not an in-memory file copy. A write is
-//      still destructive, so `update`/`delete` require --yes.
+// This tool no longer touches MongoDB directly. Instead it calls the backend's
+// read-only debug API (/api/debug/*), authenticated with a debug API key. That
+// means it works without any database access or credentials — ideal for AI-driven
+// debugging. Because the API is read-only, this tool is read-only too: the old
+// update/delete commands are gone (do ad-hoc writes with mongosh as a human).
 //
-// Connects with MONGO_URL (default mongodb://localhost:27017/?directConnection=true)
-// and MONGO_DB (default cryptobot). Borrows the `mongodb` driver from
-// backend/node_modules — run after `npm install` in backend/.
-// See tools/README.md and AGENTS.md.
+// Configuration (env, or a tools/.env file):
+//   BOT_API_URL   backend base URL (default http://localhost:3000)
+//   BOT_API_KEY   a key created in Settings → API Keys (required)
+// See tools/README.md and tools/.env.example.
 
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { readFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const REPO = path.resolve(__dirname, '..')
-const BACKEND_DIR = path.join(REPO, 'backend')
 
-const MONGO_URL = process.env.MONGO_URL || 'mongodb://192.168.1.23:27017/?directConnection=true'
-const MONGO_DB = process.env.MONGO_DB || 'cryptobot'
+/* ------------------------------- env / .env -------------------------------- */
 
-const require = createRequire(path.join(BACKEND_DIR, 'package.json'))
-const { MongoClient } = require('mongodb')
+// Minimal dependency-free .env loader: KEY=VALUE lines, '#' comments, optional
+// surrounding quotes. Existing process.env always wins (never overridden).
+function loadDotEnv(file) {
+  if (!existsSync(file)) return
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eq = trimmed.indexOf('=')
+    if (eq === -1) continue
+    const key = trimmed.slice(0, eq).trim()
+    if (key in process.env) continue
+    let val = trimmed.slice(eq + 1).trim()
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1)
+    }
+    process.env[key] = val
+  }
+}
+loadDotEnv(path.join(__dirname, '.env'))
+
+const BOT_API_URL = (process.env.BOT_API_URL || 'http://localhost:3000').replace(/\/$/, '')
+const BOT_API_KEY = process.env.BOT_API_KEY || ''
 
 /* --------------------------------- helpers --------------------------------- */
 
@@ -44,26 +60,46 @@ function parseArgs(argv) {
   return { flags, positional }
 }
 
-// Parse a --filter/--sort/--set/--projection JSON flag; '' / true → empty object.
-function json(flag, fallback = {}) {
-  if (flag === undefined || flag === true) return fallback
-  try { return JSON.parse(flag) }
+// Validate a --filter/--sort/--projection JSON flag; '' / true → undefined.
+function jsonFlag(flag) {
+  if (flag === undefined || flag === true || flag === '') return undefined
+  try { JSON.parse(flag) }
   catch (e) { throw new Error(`invalid JSON: ${flag}\n  ${e.message}`) }
+  return flag
 }
 
-// Mongo _id may be an integer (most collections) or a natural string key
-// (settings/monitor_notes/entry_*/extraction_cache/ohlcv_cache). Coerce a CLI id.
-function coerceId(raw) {
-  if (raw === undefined) throw new Error('id required')
-  return /^-?\d+$/.test(raw) ? Number(raw) : raw
+// GET a debug endpoint. `params` values are passed as query string as-is. Throws
+// an Error (with `.status` on an HTTP error) on failure.
+async function api(pathname, params = {}) {
+  if (!BOT_API_KEY) {
+    throw new Error('BOT_API_KEY is not set — create one in Settings → API Keys and put it in tools/.env')
+  }
+  const url = new URL(`${BOT_API_URL}/api/debug/${pathname}`)
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) url.searchParams.set(k, String(v))
+  }
+  let res
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${BOT_API_KEY}` } })
+  } catch (e) {
+    throw new Error(`cannot reach backend at ${BOT_API_URL} — is it running? (${e.message})`)
+  }
+  const text = await res.text()
+  let body
+  try { body = text ? JSON.parse(text) : undefined } catch { body = undefined }
+  if (!res.ok) {
+    if (res.status === 401) {
+      const err = new Error('unauthorized (401) — check BOT_API_KEY in tools/.env (was the key revoked?)')
+      err.status = 401
+      throw err
+    }
+    const msg = (body && body.error) || `HTTP ${res.status}`
+    const err = new Error(msg)
+    err.status = res.status
+    throw err
+  }
+  return body
 }
-
-let _client
-async function db() {
-  if (!_client) { _client = new MongoClient(MONGO_URL); await _client.connect() }
-  return _client.db(MONGO_DB)
-}
-async function close() { if (_client) await _client.close() }
 
 const MAX_CELL = 200
 const fmt = v => v === null || v === undefined ? 'NULL'
@@ -86,99 +122,83 @@ function printDocs(docs, { json: asJson, columns } = {}) {
 /* -------------------------------- commands --------------------------------- */
 
 async function cmdCollections() {
-  const d = await db()
-  const cols = (await d.listCollections().toArray()).map(c => c.name).sort()
-  for (const name of cols) {
-    const count = await d.collection(name).estimatedDocumentCount()
-    console.log(`${name.padEnd(24)} ${count}`)
+  const stats = await api('collections')
+  for (const c of stats.collections) {
+    console.log(`${c.name.padEnd(24)} ${String(c.count).padStart(8)}${c.cache ? '  (cache)' : ''}`)
   }
+  console.log(`\ndb=${stats.db}  total=${stats.totalDocs}`)
 }
 
 async function cmdSchema(name) {
   if (!name) throw new Error('usage: schema <collection>')
-  const d = await db()
-  const idx = await d.collection(name).indexes()
+  const { indexes, sample } = await api(`schema/${encodeURIComponent(name)}`)
   console.log(`-- indexes on ${name}`)
-  for (const i of idx) console.log(`  ${i.name}: ${JSON.stringify(i.key)}${i.unique ? ' UNIQUE' : ''}`)
-  const sample = await d.collection(name).findOne({}, { sort: { _id: -1 } })
+  for (const i of indexes) console.log(`  ${i.name}: ${JSON.stringify(i.key)}${i.unique ? ' UNIQUE' : ''}`)
   console.log(`-- sample document\n${JSON.stringify(sample, null, 2)}`)
 }
 
 async function cmdQuery(name, flags) {
   if (!name) throw new Error('usage: query <collection> [--filter J] [--sort J] [--projection J] [--limit N] [--json]')
-  const d = await db()
-  const limit = flags.limit ? Number(flags.limit) : 20
-  const docs = await d.collection(name)
-    .find(json(flags.filter), { projection: flags.projection ? json(flags.projection) : undefined })
-    .sort(json(flags.sort, { _id: -1 }))
-    .limit(limit)
-    .toArray()
+  const docs = await api(`query/${encodeURIComponent(name)}`, {
+    filter: jsonFlag(flags.filter),
+    sort: jsonFlag(flags.sort),
+    projection: jsonFlag(flags.projection),
+    limit: flags.limit && flags.limit !== true ? flags.limit : undefined,
+  })
   printDocs(docs, { json: !!flags.json })
 }
 
-async function cmdGet(name, id, flags) {
+async function cmdGet(name, id) {
   if (!name || id === undefined) throw new Error('usage: get <collection> <id> [--json]')
-  const d = await db()
-  const doc = await d.collection(name).findOne({ _id: coerceId(id) })
-  if (!doc) { console.log('(not found)'); return }
-  console.log(JSON.stringify(doc, null, 2))
+  try {
+    const doc = await api(`get/${encodeURIComponent(name)}/${encodeURIComponent(id)}`)
+    console.log(JSON.stringify(doc, null, 2))
+  } catch (e) {
+    if (e.status === 404) { console.log('(not found)'); return }
+    throw e
+  }
 }
 
 async function cmdCount(name, flags) {
   if (!name) throw new Error('usage: count <collection> [--filter J]')
-  const d = await db()
-  console.log(await d.collection(name).countDocuments(json(flags.filter)))
+  const { count } = await api(`count/${encodeURIComponent(name)}`, { filter: jsonFlag(flags.filter) })
+  console.log(count)
 }
 
-async function cmdUpdate(name, flags) {
-  if (!name) throw new Error('usage: update <collection> --filter J --set J [--yes]')
-  if (flags.filter === undefined) throw new Error('--filter <json> is required (use {} to match all — deliberately)')
-  if (flags.set === undefined) throw new Error('--set <json> is required')
-  if (!flags.yes) throw new Error('writes are destructive — re-run with --yes to confirm')
-  const d = await db()
-  const res = await d.collection(name).updateMany(json(flags.filter), { $set: json(flags.set) })
-  console.log(`matched ${res.matchedCount}, modified ${res.modifiedCount}`)
-}
-
-async function cmdDelete(name, flags) {
-  if (!name) throw new Error('usage: delete <collection> --filter J [--yes]')
-  if (flags.filter === undefined) throw new Error('--filter <json> is required (use {} to match all — deliberately)')
-  if (!flags.yes) throw new Error('writes are destructive — re-run with --yes to confirm')
-  const d = await db()
-  const res = await d.collection(name).deleteMany(json(flags.filter))
-  console.log(`deleted ${res.deletedCount}`)
-}
-
-// Canned read views over commonly-needed collections.
+// Canned read views — preset query calls over commonly-needed collections.
 const VIEWS = {
-  trades:    { name: 'trades',            filter: {},                       sort: { id: -1 }, limitDefault: 20,
+  trades:    { name: 'trades',            filter: {},                 sort: { id: -1 }, limitDefault: 20,
                columns: ['id', 'coin', 'side', 'quantity', 'price', 'total', 'status', 'created_at'] },
-  positions: { name: 'positions',         filter: { status: 'OPEN' },       sort: { id: -1 },
+  positions: { name: 'positions',         filter: { status: 'OPEN' }, sort: { id: -1 },
                columns: ['id', 'coin', 'side', 'quantity', 'entry_price', 'current_sl', 'take_profit', 'oco_status', 'status', 'pnl'] },
-  portfolio: { name: 'portfolio_entries', filter: { status: 'OPEN' },       sort: { coin: 1 },
+  portfolio: { name: 'portfolio_entries', filter: { status: 'OPEN' }, sort: { coin: 1 },
                columns: ['id', 'coin', 'quantity', 'buy_price', 'status', 'source'] },
-  settings:  { name: 'settings',          filter: {},                       sort: { _id: 1 },
+  settings:  { name: 'settings',          filter: {},                 sort: { _id: 1 },
                columns: ['_id', 'value'] },
-  intents:   { name: 'entry_intents',     filter: {},                       sort: { coin: 1 },
+  intents:   { name: 'entry_intents',     filter: {},                 sort: { coin: 1 },
                columns: ['coin', 'signal_price', 'target_price', 'notional_usdc', 'atr', 'expires_at'] },
-  llm:       { name: 'llm_calls',          filter: {},                       sort: { id: -1 }, limitDefault: 20,
+  llm:       { name: 'llm_calls',          filter: {},                sort: { id: -1 }, limitDefault: 20,
                columns: ['id', 'module', 'model', 'error_code', 'error_status', 'error', 'duration_ms', 'created_at'] },
 }
 
 async function cmdView(view, arg, flags) {
   const v = VIEWS[view]
-  const d = await db()
   const limit = arg && /^\d+$/.test(arg) ? Number(arg) : (v.limitDefault ?? 0)
-  let cursor = d.collection(v.name).find(v.filter, { projection: Object.fromEntries(v.columns.map(c => [c, 1])) }).sort(v.sort)
-  if (limit) cursor = cursor.limit(limit)
-  printDocs(await cursor.toArray(), { json: !!flags.json, columns: v.columns })
+  const projection = Object.fromEntries(v.columns.map(c => [c, 1]))
+  const docs = await api(`query/${v.name}`, {
+    filter: JSON.stringify(v.filter),
+    sort: JSON.stringify(v.sort),
+    projection: JSON.stringify(projection),
+    limit: limit || undefined,
+  })
+  printDocs(docs, { json: !!flags.json, columns: v.columns })
 }
 
-const HELP = `Agent DB tool — inspect & manage the bot's MongoDB data.
+const HELP = `Agent DB tool — inspect the bot's data over the read-only debug API.
 
 Usage: node tools/db.mjs <command> [args] [--flags]
 
-Read (safe any time):
+Read (the API is read-only — no writes):
   collections                  List collections with document counts
   schema <collection>          Indexes + a sample document
   query <collection> [--filter J] [--sort J] [--projection J] [--limit N] [--json]
@@ -193,12 +213,8 @@ Read (safe any time):
   intents [--json]             Active entry-timing intents
   llm [N] [--json]             Recent LLM calls
 
-Write (live — Mongo is shared, no backend stop needed; --yes required):
-  update <collection> --filter J --set J --yes     updateMany($set)
-  delete <collection> --filter J --yes             deleteMany
-
-Connection: ${MONGO_URL}  db=${MONGO_DB}
-  (override with MONGO_URL / MONGO_DB env vars)
+Backend: ${BOT_API_URL}/api/debug   (auth: BOT_API_KEY from env or tools/.env)
+  Create a key in the app: Settings → API Keys.
 `
 
 async function main() {
@@ -210,18 +226,17 @@ async function main() {
     case 'collections': case 'tables': await cmdCollections(); break
     case 'schema': await cmdSchema(positional[0]); break
     case 'query': case 'find': await cmdQuery(positional[0], flags); break
-    case 'get': await cmdGet(positional[0], positional[1], flags); break
+    case 'get': await cmdGet(positional[0], positional[1]); break
     case 'count': await cmdCount(positional[0], flags); break
-    case 'update': await cmdUpdate(positional[0], flags); break
-    case 'delete': await cmdDelete(positional[0], flags); break
     case 'trades': case 'positions': case 'portfolio':
     case 'settings': case 'intents': case 'llm':
       await cmdView(cmd, positional[0], flags); break
+    case 'update': case 'delete':
+      console.error(`'${cmd}' is no longer supported — the debug API is read-only.\n` +
+        'Use mongosh directly for ad-hoc writes.'); process.exitCode = 2; break
     default:
       console.error(`unknown command: ${cmd}\n`); console.log(HELP); process.exitCode = 2
   }
 }
 
-main()
-  .catch(err => { console.error(`error: ${err.message}`); process.exitCode = 1 })
-  .finally(close)
+main().catch(err => { console.error(`error: ${err.message}`); process.exitCode = 1 })

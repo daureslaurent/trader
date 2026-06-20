@@ -18,6 +18,7 @@ import { LLMDataSection } from './sections/LLMDataSection'
 import { TelegramSection } from './sections/TelegramSection'
 import { SystemSection } from './sections/SystemSection'
 import { AccountSection } from './sections/AccountSection'
+import { ApiKeysSection } from './sections/ApiKeysSection'
 import { DatabaseSection } from './sections/DatabaseSection'
 
 export default function Settings() {
@@ -166,6 +167,7 @@ export default function Settings() {
       case 'llm':        return <LLMDataSection {...sectionProps} />
       case 'telegram':   return <TelegramSection {...sectionProps} />
       case 'account':    return <AccountSection />
+      case 'apiKeys':    return <ApiKeysSection />
       case 'system':     return <SystemSection {...sectionProps} />
       case 'database':   return <DatabaseSection {...sectionProps} />
     }

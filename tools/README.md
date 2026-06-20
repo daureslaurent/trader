@@ -5,24 +5,36 @@ manage its lifecycle. Two tools, no dependencies beyond what `backend/` and Dock
 already provide.
 
 ```
-node tools/db.mjs  <command> [args] [--flags]   # inspect / mutate MongoDB
+node tools/db.mjs  <command> [args] [--flags]   # inspect data over the debug API
 node tools/app.mjs <command> [args]             # start / stop / logs / lint
 ```
 
 ## db.mjs
 
-The backend stores everything in a single **MongoDB** database (`cryptobot` by
-default), one collection per former table. Mongo is a real shared datastore, so —
-unlike the old sql.js files — **both reads and writes are safe while the bot is
-running**; there's no in-memory file copy to clobber and nothing to stop/back up.
+`db.mjs` inspects the bot's data over the backend's **read-only debug API**
+(`/api/debug/*`) — it does **not** connect to MongoDB directly, so it needs no
+database access or credentials. This makes it safe for AI-driven debugging.
 
-Connection comes from `MONGO_URL` (default
-`mongodb://localhost:27017/?directConnection=true`) and `MONGO_DB` (default
-`cryptobot`). The tool borrows the `mongodb` driver from `backend/node_modules`,
-so run it after `npm install` in `backend/`. Filters/sorts/updates are passed as
-JSON strings.
+Because the API is read-only, **`db.mjs` is read-only**: the old `update`/`delete`
+commands are gone. For ad-hoc writes, use `mongosh` directly as a human.
 
-### Read (safe any time)
+### Configuration
+
+Set these in the environment or in a `tools/.env` file (see `tools/.env.example`):
+
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `BOT_API_URL` | `http://localhost:3000` | Backend base URL |
+| `BOT_API_KEY` | _(required)_ | A key created in the app: **Settings → API Keys → Create key** (shown once) |
+
+```bash
+cp tools/.env.example tools/.env
+# then paste your key into BOT_API_KEY
+```
+
+Filters/sorts/projections are passed as JSON strings.
+
+### Read
 
 ```bash
 node tools/db.mjs collections            # collections with document counts
@@ -42,25 +54,16 @@ node tools/db.mjs llm 20                 # recent LLM calls
 ```
 
 `query` takes a Mongo filter as JSON. Add `--json` for machine-readable output;
-table output truncates wide cells to 200 chars (use `--json` for full values).
+table output truncates wide cells to 200 chars (use `--json` for full values). The
+server clamps `--limit` to a maximum of 500.
 
 Document ids: most collections keep an integer `_id` (mirrored as `id`); a few use
 a natural string key (`settings`→key, `monitor_notes`→coin, `entry_intents`/
 `entry_events`→id, `extraction_cache`→url, `ohlcv_cache`→cache_key). `get` coerces
 a numeric argument to an int `_id`, otherwise treats it as a string key.
 
-### Write (live; `--yes` required)
-
-```bash
-node tools/db.mjs update positions --filter '{"id":16}' --set '{"status":"CLOSED"}' --yes
-node tools/db.mjs delete trades --filter '{"id":54}' --yes
-```
-
-- `update` runs `updateMany` with `$set`; `delete` runs `deleteMany`.
-- `--filter` is **required** (pass `{}` deliberately to match every document).
-- `--yes` is **required** to confirm the destructive operation.
-- No stop/backup/restart dance — the write goes straight to the shared server
-  while the bot keeps running. For a real backup, use `mongodump`.
+Only the app's known collections are queryable (the debug API whitelists them), so
+secret/system collections such as `app_config` are intentionally not reachable.
 
 ## app.mjs
 
@@ -78,8 +81,8 @@ node tools/app.mjs lint                 # backend type-check (the only test gate
 
 ## Notes
 
-- Both tools resolve the repo relative to their own location, so they work from
-  any cwd.
-- `db.mjs` borrows `mongodb` from `backend/node_modules` — run after `npm install`
-  in `backend/`. No separate install needed.
+- Both tools resolve the repo relative to their own location (and `db.mjs` loads
+  `tools/.env`), so they work from any cwd.
+- `db.mjs` has no dependencies — it uses the built-in `fetch` (Node 18+) against
+  the backend's debug API. The backend must be running and a `BOT_API_KEY` set.
 - One-off import of legacy sql.js data: `cd backend && npm run migrate:mongo`.

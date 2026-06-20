@@ -7,8 +7,9 @@ import { logger } from '../core/logger.js'
 import { router } from './routes.js'
 import { initWS } from './ws.js'
 import { initEventStream } from './eventStream.js'
-import { authRouter, requireAuth, getAuthState } from '../auth/index.js'
+import { authRouter, requireAuth, requireApiKey, getAuthState } from '../auth/index.js'
 import { setupRouter } from './routes/setup.routes.js'
+import { router as debugRouter } from './routes/debug.routes.js'
 
 export function startAPI() {
   const app = express()
@@ -41,6 +42,12 @@ export function startAPI() {
   // the guard so a fresh, credential-less deployment can configure itself; the
   // wizard locks itself once configured.
   app.use('/api', setupRouter)
+
+  // Read-only debug API for the tools/ CLIs — gated by its OWN auth domain (a
+  // debug API key), separate from the admin login. Mounted before the requireAuth
+  // guard so tooling authenticates with a key, not a session token; still covered
+  // by the /api rate limiter above.
+  app.use('/api/debug', requireApiKey, debugRouter)
 
   // Everything else under /api requires a valid bearer token (no-op if auth is
   // disabled). The guard sits in front of the full domain router.

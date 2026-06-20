@@ -10,3 +10,11 @@ export {
   setBinanceKeys,
   setAdmin,
 } from './store.js'
+export {
+  loadApiKeys,
+  listApiKeys,
+  createApiKey,
+  revokeApiKey,
+  verifyApiKey,
+  type ApiKeyInfo,
+} from './apiKeys.js'

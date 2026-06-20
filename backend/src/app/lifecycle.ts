@@ -14,7 +14,7 @@ import { startSchedulers, stopSchedulers } from './scheduler.js'
 import { initRouting, fireRoutingStartup } from '../routing/index.js'
 import { resumeDurableJobs } from '../core/llmScheduler.js'
 import { bus } from '../core/events.js'
-import { loadCredentials, isConfigured } from '../credentials/index.js'
+import { loadCredentials, loadApiKeys, isConfigured } from '../credentials/index.js'
 
 let server: ReturnType<typeof startAPI> | undefined
 let enginesStarted = false
@@ -24,6 +24,7 @@ export async function start(): Promise<void> {
   await initDB()
   await loadSettings()
   await loadCredentials()
+  await loadApiKeys()
 
   // Orphaned PENDING trades can't be executed after a restart (signal state is lost)
   const orphaned = await trades.updateMany({ status: 'PENDING' }, { status: 'FAILED' })
