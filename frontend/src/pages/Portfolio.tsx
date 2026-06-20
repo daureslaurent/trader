@@ -3,7 +3,7 @@ import { Card, CardHeader } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { TransferModal } from '../components/TransferModal'
-import { PortfolioEntry, PortfolioResponse, GainsResponse, ClosedPosition, ActivePosition, PositionReview, MonitorResponse, MonitorNote } from '../types'
+import { PortfolioEntry, PortfolioResponse, GainsResponse, ClosedPosition, ActivePosition, PositionReview, MonitorResponse, MonitorNote, BenchmarkResponse } from '../types'
 import { fmtUSD, fmtPct, fmt, formatDate, fmtDuration } from '../lib/utils'
 import { cn } from '../lib/utils'
 import { usePrices } from '../hooks/usePrices'
@@ -269,6 +269,31 @@ function KpiCard({ label, value, sub, tone = 'neutral', icon }: {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Benchmark delta stat (vs HODL strip) ────────────────────────────────────
+
+function DeltaStat({ label, pct, usd, sub }: { label: string; pct: number | null; usd: number | null; sub?: string }) {
+  const tone = pnlTone(pct)
+  const t = TONE[tone]
+  const up = (pct ?? 0) >= 0
+  return (
+    <div className="flex flex-col">
+      <span className="text-[10px] font-medium uppercase tracking-wider text-muted">{label}</span>
+      <span className={cn('mt-1 flex items-center gap-1 text-lg font-bold tabular-nums leading-none', t.text)}>
+        {pct != null ? (
+          <>
+            <span className="inline-flex">{up ? <ArrowUpRight /> : <ArrowDownRight />}</span>
+            {up ? '+' : ''}{pct.toFixed(2)}%
+          </>
+        ) : <span className="text-muted">—</span>}
+      </span>
+      {usd != null && (
+        <span className={cn('mt-1 text-xs tabular-nums', t.text)}>{usd >= 0 ? '+' : ''}{fmtUSD(usd)}</span>
+      )}
+      {sub && <span className="mt-0.5 text-[10px] text-muted">{sub}</span>}
     </div>
   )
 }
@@ -707,6 +732,10 @@ export default function Portfolio() {
   const [monitorError, setMonitorError] = useState<string | null>(null)
   const [selectedPos, setSelectedPos] = useState<ActivePosition | null>(null)
 
+  const [benchmark, setBenchmark] = useState<BenchmarkResponse | null>(null)
+  const [benchCoin, setBenchCoin] = useState('BTC')
+  const [benchLoading, setBenchLoading] = useState(true)
+
   const livePrices = usePrices()
 
   function load() {
@@ -729,12 +758,33 @@ export default function Portfolio() {
     }).catch(() => {})
   }
 
+  // Benchmark anchors refresh on load / coin change; the deltas themselves recompute
+  // live (client-side) against the live total value on every price tick.
+  const loadBenchmark = useCallback((coin?: string) => {
+    setBenchLoading(true)
+    const q = coin ? `?coin=${encodeURIComponent(coin)}` : ''
+    fetch(`/api/portfolio/benchmark${q}`).then(r => r.json()).then((b: BenchmarkResponse) => {
+      setBenchmark(b)
+      if (b?.coin) setBenchCoin(b.coin)
+    }).catch(() => {}).finally(() => setBenchLoading(false))
+  }, [])
+
+  function handleBenchCoinChange(coin: string) {
+    setBenchCoin(coin)
+    loadBenchmark(coin)
+    fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'benchmark_coin', value: coin }),
+    }).catch(() => {})
+  }
+
   useWebSocket(useCallback((event: string, data: unknown) => {
     if (event === 'monitor_completed') loadMonitor()
     if (event === 'monitor_error') setMonitorError((data as { error?: string })?.error ?? 'Monitor failed')
   }, []))
 
-  useEffect(() => { load(); loadMonitor() }, [])
+  useEffect(() => { load(); loadMonitor(); loadBenchmark() }, [loadBenchmark])
 
   const usdcEntry = portfolio?.entries.find(e => e.coin === 'USDC')
   const usdcBalance = usdcEntry?.quantity ?? 0
@@ -771,6 +821,24 @@ export default function Portfolio() {
   const realizedUsd = gains?.total_pnl ?? 0
   const totalBought = gains?.positions.reduce((s, p) => s + p.entry_price * p.quantity, 0) ?? 0
   const realizedPct = totalBought > 0 ? (realizedUsd / totalBought) * 100 : null
+
+  // ── "vs HODL" benchmark: where the portfolio would stand had the whole book
+  // been parked in the reference coin instead. Value-scaled (cash flows ignored).
+  const benchAvailable = benchmark?.available === true
+  const benchTotalValue = benchAvailable
+    ? benchmark!.inception_value! * (benchmark!.coin_price_now! / benchmark!.inception_coin_price!)
+    : null
+  const benchDailyValue = benchAvailable
+    ? benchmark!.day_ago_value! * (benchmark!.coin_price_now! / benchmark!.day_ago_coin_price!)
+    : null
+  const benchTotalPct = benchTotalValue && benchTotalValue > 0 ? (totalValue / benchTotalValue - 1) * 100 : null
+  const benchTotalUsd = benchTotalValue != null ? totalValue - benchTotalValue : null
+  const benchDailyPct = benchDailyValue && benchDailyValue > 0 ? (totalValue / benchDailyValue - 1) * 100 : null
+  const benchDailyUsd = benchDailyValue != null ? totalValue - benchDailyValue : null
+  const benchOptions = Array.from(new Set(
+    ['BTC', 'ETH', 'SOL', 'BNB', ...holdings.map(h => h.coin.replace('/USDC', '')), benchCoin],
+  )).filter(c => c && c !== 'USDC')
+  const benchSince = benchmark?.inception_at ? benchmark.inception_at.slice(0, 10) : null
 
   async function handleTransaction(type: 'deposit' | 'withdraw') {
     const parsed = parseFloat(amount)
@@ -915,6 +983,45 @@ export default function Portfolio() {
               sub={openCount >= maxPositions ? 'limit reached' : `${maxPositions - openCount} slot${maxPositions - openCount !== 1 ? 's' : ''} free`}
             />
           </>
+        )}
+      </div>
+
+      {/* ── vs HODL benchmark strip ───────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-border bg-surface-card/70 backdrop-blur-xl px-5 py-3">
+        <div
+          className="flex items-center gap-2"
+          title={`Compares your live total value against simply holding ${benchCoin} since your first portfolio snapshot. "Total" is outperformance since inception; "24h" is outperformance over the last day. Value-scaled — recent deposits/withdrawals are not cash-flow adjusted.`}
+        >
+          <span className="text-xs font-medium uppercase tracking-wider text-muted">vs HODL</span>
+          <select
+            value={benchCoin}
+            onChange={e => handleBenchCoinChange(e.target.value)}
+            className="text-sm font-semibold bg-surface-elevated border border-border rounded-lg px-2 py-1 text-accent cursor-pointer hover:border-accent/50 focus:outline-none focus:border-accent transition-colors"
+          >
+            {benchOptions.map(c => <option key={c} value={c} className="text-foreground">{c}</option>)}
+          </select>
+          <svg className="w-3.5 h-3.5 text-muted/70" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+          </svg>
+        </div>
+
+        <div className="hidden sm:block h-9 w-px bg-border" />
+
+        {benchAvailable ? (
+          <>
+            <DeltaStat label="Total" pct={benchTotalPct} usd={benchTotalUsd} sub={benchSince ? `since ${benchSince}` : undefined} />
+            <DeltaStat label="24h" pct={benchDailyPct} usd={benchDailyUsd} />
+            <div className="ml-auto hidden md:flex flex-col items-end justify-center text-[11px] tabular-nums leading-snug text-muted">
+              <span>You <span className="text-foreground font-medium">{fmtUSD(totalValue)}</span></span>
+              <span>{benchCoin} hold <span className="text-foreground font-medium">{benchTotalValue != null ? fmtUSD(benchTotalValue) : '—'}</span></span>
+            </div>
+          </>
+        ) : (
+          <span className="text-xs text-muted">
+            {benchLoading
+              ? 'Loading benchmark…'
+              : `Not enough portfolio history yet to benchmark against ${benchCoin}.`}
+          </span>
         )}
       </div>
 

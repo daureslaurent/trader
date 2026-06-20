@@ -210,6 +210,22 @@ export interface GainsResponse {
   positions: ClosedPosition[]
 }
 
+/** "vs HODL" benchmark anchors: portfolio value + reference-coin price at inception
+ *  and 24h ago, plus the coin's live price. The client turns these into total/daily
+ *  outperformance deltas against its live total value. */
+export interface BenchmarkResponse {
+  available: boolean
+  coin: string
+  symbol?: string
+  inception_value?: number
+  inception_at?: string
+  inception_coin_price?: number
+  day_ago_value?: number
+  day_ago_at?: string
+  day_ago_coin_price?: number
+  coin_price_now?: number
+}
+
 
 export interface PipelineEvent {
   id: number

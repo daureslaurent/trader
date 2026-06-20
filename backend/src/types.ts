@@ -353,6 +353,9 @@ export interface BotSettings {
   update_enabled: boolean
   /** How often (hours) to check whether origin/main is ahead. Default 1. */
   update_check_interval_hours: number
+  /** Reference coin the Portfolio page benchmarks the portfolio against
+   *  ("what if I'd just held this coin since inception"). Default 'BTC'. */
+  benchmark_coin: string
 }
 
 /** One run of the portfolio-summary engine: an LLM narrative + structured read of

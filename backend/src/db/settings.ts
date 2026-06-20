@@ -217,6 +217,7 @@ export function getSettings(): BotSettings {
     telegram_notify_update: (map.telegram_notify_update ?? 'true') === 'true',
     update_enabled: map.update_enabled === 'true',
     update_check_interval_hours: parseFloat(map.update_check_interval_hours || '1'),
+    benchmark_coin: (map.benchmark_coin || 'BTC').toUpperCase(),
   }
 }
 
