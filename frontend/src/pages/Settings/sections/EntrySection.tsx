@@ -75,10 +75,26 @@ export function EntrySection({ settings, set, toggle }: SectionProps) {
 
           <Row
             label={settings.entry_model === 'agent' ? 'Pullback target (fallback)' : 'Pullback target'}
-            hint="Aim to buy this % below the signal price (the dip). Fires as soon as price reaches the target."
+            hint={settings.entry_confirm_rebound
+              ? 'Aim to buy this % below the signal price (the dip). With rebound confirmation on, reaching the target arms the intent — the actual buy waits for a bounce off the low.'
+              : 'Aim to buy this % below the signal price (the dip). Fires as soon as price reaches the target.'}
           >
             <UnitInput type="number" step="0.1" min="0" max="10" unit="%" value={settings.entry_pullback_pct} onChange={e => set('entry_pullback_pct', parseFloat(e.target.value) || 0)} />
           </Row>
+          <Row
+            label="Confirm rebound before buying"
+            hint="Don't buy while price is still falling. When price reaches the target the intent arms and the engine tracks the running low (trailing it down as new lows print), buying only once price bounces back up off that low. The invalidate level below stays the give-up floor. Off = fill immediately at the target (legacy)."
+          >
+            <Toggle label="Confirm rebound before buying" checked={settings.entry_confirm_rebound} onChange={() => toggle('entry_confirm_rebound')} />
+          </Row>
+          {settings.entry_confirm_rebound && (
+            <Row
+              label="Rebound confirmation"
+              hint="How far price must bounce off its tracked low to confirm the dip has stabilized and fire the buy. Smaller = quicker, more sensitive fills; larger = waits for a stronger bounce."
+            >
+              <UnitInput type="number" step="0.1" min="0.1" max="5" unit="%" value={settings.entry_rebound_pct} onChange={e => set('entry_rebound_pct', parseFloat(e.target.value) || 0)} />
+            </Row>
+          )}
           <Row
             label={settings.entry_model === 'agent' ? 'Invalidate / falling knife (fallback)' : 'Invalidate (falling knife)'}
             hint="Abandon the intent if price drops this % below the signal price before filling — likely a breakdown, not a dip."

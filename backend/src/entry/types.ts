@@ -54,6 +54,13 @@ export interface EntryIntent {
   planReason?: string
   createdAt: number
   expiresAt: number
+  /** Rebound confirmation: true once live price has entered the buy zone (≤ targetPrice). While armed
+   *  the engine tracks `troughPrice` and waits for a bounce instead of buying mid-drop. Reset on any
+   *  band re-anchor. Only meaningful when the `entry_confirm_rebound` setting is on. */
+  armed: boolean
+  /** Lowest price seen since arming — the trailing anchor the rebound trigger is measured from. It
+   *  trails *down* as new lows print, so a continued drop lowers the buy trigger rather than filling. */
+  troughPrice?: number
   /** Every band assignment since registration (creation, each "Refresh LLM", each manual edit), oldest first. */
   bandHistory: BandSnapshot[]
 }
@@ -77,7 +84,7 @@ export interface BandSnapshot {
 }
 
 export type CancelReason = 'falling_knife' | 'ran_away' | 'expired' | 'manual' | 'agent'
-export type FillTrigger = 'pullback' | 'expiry-market' | 'manual'
+export type FillTrigger = 'pullback' | 'rebound' | 'expiry-market' | 'manual'
 
 /**
  * A point-in-time record of something the engine did, for the activity feed.

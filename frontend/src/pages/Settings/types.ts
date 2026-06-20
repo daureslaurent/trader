@@ -54,6 +54,8 @@ export interface SettingsData {
   entry_max_ttl_minutes: number
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
+  entry_confirm_rebound: boolean
+  entry_rebound_pct: number
   entry_model: 'static' | 'agent'
   entry_agent_cron: string
   entry_agent_candle_tf: string
@@ -156,7 +158,7 @@ export type SetFn = <K extends keyof SettingsData>(key: K, value: SettingsData[K
 export type ToggleKey =
   | 'approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve'
   | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_protect_winners' | 'monitor_d_sequential'
-  | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'llm_allow_parallel_same_url'
+  | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'entry_confirm_rebound' | 'llm_allow_parallel_same_url'
   | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup'
   | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted'
   | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary'

@@ -218,6 +218,15 @@ export interface BotSettings {
   entry_on_expiry: 'market' | 'cancel'
   /** How often the entry engine evaluates intents against the live price, in seconds. */
   entry_poll_seconds: number
+  /** When true, a deferred BUY is not filled the instant price touches the target. Instead the
+   *  engine arms on entering the buy zone, tracks the running low (trailing it down as new lows
+   *  print), and fires only once price bounces `entry_rebound_pct` off that low — confirming the
+   *  dip has stabilized rather than buying mid-drop. The invalidate level stays the give-up floor.
+   *  When false, the legacy behavior (fill immediately at the target) applies. */
+  entry_confirm_rebound: boolean
+  /** How far price must bounce off its tracked low (as %) to confirm a rebound and fire the BUY.
+   *  Only used when entry_confirm_rebound is on. */
+  entry_rebound_pct: number
   /** Who decides the per-coin entry band (pullback / invalidate / chase cap / TTL) for a
    *  deferred BUY: 'static' = the fixed entry_* values above (no LLM); 'agent' = the Entry
    *  Agent — a per-coin tool-calling loop that reasons about the best entry and can adjust

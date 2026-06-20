@@ -88,6 +88,8 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band, market 
     planReason: band.reason,
     createdAt: now,
     expiresAt: now + ttlMinutes * 60_000,
+    armed: false,
+    troughPrice: undefined,
     bandHistory: [],
   }
   intent.bandHistory = [{
@@ -172,6 +174,9 @@ export async function applyAgentBand(
     bandSource: 'agent',
     planReason: reason,
     expiresAt: now + ttlMinutes * 60_000,
+    // New levels → restart the rebound-confirmation window against them.
+    armed: false,
+    troughPrice: undefined,
     bandHistory: [...intent.bandHistory, snapshot].slice(-MAX_BAND_HISTORY),
   }
 
@@ -267,6 +272,9 @@ export function updateIntent(coin: string, edit: IntentEdit): { ok: boolean; err
     expiresAt,
     bandSource: 'manual',
     planReason: undefined,
+    // New levels → restart the rebound-confirmation window against them.
+    armed: false,
+    troughPrice: undefined,
     bandHistory: [...intent.bandHistory, snapshot].slice(-MAX_BAND_HISTORY),
   }
 
@@ -323,14 +331,49 @@ function evaluate(): void {
     if (!snap) continue
     const price = snap.price
 
-    // Ordered so a gap-down past target is caught as a crash, not bought.
+    // Hard boundaries first, ordered so a gap-down past target is caught as a crash, not bought:
+    // the invalidate floor and the chase cap both end the intent regardless of arm state.
     if (price <= intent.invalidatePrice) {
       cancel(intent.coin, 'falling_knife', price)
-    } else if (price <= intent.targetPrice) {
-      fire(intent, price, 'pullback')
-    } else if (price >= intent.chaseCapPrice) {
+      continue
+    }
+    if (price >= intent.chaseCapPrice) {
       cancel(intent.coin, 'ran_away', price)
-    } else if (now >= intent.expiresAt) {
+      continue
+    }
+
+    if (settings.entry_confirm_rebound) {
+      // Trailing rebound entry: don't buy while price is still falling. Arm on entering the buy
+      // zone, track the running low, and fire only once price bounces entry_rebound_pct off that
+      // low. A continued drop lowers the trough (and thus the trigger) rather than filling — until
+      // it hits the invalidate floor above and cancels as a falling knife.
+      if (!intent.armed && price <= intent.targetPrice) {
+        // Entered the buy zone — arm and seed the trough. Live card flips to "Confirming rebound".
+        intent.armed = true
+        intent.troughPrice = price
+        store.saveIntent(intent)
+        logger.info('Entry intent armed — confirming rebound', { coin: intent.coin, price, target: intent.targetPrice })
+        broadcastIntents()
+      } else if (intent.armed && intent.troughPrice != null && price < intent.troughPrice) {
+        // New low — trail the anchor down. Persist + broadcast so the desk shows the trough moving.
+        intent.troughPrice = price
+        store.saveIntent(intent)
+        broadcastIntents()
+      }
+      if (intent.armed && intent.troughPrice != null) {
+        const fireTrigger = intent.troughPrice * (1 + settings.entry_rebound_pct / 100)
+        if (price >= fireTrigger) {
+          fire(intent, price, 'rebound')
+          continue
+        }
+      }
+    } else if (price <= intent.targetPrice) {
+      // Legacy behavior (rebound confirmation off): fill immediately at the target.
+      fire(intent, price, 'pullback')
+      continue
+    }
+
+    if (now >= intent.expiresAt) {
       if (settings.entry_on_expiry === 'market') fire(intent, price, 'expiry-market')
       else cancel(intent.coin, 'expired', price)
     }

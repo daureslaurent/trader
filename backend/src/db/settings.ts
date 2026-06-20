@@ -140,6 +140,8 @@ export function getSettings(): BotSettings {
     entry_max_ttl_minutes: parseFloat(map.entry_max_ttl_minutes || '200'),
     entry_on_expiry: (map.entry_on_expiry === 'cancel' ? 'cancel' : 'market'),
     entry_poll_seconds: parseFloat(map.entry_poll_seconds || '3'),
+    entry_confirm_rebound: (map.entry_confirm_rebound ?? 'true') === 'true',
+    entry_rebound_pct: parseFloat(map.entry_rebound_pct || '0.3'),
     entry_model: (map.entry_model === 'agent' ? 'agent' : 'static') as 'static' | 'agent',
     entry_agent_cron: map.entry_agent_cron || '*/1 * * * *',
     entry_agent_candle_tf: map.entry_agent_candle_tf || '15m',

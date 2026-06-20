@@ -311,6 +311,10 @@ export interface EntryIntent {
   planReason?: string
   createdAt: number
   expiresAt: number
+  /** Rebound confirmation: true once price has entered the buy zone and the engine is waiting for a bounce. */
+  armed?: boolean
+  /** Lowest price seen since arming — the trailing anchor the rebound buy trigger is measured from. */
+  troughPrice?: number
   /** Every band assignment since registration, oldest first — what fed the entry decision and how it changed. */
   bandHistory?: BandSnapshot[]
 }
@@ -319,7 +323,7 @@ export interface EntryEvent {
   id: string
   coin: string
   type: 'registered' | 'filled' | 'cancelled'
-  reason?: 'pullback' | 'expiry-market' | 'falling_knife' | 'ran_away' | 'expired' | 'manual'
+  reason?: 'pullback' | 'rebound' | 'expiry-market' | 'falling_knife' | 'ran_away' | 'expired' | 'manual'
   signalPrice: number
   targetPrice: number
   price?: number

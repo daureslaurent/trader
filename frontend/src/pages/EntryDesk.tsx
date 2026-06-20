@@ -37,6 +37,7 @@ function eventStyle(e: EntryEvent): EventStyle {
   if (e.type === 'filled') {
     if (e.reason === 'expiry-market') return { label: 'Filled at expiry', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
     if (e.reason === 'manual') return { label: 'Bought manually', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
+    if (e.reason === 'rebound') return { label: 'Filled on rebound', cls: 'text-buy bg-buy/10', icon: 'M3 17l6-6 4 4 7-7' }
     return { label: 'Filled on pullback', cls: 'text-buy bg-buy/10', icon: 'M5 13l4 4L19 7' }
   }
   // cancelled
@@ -47,6 +48,18 @@ function eventStyle(e: EntryEvent): EventStyle {
     manual:        { label: 'Cancelled',                 cls: 'text-muted bg-muted/10', icon: 'M6 18L18 6M6 6l12 12' },
   }
   return map[e.reason ?? 'manual'] ?? map.manual
+}
+
+/**
+ * The live state of a pending intent — what the engine is currently checking. With rebound
+ * confirmation on this is the heart of the page: "Watching for dip" until price enters the buy
+ * zone, then "Confirming rebound" while it tracks the low and waits for a bounce. With it off,
+ * the legacy "Waiting for pullback" (fill on first touch of the target).
+ */
+function intentState(intent: EntryIntent, reboundOn: boolean): { label: string; variant: 'accent' | 'neutral'; dot: boolean } {
+  if (!reboundOn) return { label: 'Waiting for pullback', variant: 'accent', dot: true }
+  if (intent.armed) return { label: 'Confirming rebound', variant: 'accent', dot: true }
+  return { label: 'Watching for dip', variant: 'neutral', dot: true }
 }
 
 /* ---------------------------------- page ---------------------------------- */
@@ -64,6 +77,9 @@ export default function EntryDesk() {
   // The "Re-run agent" button only makes sense when the Entry Agent drives bands —
   // otherwise bands come from the static settings and there's no agent to re-run.
   const [agentEnabled, setAgentEnabled] = useState(false)
+  // Rebound confirmation mode — drives the per-intent state labels and the bounce trigger overlay.
+  const [reboundOn, setReboundOn] = useState(false)
+  const [reboundPct, setReboundPct] = useState(0.3)
   const [watchlist, setWatchlist] = useState<string[]>([])
   const [addOpen, setAddOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -77,10 +93,12 @@ export default function EntryDesk() {
     fetch('/api/entry-events').then(r => r.json()).then((d: EntryEvent[]) => {
       if (Array.isArray(d)) setEvents(d)
     }).catch(() => {})
-    fetch('/api/settings').then(r => r.json()).then((s: { entry_model?: string; watchlist?: string[]; approval_required?: boolean }) => {
+    fetch('/api/settings').then(r => r.json()).then((s: { entry_model?: string; watchlist?: string[]; approval_required?: boolean; entry_confirm_rebound?: boolean; entry_rebound_pct?: number }) => {
       if (s && typeof s.entry_model === 'string') setAgentEnabled(s.entry_model === 'agent')
       if (s && Array.isArray(s.watchlist)) setWatchlist(s.watchlist)
       if (s && typeof s.approval_required === 'boolean') setApprovalRequired(s.approval_required)
+      if (s && typeof s.entry_confirm_rebound === 'boolean') setReboundOn(s.entry_confirm_rebound)
+      if (s && typeof s.entry_rebound_pct === 'number') setReboundPct(s.entry_rebound_pct)
     }).catch(() => {})
   }, [])
 
@@ -161,10 +179,30 @@ export default function EntryDesk() {
             </svg>
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold text-foreground">Entry Desk</h2>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base font-semibold text-foreground">Entry Desk</h2>
+              {reboundOn ? (
+                <Badge
+                  variant="accent"
+                  dot
+                  title={`Rebound confirmation is ON. The bot won't buy while price is still falling: it tracks the low (trailing it down as new lows print) and fires only once price bounces ${reboundPct}% off that low. It gives up at the invalidate level (falling knife).`}
+                >
+                  Rebound confirmation: ON · +{reboundPct}%
+                </Badge>
+              ) : (
+                <Badge variant="neutral" title="Rebound confirmation is OFF. The bot fills immediately when price touches the target — it does not wait for a bounce.">
+                  Rebound confirmation: OFF
+                </Badge>
+              )}
+            </div>
             <p className="text-sm text-muted mt-1 leading-relaxed max-w-3xl">
               When the analyst issues a BUY, the bot doesn't fill immediately — it watches the live price and waits for a
-              better entry. It <span className="text-accent font-medium">fills on a pullback</span> to the target, but
+              better entry. {reboundOn ? (
+                <>It <span className="text-accent font-medium">waits for price to stop falling and bounce</span> before
+                buying — tracking the low and firing only on a rebound off it</>
+              ) : (
+                <>It <span className="text-accent font-medium">fills on a pullback</span> to the target</>
+              )}, but
               <span className="text-sell font-medium"> cancels</span> if price breaks down (falling knife) or
               <span className="text-warn font-medium"> runs away</span> first. Below you can watch every pending intent
               and what the engine decided.
@@ -216,7 +254,10 @@ export default function EntryDesk() {
                   {selectedIntent.bandSource === 'manual' && (
                     <Badge variant="warning" title="Levels set manually">Manual levels</Badge>
                   )}
-                  <Badge variant="accent" dot>Waiting</Badge>
+                  {(() => {
+                    const st = intentState(selectedIntent, reboundOn)
+                    return <Badge variant={st.variant} dot={st.dot}>{st.label}</Badge>
+                  })()}
                   <Button
                     variant="secondary"
                     size="sm"
@@ -285,6 +326,14 @@ export default function EntryDesk() {
                   <span className="font-medium text-foreground">Entry Agent:</span> {selectedIntent.planReason}
                 </p>
               )}
+              {reboundOn && selectedIntent.armed && selectedIntent.troughPrice != null && (
+                <p className="px-5 pb-1 text-xs text-muted leading-relaxed">
+                  <span className="font-medium text-accent">Confirming rebound:</span> in the buy zone, tracking the low at{' '}
+                  <span className="text-foreground tabular-nums">{fmtUSD(selectedIntent.troughPrice)}</span> — will buy on a bounce to{' '}
+                  <span className="text-accent tabular-nums">≥ {fmtUSD(selectedIntent.troughPrice * (1 + reboundPct / 100))}</span>
+                  {' '}(or cancel if it drops to the invalidate level).
+                </p>
+              )}
               {refreshError && (
                 <div className="mx-5 mb-1 mt-1 flex items-center gap-2 rounded-lg bg-sell/10 border border-sell/20 px-3 py-2 text-xs text-sell">
                   <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -293,7 +342,7 @@ export default function EntryDesk() {
                   {refreshError}
                 </div>
               )}
-              <EntryBandChart intent={selectedIntent} />
+              <EntryBandChart intent={selectedIntent} reboundPct={reboundOn ? reboundPct : undefined} />
             </>
           ) : (
             <div className="flex flex-col items-center justify-center text-center h-[420px] px-6">
@@ -331,6 +380,8 @@ export default function EntryDesk() {
                 intent={i}
                 now={now}
                 currentPrice={prices.get(i.coin)?.price}
+                reboundOn={reboundOn}
+                reboundPct={reboundPct}
                 selected={selectedIntent?.coin === i.coin}
                 onSelect={() => setSelected(i.coin)}
                 onCancel={() => setCancelTarget(i)}
@@ -458,10 +509,12 @@ function StatCard({ label, value, hint, tone, accent }: {
   )
 }
 
-function IntentCard({ intent, now, currentPrice, selected, onSelect, onCancel }: {
+function IntentCard({ intent, now, currentPrice, reboundOn, reboundPct, selected, onSelect, onCancel }: {
   intent: EntryIntent
   now: number
   currentPrice?: number
+  reboundOn: boolean
+  reboundPct: number
   selected: boolean
   onSelect: () => void
   onCancel: () => void
@@ -473,6 +526,12 @@ function IntentCard({ intent, now, currentPrice, selected, onSelect, onCancel }:
   const targetPos = pct(intent.targetPrice)
   const pos = currentPrice != null ? pct(currentPrice) : null
   const atOrBelowTarget = currentPrice != null && currentPrice <= intent.targetPrice
+  const st = intentState(intent, reboundOn)
+  // While armed, the live buy trigger is a bounce off the tracked low, not the static target.
+  const armed = reboundOn && intent.armed && intent.troughPrice != null
+  const bouncePrice = armed ? intent.troughPrice! * (1 + reboundPct / 100) : null
+  const troughPos = armed ? pct(intent.troughPrice!) : null
+  const bouncePos = bouncePrice != null ? pct(bouncePrice) : null
 
   return (
     <Card
@@ -525,16 +584,41 @@ function IntentCard({ intent, now, currentPrice, selected, onSelect, onCancel }:
         <p className="text-[11px] text-muted leading-snug line-clamp-2">{intent.planReason}</p>
       )}
 
+      {/* What the engine is currently checking for this coin. */}
+      <div className="flex items-center gap-1.5">
+        <span className={cn(
+          'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold',
+          st.variant === 'accent' ? 'bg-accent/10 text-accent' : 'bg-surface-elevated text-muted',
+        )}>
+          {st.dot && <span className={cn('h-1.5 w-1.5 rounded-full bg-current', armed && 'animate-pulse')} />}
+          {st.label}
+        </span>
+      </div>
+
       <div className="flex items-center justify-between text-xs tabular-nums">
-        <span className="text-muted">Buy ≤ <span className="text-accent font-semibold">{fmtUSD(intent.targetPrice)}</span></span>
+        {armed && bouncePrice != null ? (
+          <span className="text-muted">Buy on bounce <span className="text-accent font-semibold">≥ {fmtUSD(bouncePrice)}</span></span>
+        ) : (
+          <span className="text-muted">Buy ≤ <span className="text-accent font-semibold">{fmtUSD(intent.targetPrice)}</span></span>
+        )}
         <span className={cn('font-medium', atOrBelowTarget ? 'text-buy' : 'text-foreground')}>
           {currentPrice != null ? fmtUSD(currentPrice) : '—'}
         </span>
       </div>
 
-      {/* Band: invalidate ─ target ─ chase cap, with a live marker */}
+      {/* Band: invalidate ─ target ─ chase cap, with a live marker. When armed, the tracked low and
+          the bounce-buy trigger are added so the card shows exactly what fills the order. */}
       <div className="relative h-1.5 rounded-full bg-gradient-to-r from-sell/30 via-border to-warn/30">
-        <span className="absolute top-1/2 -translate-y-1/2 h-3 w-0.5 rounded-full bg-accent" style={{ left: `${targetPos}%` }} />
+        {/* Target / buy-zone edge */}
+        <span className="absolute top-1/2 -translate-y-1/2 h-3 w-0.5 rounded-full bg-accent/40" style={{ left: `${targetPos}%` }} />
+        {/* Tracked low (trough) */}
+        {troughPos != null && (
+          <span className="absolute top-1/2 -translate-y-1/2 h-3 w-0.5 rounded-full bg-muted" style={{ left: `${troughPos}%` }} title="Tracked low" />
+        )}
+        {/* Bounce-buy trigger */}
+        {bouncePos != null && (
+          <span className="absolute top-1/2 -translate-y-1/2 h-3 w-0.5 rounded-full bg-accent" style={{ left: `${bouncePos}%` }} title="Buy on bounce" />
+        )}
         {pos != null && (
           <span
             className="absolute top-1/2 -translate-y-1/2 h-3 w-3 -translate-x-1/2 rounded-full bg-foreground shadow ring-2 ring-surface-card transition-all duration-300"

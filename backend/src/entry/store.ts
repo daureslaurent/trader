@@ -26,6 +26,9 @@ function rowToIntent(r: Record<string, unknown>): EntryIntent {
     planReason: (r.plan_reason as string) || undefined,
     createdAt: r.created_at as number,
     expiresAt: r.expires_at as number,
+    // Older persisted intents predate rebound confirmation — default to not-armed / no trough.
+    armed: r.armed === true,
+    troughPrice: (r.trough_price as number | null) ?? undefined,
     // Older persisted intents predate band history — default to an empty list.
     bandHistory: r.band_history ? (JSON.parse(r.band_history as string) as EntryIntent['bandHistory']) : [],
   }
@@ -59,6 +62,8 @@ export async function saveIntent(intent: EntryIntent): Promise<void> {
       plan_reason: intent.planReason ?? null,
       created_at: intent.createdAt,
       expires_at: intent.expiresAt,
+      armed: intent.armed,
+      trough_price: intent.troughPrice ?? null,
       band_history: JSON.stringify(intent.bandHistory),
     })
   } catch (err) {
