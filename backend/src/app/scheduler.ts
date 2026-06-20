@@ -1,6 +1,6 @@
 import cron from 'node-cron'
 import { logger } from '../core/logger.js'
-import { runLLMRetention, getSettings } from '../db/index.js'
+import { runLLMRetention, runDataRetention, getSettings } from '../db/index.js'
 import { BotSettings } from '../types.js'
 import { checkOpenPositions } from '../portfolio/index.js'
 import { runMonitor, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
@@ -46,13 +46,16 @@ export function dispatchSingleCoinPipeline(symbol: string, cycleId: string): Pro
  * update check. Engine triggers are started separately by initRouting().
  */
 export function startSchedulers(settings: BotSettings): void {
-  // Run LLM retention on startup and then daily at 03:00 UTC
-  runLLMRetention().catch(err =>
-    logger.warn('LLM retention on startup failed', { error: err instanceof Error ? err.message : String(err) }))
-  cron.schedule('0 3 * * *', () => {
+  // Run retention on startup and then daily at 03:00 UTC. LLM calls archive into
+  // aggregate stats; the high-volume pipeline_events/debug_logs prune by age.
+  const runRetention = (phase: string) => {
     runLLMRetention().catch(err =>
-      logger.warn('LLM retention failed', { error: err instanceof Error ? err.message : String(err) }))
-  })
+      logger.warn(`LLM retention ${phase} failed`, { error: err instanceof Error ? err.message : String(err) }))
+    runDataRetention().catch(err =>
+      logger.warn(`Data retention ${phase} failed`, { error: err instanceof Error ? err.message : String(err) }))
+  }
+  runRetention('on startup')
+  cron.schedule('0 3 * * *', () => runRetention('daily'))
 
   positionCheckInterval = setInterval(async () => {
     try { await checkOpenPositions() } catch (err) {

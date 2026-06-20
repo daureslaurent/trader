@@ -16,6 +16,7 @@ export const SECTIONS = [
   { id: 'llm',        label: 'LLM Data',          subtitle: 'Debug fetch limit and retention policy',             icon: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5' },
   { id: 'telegram',   label: 'Telegram',          subtitle: 'Which events get pushed to your chat',               icon: 'M21.5 4.5L2.5 12l6 2m13-9.5l-3 15-7-5.5m10-9.5L8.5 16m0 0v4.5l3.5-3.5' },
   { id: 'system',     label: 'System',            subtitle: 'Maintenance and app lifecycle',                      icon: 'M4 7v10a2 2 0 002 2h12a2 2 0 002-2V7M4 7l8-4 8 4M4 7l8 4 8-4M12 11v8' },
+  { id: 'database',   label: 'Database',          subtitle: 'Backup, restore, retention & maintenance',           icon: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5' },
 ] as const
 
 export type SectionId = typeof SECTIONS[number]['id']

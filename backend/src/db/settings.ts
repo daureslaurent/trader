@@ -130,6 +130,8 @@ export function getSettings(): BotSettings {
     utc_offset_hours: parseFloat(map.utc_offset_hours || '0'),
     llm_debug_fetch_limit: parseInt(map.llm_debug_fetch_limit || '200', 10),
     llm_retain_days: parseInt(map.llm_retain_days || '0', 10),
+    pipeline_events_retain_days: parseInt(map.pipeline_events_retain_days || '0', 10),
+    debug_logs_retain_days: parseInt(map.debug_logs_retain_days || '0', 10),
     llm_allow_parallel_same_url: map.llm_allow_parallel_same_url === 'true',
     entry_timing_enabled: (map.entry_timing_enabled ?? 'true') === 'true',
     entry_pullback_pct: parseFloat(map.entry_pullback_pct || '0.5'),

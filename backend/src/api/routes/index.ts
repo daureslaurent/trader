@@ -13,6 +13,7 @@ import { router as summaryRoutes } from './summary.routes.js'
 import { router as llmRoutes } from './llm.routes.js'
 import { router as agentRoutes } from './agent.routes.js'
 import { router as settingsRoutes } from './settings.routes.js'
+import { router as databaseRoutes } from './database.routes.js'
 import { router as hostRoutes } from './host.routes.js'
 import { router as eventsRoutes } from './events.routes.js'
 import { router as routingRoutes } from './routing.routes.js'
@@ -37,6 +38,7 @@ router.use(summaryRoutes)
 router.use(llmRoutes)
 router.use(agentRoutes)
 router.use(settingsRoutes)
+router.use(databaseRoutes)
 router.use(hostRoutes)
 router.use(eventsRoutes)
 router.use(routingRoutes)

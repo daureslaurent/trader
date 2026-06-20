@@ -17,6 +17,7 @@ import { AppearanceSection } from './sections/AppearanceSection'
 import { LLMDataSection } from './sections/LLMDataSection'
 import { TelegramSection } from './sections/TelegramSection'
 import { SystemSection } from './sections/SystemSection'
+import { DatabaseSection } from './sections/DatabaseSection'
 
 export default function Settings() {
   const [settings, setSettings] = useState<SettingsData | null>(null)
@@ -164,6 +165,7 @@ export default function Settings() {
       case 'llm':        return <LLMDataSection {...sectionProps} />
       case 'telegram':   return <TelegramSection {...sectionProps} />
       case 'system':     return <SystemSection {...sectionProps} />
+      case 'database':   return <DatabaseSection {...sectionProps} />
     }
   }
 

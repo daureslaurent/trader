@@ -42,6 +42,8 @@ export interface SettingsData {
   fee_rate: number
   llm_debug_fetch_limit: number
   llm_retain_days: number
+  pipeline_events_retain_days: number
+  debug_logs_retain_days: number
   llm_allow_parallel_same_url: boolean
   entry_timing_enabled: boolean
   entry_pullback_pct: number

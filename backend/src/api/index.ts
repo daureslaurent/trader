@@ -11,7 +11,12 @@ import { initEventStream } from './eventStream.js'
 export function startAPI() {
   const app = express()
   app.use(cors())
-  app.use(express.json())
+  // Global JSON parser keeps the default ~100kb limit, but skips the DB import
+  // route — its body can be very large and is parsed by a dedicated high-limit
+  // parser in database.routes.ts.
+  const jsonParser = express.json()
+  app.use((req, res, next) =>
+    req.path === '/api/database/import' ? next() : jsonParser(req, res, next))
 
   const apiLimiter = rateLimit({
     windowMs: 60 * 1000,

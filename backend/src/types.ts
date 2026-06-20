@@ -186,6 +186,10 @@ export interface BotSettings {
   llm_debug_fetch_limit: number
   /** Delete llm_calls older than this many days, archiving aggregate stats first. 0 = keep forever. */
   llm_retain_days: number
+  /** Delete pipeline_events rows older than this many days. 0 = keep forever. */
+  pipeline_events_retain_days: number
+  /** Delete debug_logs rows older than this many days. 0 = keep forever. */
+  debug_logs_retain_days: number
   /** When false (default), calls to the same base URL are serialized through a per-URL waiting list so a
    *  single LLM endpoint only handles one request at a time. When true, same-URL calls may run in parallel.
    *  Calls to *different* base URLs always run concurrently regardless of this setting. */
