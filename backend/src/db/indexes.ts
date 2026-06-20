@@ -11,6 +11,12 @@ export async function ensureIndexes(): Promise<void> {
   // classic ensemble was removed and Agent D became the sole "Agent Monitor". Carry old runs
   // over to `monitor_runs`. Idempotent — only fires when the old name still exists alone.
   await renameLegacyCollection(db, 'monitor_d_runs', 'monitor_runs')
+  // The rename carries the collection's old indexes (idx_monitor_d_runs_*) along with it, so
+  // their keys collide with the new idx_monitor_runs_* below (same key spec, different name →
+  // IndexOptionsConflict). Drop the legacy-named indexes first; createIndexes rebuilds them
+  // under the new names. Unconditional + ignores "not found", so it also self-heals a DB that
+  // was renamed by an earlier build before this cleanup existed.
+  await dropLegacyIndexes(db, 'monitor_runs', ['idx_monitor_d_runs_id', 'idx_monitor_d_runs_cycle', 'idx_monitor_d_runs_coin'])
 
   await db.collection('counters').createIndex({ _id: 1 })
 
@@ -106,5 +112,19 @@ async function renameLegacyCollection(db: ReturnType<typeof getDb>, from: string
     }
   } catch (err) {
     logger.warn('Legacy collection rename skipped', { from, to, error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+// Drops the named indexes from a collection if present, ignoring "index/namespace not found"
+// so it is safe to run on every startup (including a fresh DB where the collection or indexes
+// don't exist yet). Used to clear stale index names a collection rename carried over.
+async function dropLegacyIndexes(db: ReturnType<typeof getDb>, coll: string, names: string[]): Promise<void> {
+  for (const name of names) {
+    try {
+      await db.collection(coll).dropIndex(name)
+      logger.info('Dropped legacy index', { coll, name })
+    } catch {
+      // Index (code 27) or collection (code 26) not present — nothing to drop.
+    }
   }
 }
