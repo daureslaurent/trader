@@ -446,20 +446,23 @@ function getEntryIntent(args: Record<string, unknown>): unknown {
 async function setEntryBand(args: Record<string, unknown>): Promise<unknown> {
   const coin = normalizeCoin(args.coin)
   if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
-  const n = (v: unknown) => (typeof v === 'number' ? v : parseFloat(String(v ?? '')))
+  // Each field is optional: only the ones the model supplies change; omitted ones keep
+  // their current value (so the agent can nudge a single dimension, e.g. just the TTL).
+  const opt = (v: unknown) => (v == null || v === '' ? undefined : (typeof v === 'number' ? v : parseFloat(String(v))))
   const res = await applyAgentBand(coin, {
-    pullbackPct: n(args.pullback_pct),
-    invalidatePct: n(args.invalidate_pct),
-    chaseCapPct: n(args.chase_cap_pct),
-    ttlMinutes: n(args.ttl_minutes),
+    pullbackPct: opt(args.pullback_pct),
+    invalidatePct: opt(args.invalidate_pct),
+    chaseCapPct: opt(args.chase_cap_pct),
+    ttlMinutes: opt(args.ttl_minutes),
     reason: typeof args.reason === 'string' ? args.reason : undefined,
   })
   if (!res.ok) return { ok: false, error: res.error }
   const i = res.intent!
+  const ttlMinutesLeft = Number(Math.max(0, (i.expiresAt - Date.now()) / 60000).toFixed(1))
   return {
     ok: true, coin,
-    band: { targetPrice: i.targetPrice, invalidatePrice: i.invalidatePrice, chaseCapPrice: i.chaseCapPrice, signalPrice: i.signalPrice },
-    note: 'Band re-anchored to the live price; the watch loop now fires/cancels against these levels.',
+    band: { targetPrice: i.targetPrice, invalidatePrice: i.invalidatePrice, chaseCapPrice: i.chaseCapPrice, signalPrice: i.signalPrice, ttlMinutesLeft },
+    note: 'Band updated; the watch loop now fires/cancels against these levels. Supplied levels were re-anchored to the live price; omitted ones were left unchanged.',
   }
 }
 
@@ -961,18 +964,18 @@ export const TOOLS: AgentTool[] = [
   },
   {
     name: 'set_entry_band',
-    description: 'Set/replace the entry band for an active intent. All four percentages are relative to the LIVE price at apply time (the levels re-anchor to "now") and the TTL clock resets. invalidate_pct must be greater than pullback_pct. Use to wait for a deeper dip, tighten/loosen the window, or extend the TTL as the setup evolves. Returns the resolved prices.',
+    description: 'Adjust the entry band for an active intent. Every field is OPTIONAL — pass only what you want to change and the rest keeps its current value, so you can nudge a single dimension (e.g. just extend the TTL, or just tighten the invalidate) without disturbing a band you are otherwise happy with. Any percentage you DO pass re-anchors that level to the LIVE price at apply time; the resulting band must stay ordered (invalidate < target < chase cap). Use to wait for a deeper dip, tighten/loosen the window, or extend the TTL as the setup evolves. Returns the resolved prices + remaining TTL.',
     parameters: {
       type: 'object',
       properties: {
         coin: { type: 'string', description: 'Coin symbol, e.g. "BTC".' },
-        pullback_pct: { type: 'number', description: 'Buy target as % BELOW the live price (0 = buy at market).' },
-        invalidate_pct: { type: 'number', description: 'Cancel if price drops this % below the live price (must be > pullback_pct).' },
-        chase_cap_pct: { type: 'number', description: 'Cancel if price runs this % above the live price.' },
-        ttl_minutes: { type: 'number', description: 'How long the intent stays live before expiry, in minutes.' },
-        reason: { type: 'string', description: 'One-line rationale for these levels (shown on the Entry Desk).' },
+        pullback_pct: { type: 'number', description: 'Optional. New buy target as % BELOW the live price (0 = buy at market). Omit to keep the current target.' },
+        invalidate_pct: { type: 'number', description: 'Optional. New cancel-on-breakdown level as % below the live price (the resulting price must end up below the buy target). Omit to keep the current invalidate.' },
+        chase_cap_pct: { type: 'number', description: 'Optional. New cancel-on-runaway level as % above the live price. Omit to keep the current chase cap.' },
+        ttl_minutes: { type: 'number', description: 'Optional. New time-to-live in minutes, measured from now (resets the expiry clock). Omit to keep the current expiry.' },
+        reason: { type: 'string', description: 'One-line rationale for the change (shown on the Entry Desk).' },
       },
-      required: ['coin', 'pullback_pct', 'invalidate_pct', 'chase_cap_pct', 'ttl_minutes'],
+      required: ['coin'],
     },
     readOnly: false,
     handler: setEntryBand,

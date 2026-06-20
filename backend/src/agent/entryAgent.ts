@@ -188,7 +188,7 @@ ${toolPrompt}
 ALWAYS start by calling get_entry_intent (your current band + the BUY thesis) and recall_signal_memory (the analyst's thesis/levels) so you adapt the existing window instead of starting blind. Read price structure (candles) and momentum/volatility before moving levels. You have at most ${MAX_TOOL_ROUNDS} tool rounds; call only the tools you need.
 
 Decide and ACT via your action tools (the side effect IS the decision):
-- set_entry_band — re-anchor the band to a smarter window: deeper pullback in high volatility / weak momentum; a shallow pullback (or fire now) in a strong uptrend you shouldn't wait on; tighten the invalidate when structure is fragile; extend the TTL when the setup needs more time. Levels are % relative to the LIVE price; invalidate_pct MUST be greater than pullback_pct.
+- set_entry_band — adjust the band to a smarter window: deeper pullback in high volatility / weak momentum; a shallow pullback (or fire now) in a strong uptrend you shouldn't wait on; tighten the invalidate when structure is fragile; extend the TTL when the setup needs more time. EVERY field is optional — pass ONLY the levels you want to change (e.g. just ttl_minutes to buy more time, or just invalidate_pct to tighten), and the rest stay as they are. Any percentage you pass is relative to the LIVE price; the resulting band must stay ordered (invalidate below the target, chase cap above it).
 - fire_entry_now — buy immediately when the entry is good right now and waiting risks missing it.
 - cancel_entry — abandon when the thesis is broken or the risk/reward has decayed. Protecting capital beats forcing a bad entry.
 - Do nothing (WAIT) when the current band is already well-placed — leave it for the watch loop.

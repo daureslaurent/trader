@@ -117,75 +117,111 @@ export interface ApplyBandResult {
 }
 
 /**
- * Apply an Entry-Agent-chosen band to an active intent, re-materializing its window
- * on the *current live price*. Used by the `set_entry_band` agent tool: the band's
- * percentages are re-anchored to the live price, ATR + TTL are refreshed, and a
- * `BandSnapshot` (source 'agent') is appended to the history. On any failure (no
- * active intent, no live price, market-data error) the intent is left untouched and
- * an error is returned, so a bad pass can never degrade a good band.
- *
- * Pass only the four percentages + a reason; this re-anchors to the live price (the
- * agent reasons in % relative to "now", exactly like the static band at registration).
+ * Apply an Entry-Agent-chosen band change to an active intent. Used by the
+ * `set_entry_band` agent tool. Every field is OPTIONAL so the agent can nudge a single
+ * dimension (e.g. just extend the TTL, or just tighten the invalidate) without having
+ * to re-specify — and thereby disturb — a band it's otherwise happy with:
+ *  - any provided percentage re-anchors THAT level to the current live price (the agent
+ *    reasons in % relative to "now", like the static band at registration);
+ *  - an omitted level keeps its current price untouched;
+ *  - a provided ttl resets the expiry clock; an omitted ttl keeps the current expiry.
+ * A `BandSnapshot` (source 'agent') is appended to the history. On any failure (no
+ * active intent, nothing to change, no live price, market-data error, or a band that
+ * would be out of order) the intent is left untouched and an error is returned, so a
+ * bad pass can never degrade a good band.
  */
 export async function applyAgentBand(
   coin: string,
-  band: { pullbackPct: number; invalidatePct: number; chaseCapPct: number; ttlMinutes: number; reason?: string },
+  band: { pullbackPct?: number | null; invalidatePct?: number | null; chaseCapPct?: number | null; ttlMinutes?: number | null; reason?: string },
 ): Promise<ApplyBandResult> {
   const intent = intents.get(coin)
   if (!intent) return { ok: false, error: 'No active entry intent for this coin' }
 
-  if (!(band.pullbackPct >= 0)) return { ok: false, error: 'pullback_pct must be >= 0' }
-  if (!(band.invalidatePct > band.pullbackPct)) return { ok: false, error: 'invalidate_pct must be greater than pullback_pct' }
-  if (!(band.chaseCapPct > 0)) return { ok: false, error: 'chase_cap_pct must be > 0' }
-  if (!(band.ttlMinutes > 0)) return { ok: false, error: 'ttl_minutes must be > 0' }
-
-  const snap = priceCache.getPrice(coin)
-  if (!snap || !(snap.price > 0)) {
-    return { ok: false, error: 'No live price available for this coin yet' }
+  const hasPullback = band.pullbackPct != null
+  const hasInvalidate = band.invalidatePct != null
+  const hasChase = band.chaseCapPct != null
+  const hasTtl = band.ttlMinutes != null
+  if (!hasPullback && !hasInvalidate && !hasChase && !hasTtl) {
+    return { ok: false, error: 'Provide at least one of pullback_pct, invalidate_pct, chase_cap_pct or ttl_minutes to change (use WAIT to leave the band as-is).' }
   }
-  const livePrice = snap.price
-
-  let market: MarketContext
-  try {
-    market = await getMarketContext(coin, livePrice)
-  } catch (err) {
-    logger.warn('Entry applyAgentBand: failed to build market context', { coin, error: (err as Error).message })
-    return { ok: false, error: 'Failed to fetch live market data' }
-  }
+  if (hasPullback && !(band.pullbackPct! >= 0)) return { ok: false, error: 'pullback_pct must be >= 0' }
+  if (hasInvalidate && !(band.invalidatePct! > 0)) return { ok: false, error: 'invalidate_pct must be > 0' }
+  if (hasChase && !(band.chaseCapPct! > 0)) return { ok: false, error: 'chase_cap_pct must be > 0' }
+  if (hasTtl && !(band.ttlMinutes! > 0)) return { ok: false, error: 'ttl_minutes must be > 0' }
 
   const now = Date.now()
-  const ttlMinutes = capTtl(band.ttlMinutes)
-  const reason = band.reason?.slice(0, 200) || 'Entry Agent band'
-  const targetPrice = livePrice * (1 - band.pullbackPct / 100)
-  const invalidatePrice = livePrice * (1 - band.invalidatePct / 100)
-  const chaseCapPrice = livePrice * (1 + band.chaseCapPct / 100)
+  // Only a level change needs the live price + a fresh market read (to re-anchor + refresh
+  // ATR). A TTL-only change leaves the prices/ATR exactly as they are.
+  const priceChanged = hasPullback || hasInvalidate || hasChase
+  let signalPrice = intent.signalPrice
+  let targetPrice = intent.targetPrice
+  let invalidatePrice = intent.invalidatePrice
+  let chaseCapPrice = intent.chaseCapPrice
+  let atr = intent.atr
+  let market: MarketContext | undefined
+
+  if (priceChanged) {
+    const snap = priceCache.getPrice(coin)
+    if (!snap || !(snap.price > 0)) {
+      return { ok: false, error: 'No live price available for this coin yet' }
+    }
+    const livePrice = snap.price
+    try {
+      market = await getMarketContext(coin, livePrice)
+    } catch (err) {
+      logger.warn('Entry applyAgentBand: failed to build market context', { coin, error: (err as Error).message })
+      return { ok: false, error: 'Failed to fetch live market data' }
+    }
+    signalPrice = livePrice
+    atr = market.atr14 // refresh ATR too — it feeds SL/TP sizing at fill
+    if (hasPullback) targetPrice = livePrice * (1 - band.pullbackPct! / 100)
+    if (hasInvalidate) invalidatePrice = livePrice * (1 - band.invalidatePct! / 100)
+    if (hasChase) chaseCapPrice = livePrice * (1 + band.chaseCapPct! / 100)
+  }
+
+  // Validate the resulting prices (a partial re-anchor must still leave a sane band).
+  if (!(targetPrice > 0) || !(invalidatePrice > 0) || !(chaseCapPrice > 0)) {
+    return { ok: false, error: 'Resulting band prices must be positive' }
+  }
+  if (!(invalidatePrice < targetPrice)) return { ok: false, error: 'invalidate must end up below the buy target' }
+  if (!(chaseCapPrice > targetPrice)) return { ok: false, error: 'chase cap must end up above the buy target' }
+
+  let expiresAt = intent.expiresAt
+  let ttlMinutes = Math.max(0, (expiresAt - now) / 60_000)
+  if (hasTtl) {
+    ttlMinutes = capTtl(band.ttlMinutes!)
+    expiresAt = now + ttlMinutes * 60_000
+  }
+
+  const reason = band.reason?.slice(0, 200) || intent.planReason || 'Entry Agent band'
   const snapshot: BandSnapshot = {
-    at: now, source: 'agent', signalPrice: livePrice,
+    at: now, source: 'agent', signalPrice,
     targetPrice, invalidatePrice, chaseCapPrice,
-    ttlMinutes, reason, market,
+    ttlMinutes, reason, ...(market ? { market } : {}),
   }
   const updated: EntryIntent = {
     ...intent,
-    signalPrice: livePrice,
+    signalPrice,
     targetPrice,
     invalidatePrice,
     chaseCapPrice,
-    atr: market.atr14, // refresh ATR too — it feeds SL/TP sizing at fill
+    atr,
     bandSource: 'agent',
     planReason: reason,
-    expiresAt: now + ttlMinutes * 60_000,
-    // New levels → restart the rebound-confirmation window against them.
-    armed: false,
-    troughPrice: undefined,
+    expiresAt,
+    // Only restart the rebound-confirmation window when a price level actually moved;
+    // a TTL-only nudge leaves an armed/confirming intent confirming.
+    armed: priceChanged ? false : intent.armed,
+    troughPrice: priceChanged ? undefined : intent.troughPrice,
     bandHistory: [...intent.bandHistory, snapshot].slice(-MAX_BAND_HISTORY),
   }
 
   intents.set(coin, updated)
   store.saveIntent(updated)
   logger.info('Entry intent band set by agent', {
-    coin, signalPrice: livePrice, target: updated.targetPrice,
+    coin, signalPrice, target: updated.targetPrice,
     invalidate: updated.invalidatePrice, chaseCap: updated.chaseCapPrice,
-    ttlMinutes, reason,
+    ttlMinutes, reason, priceChanged,
   })
   broadcastIntents()
   return { ok: true, intent: updated }
