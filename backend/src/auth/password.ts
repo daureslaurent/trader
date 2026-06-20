@@ -2,10 +2,13 @@
 // packages (keeps the Docker image lean). scrypt is memory-hard and the
 // recommended KDF for password storage. The stored format is self-describing:
 //
-//   scrypt$<N>$<r>$<p>$<saltHex>$<hashHex>
+//   scrypt:<N>:<r>:<p>:<saltHex>:<hashHex>
 //
-// Verification is constant-time (crypto.timingSafeEqual) to avoid leaking the
-// hash via timing. We never store or log the plaintext password.
+// The fields are delimited by ':' rather than '$' on purpose: a '$' in a
+// docker-compose .env is interpreted as variable interpolation (`$16384` -> ''),
+// which silently corrupts the hash. ':' is left untouched, so the same hash
+// works in .env, the shell, and a compose env_file. Verification is
+// constant-time (crypto.timingSafeEqual). We never store or log the plaintext.
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 
 // scrypt cost parameters. N must be a power of two. These are comfortably above
@@ -20,7 +23,7 @@ const SALT_BYTES = 16
 export function hashPassword(plain: string): string {
   const salt = randomBytes(SALT_BYTES)
   const hash = scryptSync(plain, salt, KEYLEN, { N, r: R, p: P })
-  return `scrypt$${N}$${R}$${P}$${salt.toString('hex')}$${hash.toString('hex')}`
+  return `scrypt:${N}:${R}:${P}:${salt.toString('hex')}:${hash.toString('hex')}`
 }
 
 /**
@@ -29,7 +32,9 @@ export function hashPassword(plain: string): string {
  */
 export function verifyPassword(plain: string, stored: string): boolean {
   try {
-    const parts = stored.split('$')
+    // Current format is ':'-delimited; also accept the legacy '$'-delimited form
+    // (neither delimiter can appear inside the hex/numeric fields).
+    const parts = stored.split(stored.startsWith('scrypt:') ? ':' : '$')
     if (parts.length !== 6 || parts[0] !== 'scrypt') return false
     const [, nStr, rStr, pStr, saltHex, hashHex] = parts
     const n = Number(nStr)
