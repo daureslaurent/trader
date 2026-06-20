@@ -1,173 +1,184 @@
 <div align="center">
 
-# cryptoBot
+# ⚡ cryptoBot
 
-### An autonomous, LLM-driven crypto trading system
-
-<br>
-
-[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js_22-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
-[![React](https://img.shields.io/badge/React_18-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
-[![Vite](https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev/)
-[![Tailwind](https://img.shields.io/badge/Tailwind-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
-[![MongoDB](https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
-[![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Express](https://img.shields.io/badge/Express-000000?style=flat-square&logo=express&logoColor=white)](https://expressjs.com/)
-[![ccxt](https://img.shields.io/badge/ccxt-002D62?style=flat-square&logo=binance&logoColor=white)](https://github.com/ccxt/ccxt)
-[![Puppeteer](https://img.shields.io/badge/Puppeteer-40B5A4?style=flat-square&logo=puppeteer&logoColor=white)](https://pptr.dev/)
+### A self-hosted swarm of LLM trading agents that research, decide, time, and babysit every position — on a wiring graph you draw yourself.
 
 <br>
 
-**Local LLMs (Ollama / llama.cpp)** · **Binance via ccxt** · **Puppeteer web research** · **Telegram approvals**
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node_22-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![React](https://img.shields.io/badge/React_18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
+[![MongoDB](https://img.shields.io/badge/MongoDB_7-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+
+<br>
+
+`Local LLMs · Ollama / llama.cpp`  ⟶  `Binance via ccxt`  ⟶  `Puppeteer web research`  ⟶  `Telegram approvals`
 
 </div>
 
 ---
 
-> **⚠️ WARNING:** This software places **real orders with real money on Binance**. There is no paper/stub mode — live API keys are required. Crypto trading carries substantial risk of loss. Start tiny, keep human approval (`--approval`) on until you trust its behavior. **Nothing here is financial advice.**
+> ### ⚠️ This places **real orders with real money** on Binance.
+> There is **no paper / stub mode** — live API keys are required. Crypto trading carries a substantial risk of loss. Start tiny, keep human approval (`--approval`) on until you trust it, and treat every dollar as one you can afford to lose. **Nothing here is financial advice.**
 
 ---
 
-## What it does
+## 🎯 The idea
 
-cryptoBot is not a single strategy — it's a **team of specialized AI engines**, each running on its own schedule, cooperating through a typed event bus. They search the web for news, compress it into structured sentiment, debate BUY/SELL/HOLD, time the entry on a live price feed, then babysit every open position until it closes.
+cryptoBot isn't *a strategy*. It's a **team of specialized AI engines** — each a focused LLM module — that cooperate over a typed event bus:
+
+> 🌐 search the web → 🧪 compress news to sentiment → ⚖️ debate BUY / HOLD → 🎯 time the entry on a live price feed → 👁️ babysit the position until it closes.
+
+And the part that makes it different: **you decide what triggers what** by drawing a **routing graph** — a visual node canvas of `inputs → processors → outputs` that replaces hardcoded cron jobs. A price-move on BTC can fire the monitor. A 15-minute timer can fan into the pipeline *only when you're holding*. It's a flowchart that actually runs your bot.
 
 ```mermaid
-flowchart TB
-    subgraph Web["🌐 Web"]
-        DDG["DuckDuckGo"]
+flowchart LR
+    subgraph IN["⚡ Inputs"]
+        T["⏱ Timer / Cron"]
+        B["📈 Binance tick<br/>price · kline · book"]
+        MAN["🖱 Manual / System"]
     end
 
-    subgraph Brain["🧠 The Trade Brain"]
+    subgraph PROC["🔀 Processors"]
+        P["price-move % · PnL gate<br/>only-when-holding<br/>cooldown · max/hour"]
+    end
+
+    subgraph OUT["🚀 Outputs → Engines"]
         direction TB
-        INDX["backend/index.ts<br/>cron loops + typed event bus"]
-        
-        subgraph Pipeline["Entry Pipeline"]
-            R["Researcher<br/>Puppeteer scrape"] --> E["Extractor<br/>LLM → sentiment"]
-            E --> S["Selector<br/>LLM ranks articles"]
-            S --> A["Analyst<br/>LLM → BUY/SELL/HOLD + SL/TP"]
-        end
-
-        subgraph Gates["BUY Gauntlet"]
-            G["max positions · already held<br/>pending intent · min USDC<br/>position size · fee-edge gate"]
-        end
-
-        subgraph Entry["Entry Timing"]
-            T["Live price feed →<br/>pullback firing"]
-        end
-
-        D["Discoverer<br/>LLM hunts new coins"]
-        M["Monitor<br/>LLM adjusts SL/TP · CLOSE · REDUCE"]
-        S2["Summary<br/>Portfolio strategist"]
+        PIPE["🔬 Pipeline / Signal"]
+        MON["👁 Monitor"]
+        DISC["🛰 Discovery"]
+        SUM["📊 Summary"]
     end
 
-    subgraph Exchange["🔷 Binance"]
-        SUB["submitTrade()<br/>single choke point"]
-    end
+    T --> P
+    B --> P
+    MAN --> P
+    P --> PIPE & MON & DISC & SUM
 
-    DDG --> R
-    A --> G
-    G --> T
-    T --> SUB
-    D --> INDX
-    M --> INDX
-    S2 --> INDX
-    INDX --> Pipeline
+    PIPE -.BUY.-> GATE{{"🛡 BUY gauntlet<br/>+ entry timing"}}
+    GATE -.fills via.-> SUB[("submitTrade()<br/>single choke point")]
+    MON -.CLOSE / ADJUST.-> SUB
 ```
 
 ---
 
-## The engines
+## 🧠 The engines
 
-Each engine is an independent cron loop. They never trade directly — they **emit events** that orchestrator handles, with `submitTrade()` as the single choke point for every exchange order.
+Every engine is an independent worker triggered through the routing graph. **They never trade directly** — they emit events, and `submitTrade()` is the single choke point for every real exchange order (concurrency-guarded, OCO-aware, atomic DB writes).
 
-| Engine | Schedule | Role |
+| Engine | Role |
+|---|---|
+| 🔬 **Pipeline / Signal** | The entry brain. Research the web → extract sentiment → rank articles → analyst verdict (BUY / HOLD + confidence + SL/TP). A BUY runs the gauntlet, then the entry-timing engine. |
+| 🛰 **Discoverer** | LLM-scored hunt for new candidate coins; approved picks feed the watchlist. |
+| 👁 **Monitor** | The only engine that manages **open** positions — proposes SL/TP adjustments (ADJUST), partial trims (REDUCE), or a full exit (CLOSE), with guardrails against closing healthy winners. |
+| 📊 **Summary** | Read-only portfolio strategist. Bundles the whole book + live market context into a narrative briefing (health, risk, observations, suggestions). Never trades. |
+| 🔁 **Position check** | A 30s reconcile loop — open positions vs. live prices and exchange OCO fills. |
+| 💬 **Agent** | On-demand conversational assistant with a native tool-calling loop. Reads everything, takes only **safe, non-trading** actions (manage watchlist, trigger engines). |
+
+### 🤖 Classic vs. Agentic — two brains per slot
+
+Several engines ship in **two mutually-exclusive flavors**, switchable in Settings. The classic ones run a fixed LLM chain; the agentic ones run a **native tool-calling loop** that reads candles, indicators, news and its *own long-term memory*, reasons across multiple rounds, then commits to a verdict.
+
+| Slot | Classic | Agentic (alternative) |
 |---|---|---|
-| **Pipeline** 🔬 | `pipeline_cron` | Full entry pipeline: Researcher → Extractor → Selection → Analyst → BUY gauntlet → entry timing |
-| **Discoverer** 🛰️ | `discover_cron` | LLM-scored hunt for new candidate coins; approved picks feed the watchlist |
-| **Monitor** 👁️ | `monitor_cron` | Manages open positions — proposes SL/TP adjustments, CLOSE, or REDUCE |
-| **Summary** 📊 | `summary_cron` | Read-only portfolio strategist; narrative briefings with market context |
-| **Position check** 🔁 | Every 30s | Reconciles open positions against live prices and exchange OCO fills |
-| **Agent** 💬 | On demand | Conversational tool-calling assistant (safe read-only + watchlist actions) |
+| Entry signal | `pipeline` — researcher → extractor → analyst | `agent` — **Agent Signal**, one agent per coin |
+| Position monitor | `a/b/ab/abc` — single-shot ensemble | `d` — **Monitor-D**, agentic position manager |
+| Entry timing | static `entry_*` band / planner | **Entry Agent** — a living per-coin entry manager |
 
-### Smart entry timing
+### 🎯 Smart entry timing
 
-When `entry_timing_enabled`, a BUY signal isn't filled at the cron tick. It's registered as an **intent** that watches the live price feed and fires only on a pullback — or cancels by invalidate-drop, chase-cap, or TTL. The entry band anchors to the live price at registration (the analyzed price is minutes-stale after the slow LLM pipeline). Position sizing and the fee-edge gate stay on the decision-time price.
+When entry timing is on, a BUY isn't filled at the tick. It's registered as an **intent** that watches the live price feed and fires only on a **pullback / in-band fill** — or cancels itself via invalidate-drop, chase-cap, or TTL. The band anchors to the **live** price at registration (the analyzed price is minutes-stale after the slow LLM pipeline). The **Entry Planner / Entry Agent** can size that band per-coin from the analyst's thesis.
 
-### The BUY gauntlet
+### 🛡 The BUY gauntlet
 
-Before any BUY becomes real it must clear: **max positions** · **not already held** · **no pending intent** · **min USDC** · **position size** · and the **fee-edge gate** (`hasSufficientEdge` — expected move must beat round-trip fees).
+Before any BUY becomes real it must clear every gate:
+`max positions` · `not already held` · `no pending intent` · `min USDC` · `position size` · and the **fee-edge gate** — the expected move must beat round-trip fees.
 
 ---
 
-## LLM integration
+## 🔌 LLM integration — bring your own local models
 
-Every LLM call goes through `core/llm.ts` against **local OpenAI-compatible endpoints** (Ollama / llama.cpp) via the OpenAI SDK.
+Every LLM call goes through `core/llm.ts` against **local OpenAI-compatible endpoints** (Ollama / llama.cpp) via the OpenAI SDK. Nothing leaves your machine.
 
-- **Shared endpoint catalog** — define named `{ baseURL, model, maxTokens, parallel }` endpoints in Settings → LLM Models; each module selects one by id
-- **Per-module fallback** — if a primary endpoint throws, the same prompt retries once against a configured fallback. Each attempt is logged as its own `llm_calls` row
-- **Per-key concurrency gates** — each base URL capped at one in-flight call by default; different URLs run in parallel. Endpoints flagged `parallel` lift the cap with optional `maxParallel` limits
-- **Full observability** — every call recorded; live calls stream to the frontend's LLM activity view
+- **🗂 Shared endpoint catalog** — define named `{ baseURL, model, maxTokens, parallel }` endpoints once in *Settings → LLM Models*; each module **selects** one by id.
+- **🪂 Per-module fallback** — if a primary endpoint *throws*, the same prompt retries once against a configured fallback. Each attempt is its own `llm_calls` row.
+- **🚦 Per-key concurrency gates** — each base URL is serialized (one in-flight) by default so a one-at-a-time local server stays happy; different URLs run in parallel. Flag an endpoint `parallel` (with optional `maxParallel`) to lift the cap.
+- **❤️ Endpoint health monitor** — a background probe drives the header status badge and lets routing divert away from a dead primary.
+- **🔭 Full observability** — every call recorded; live calls stream to the LLM activity view (tokens included).
 
 ---
 
-## Architecture
+## 🏗 Architecture
 
-A monorepo of two independent Node packages that talk over **HTTP + WebSocket** (`ws://localhost:3000/ws`) — no shared package.
+A monorepo of two **independent** Node packages talking over **HTTP + WebSocket** (`ws://localhost:3000/ws`) — no shared package. `index.ts` is now a 14-line entry point; all behavior lives in focused modules.
 
 ```
 cryptoBot/
-├── backend/          Node.js + TypeScript (ESM) — the long-running trade brain
+├── backend/              Node.js + TypeScript (ESM) — the long-running trade brain
 │   └── src/
-│       ├── index.ts        ⭐ orchestrator: cron loops + event bus + submitTrade()
-│       ├── core/           typed event bus · LLM client · logger · errors
-│       ├── pipeline/       entry decision pipeline (research → extract → analyze → buy)
-│       ├── discoverer/     LLM-driven new coin discovery
-│       ├── monitor/        open position management
-│       ├── summary/        portfolio strategist / briefings
-│       ├── entry/          deferred entry timing engine (pullback firing)
-│       ├── entryPlanner/   per-coin entry band planning via LLM
-│       ├── agent/          tool-calling conversational assistant
-│       ├── execution/      submitTrade() · exits · adjustments · approvals
-│       ├── portfolio/      sizing · ATR SL/TP · OCO · fee-aware PnL · fee-edge gate
-│       ├── market/         live price cache (WebSocket) + OHLCV / indicators
-│       ├── trader/         ccxt Binance wrapper
-│       ├── scraper/        Puppeteer-extra stealth browser + DuckDuckGo search
-│       ├── telegram/       Telegraf approval bot + notifier
-│       ├── api/            Express routes + WebSocket broadcast
-│       ├── db/             MongoDB repositories · indexes · transactions · counters · settings cache
-│       ├── config/         env config · LLM endpoint resolution
-│       └── types.ts        shared TypeScript types
-└── frontend/         React + Vite + Tailwind — single-page app (no router)
-    └── src/pages/    Dashboard · Agent · Portfolio · Trade · Monitor · EntryDesk
-                      Discover · Charts · LLM / Stats / Debug · Cache · TradingState
-                      Settings · Logs · Summary · AgentMonitor · ControlRoom · Host
+│       ├── index.ts          register handlers, start, shutdown — that's it
+│       ├── app/              ⭐ scheduler · wiring (bus handlers) · lifecycle
+│       ├── routing/          ⭐ the visual node-graph engine (inputs→processors→outputs)
+│       ├── core/             typed event bus · LLM client + scheduler · endpoint health
+│       ├── pipeline/         classic entry pipeline (research → extract → analyze → buy)
+│       ├── webSearch/        query-driven crawl + per-page LLM extraction (cached)
+│       ├── researcher · extractor · analyst   the classic chain's stages
+│       ├── discoverer/       LLM-driven new-coin discovery
+│       ├── monitor/          classic open-position management
+│       ├── summary/          portfolio strategist / briefings
+│       ├── entry/            deferred entry-timing engine (pullback firing)
+│       ├── agent/            tool-calling assistant + agentic engines
+│       │                     (Agent Signal · Monitor-D · Entry Agent)
+│       ├── execution/        submitTrade() · exits · adjustments · approvals
+│       ├── portfolio/        sizing · ATR SL/TP · OCO · fee-aware PnL · fee-edge gate
+│       ├── market/           live price cache (WS) + OHLCV / indicators
+│       ├── trader/           ccxt Binance wrapper
+│       ├── scraper/          Puppeteer-extra stealth browser + DuckDuckGo
+│       ├── telegram/         Telegraf approval bot + notifier
+│       ├── host/             host self-update bridge + update checker
+│       ├── api/              Express routes + WebSocket broadcast
+│       ├── db/               Mongo repositories · indexes · transactions · settings cache
+│       └── config/           env config · LLM endpoint resolution
+└── frontend/             React + Vite + Tailwind — single-page app (no router)
+    └── src/pages/        Dashboard · ControlRoom · Routing graph · Agent · Portfolio
+                          Trade · Monitor · EntryDesk · EntryAgent · Discover · Summary
+                          Charts · LLM / Stats / Debug · EventStream · Cache
+                          TradingState · Host · Settings · Logs
 ```
 
-### Key conventions
+### 🗺 The routing engine
 
-- Each module's public API is its `index.ts` — never import internal files
-- Cross-module side effects go through the typed event bus (`core/events.ts`)
-- Structured logging only: `logger.info('msg', { data })`
-- Shared types in `backend/src/types.ts`
+The four engine triggers are **no longer hardcoded crons**. They're **timer input nodes** in a directed graph (`routing_graph`, persisted as one JSON blob — the single source of truth for what triggers what):
 
-### Database
+- **Inputs** fire — timer/cron, Binance ticks (price · kline · book · trade · depth), manual, or system events.
+- **Processors** evaluate a condition and propagate only if it passes — `price-move %`, `PnL gate`, `only-when-holding`, `cooldown`, `max/hour`.
+- **Outputs** trigger an engine — pipeline / monitor / discovery / summary.
 
-**MongoDB 7** (single-node replica set `rs0`, required for transactions). One database (`cryptobot`), one collection per entity. Access through typed `Repository` instances in `db/repositories.ts` — never the driver directly. Schema managed via code (indexes in `db/indexes.ts`). Migrated from legacy SQLite (`data/*.db`).
+Every step emits a `routing_pulse` so the frontend **animates the live flow-graph** as signals travel it. Saving settings re-syncs the managed timers without a restart.
+
+### 📐 Conventions
+
+- Each module's public API is its `index.ts` — never import internal files.
+- Cross-module side effects go through the **typed event bus** (`core/events.ts`).
+- Structured logging only: `logger.info('msg', { data })`.
+- Shared types in `backend/src/types.ts`.
+
+### 🍃 Database
+
+**MongoDB 7**, run as a single-node replica set (`rs0`) — required for the multi-document transactions `submitTrade()` relies on (atomic trade + position + portfolio writes). One database (`cryptobot`), one collection per entity, accessed only through typed `Repository` instances in `db/repositories.ts`. Integer ids from the legacy SQLite era are preserved via a `counters` collection. Settings live in an in-memory cache served **synchronously** and kept current on save.
+
+> **Quote currency is USDC**, not USDT — Binance pairs are `<COIN>USDC` (despite some legacy `*Usdt*` function names).
 
 ---
 
-## Quick start
+## 🚀 Quick start
 
-### Prerequisites
+**Prerequisites:** Node 22+ (or Docker) · a Binance account with API key + secret · a local OpenAI-compatible LLM ([Ollama](https://ollama.com/) or llama.cpp) · *(optional)* a Telegram bot for approvals.
 
-- **Node.js 22+** (or Docker)
-- **Binance** account with API key + secret
-- **Local OpenAI-compatible LLM** — [Ollama](https://ollama.com/) or llama.cpp
-- *(optional)* Telegram bot for trade approvals
-
-### 1. Configure
+### 1️⃣ Configure
 
 ```bash
 cp .env.example .env
@@ -186,82 +197,80 @@ TELEGRAM_CHAT_ID=
 PORT=3000
 ```
 
-Per-module LLM overrides (`EXTRACTOR_*`, `ANALYST_*`, etc.) all fall back to `LLAMA_*` — set them only for different models per engine. Most LLM config can also be changed live from **Settings → LLM Models**.
+Per-module LLM overrides (`EXTRACTOR_*`, `ANALYST_*`, `MONITOR_*`, `SUMMARY_*`, `ENTRY_PLANNER_*`, `AGENT_*`, …) all fall back to `LLAMA_*` — set them only to run different models per engine. Most of this is also editable live from **Settings → LLM Models**.
 
-### 2a. Docker (recommended)
+### 2️⃣ Run
+
+<table>
+<tr><th>🐳 Docker (recommended)</th><th>🔧 Bare-metal</th></tr>
+<tr valign="top"><td>
 
 ```bash
 docker-compose up
 ```
 
-Backend on **:3000**, frontend on **:5173**, MongoDB on **:27017**, `data/` bind-mounted.
+Brings up Mongo (rs0), backend, frontend.
 
-### 2b. Bare-metal
+</td><td>
 
 ```bash
-# Terminal 1 — Backend
-cd backend && npm install && npm run dev       # tsx watch, hot-reload :3000
+# Terminal 1
+cd backend && npm install && npm run dev
 
-# Terminal 2 — Frontend
-cd frontend && npm install && npm run dev      # Vite dev server :5173
+# Terminal 2
+cd frontend && npm install && npm run dev
 ```
 
-Open **http://localhost:5173**
+</td></tr>
+</table>
 
-> 🔐 **Start safe:** launch with `--approval` (or set `approval_required` in settings) to require human approval for every trade signal.
+Then open **http://localhost:5173** → backend on **:3000**, frontend on **:5173**, Mongo on **:27017**.
+
+> 🔐 **Start safe:** launch the backend with `--approval` (or set `approval_required`) to require human approval for *every* trade signal until you trust its behavior.
 
 ---
 
-## Commands
+## 🛠 Commands
 
 | | Backend (`backend/`) | Frontend (`frontend/`) |
 |---|---|---|
-| **dev** | `npm run dev` — hot-reload :3000 | `npm run dev` — Vite :5173 |
+| **dev** | `npm run dev` — tsx watch, hot-reload :3000 | `npm run dev` — Vite :5173 |
 | **start** | `npm start` | `npm run preview` |
 | **build** | `npm run build` | `npm run build` |
-| **check** | `npm run lint` — type-check (only automated gate) | — |
+| **check** | `npm run lint` — type-check (the only gate) | `npm run build` includes `tsc` |
 
-There is **no unit-test runner** — `npm run lint` (TypeScript type-check) is the gate. Verify behavior by running the app.
+> There is **no unit-test runner**. `npm run lint` (TypeScript type-check) is the only automated gate — verify behavior by running the app.
 
-### Ops toolkit (`tools/`)
+### 🔍 Ops toolkit (`tools/`)
 
 ```bash
-node tools/db.mjs  collections                 # inspect MongoDB
+node tools/db.mjs  collections           # inspect MongoDB
 node tools/db.mjs  trades 10
-node tools/db.mjs  positions
-
-node tools/app.mjs status                      # start / stop / logs / lint
+node tools/app.mjs status                # start / stop / logs / lint
 node tools/app.mjs logs backend 200
-node tools/app.mjs restart backend
 ```
 
 See [AGENTS.md](./AGENTS.md) and [tools/README.md](./tools/README.md) for full usage.
 
 ---
 
-## One-click updates
+## 🖥 Dashboard
 
-**Settings → System → Update app** pulls the latest `main` and rebuilds + restarts the whole stack from the dashboard — no SSH needed. A host-side **systemd watcher** handles the update (survives `docker compose down`). The page shows an "Updating…" overlay and reloads once the new build is online.
+A single-page React app — page switching via `useState`, no router — with **7 themes** (`dark` · `midnight` · `neon` · `light` · `aurora` · `synthwave` · `volcano`) and everything live over WebSocket. Highlights: a **Control Room**, the animated **Routing graph**, the **Entry Desk** (pending intents), per-agent monitors, candle **Charts** (recharts), and a deep **LLM Debug** view with live token streaming.
+
+### 🔄 One-click self-update
+
+**Settings → System → Update app** pulls the latest `main` and rebuilds + restarts the whole stack from the dashboard — no SSH. A host-side **systemd watcher** does the work, so it survives `docker compose down`. The sidebar pins an update when `origin/main` is ahead.
 
 ```bash
 sudo tools/updater/install-updater.sh
 ```
 
-See [tools/updater/README.md](./tools/updater/README.md) for details.
+See [tools/updater/README.md](./tools/updater/README.md).
 
 ---
 
-## Dashboard
-
-A single-page React app (no router — pages switch via `useState`) with **4 themes** and live data over WebSocket:
-
-**Dashboard** · **Agent** (chat with assistant) · **Portfolio** · **Trade** · **Monitor** · **EntryDesk** (pending intents) · **Discover** · **Charts** (recharts candles) · **LLM / LLMStats / LLMDebug** · **CacheView** · **TradingState** · **Settings** · **Logs** · **Summary** · **AgentMonitor** · **ControlRoom** · **Host**
-
-Saving settings reschedules affected cron loops **live** — no restart needed.
-
----
-
-## Further reading
+## 📚 Further reading
 
 - **[CLAUDE.md](./CLAUDE.md)** — deep architecture & code conventions
 - **[AGENTS.md](./AGENTS.md)** — running & inspecting the app safely
@@ -272,6 +281,6 @@ Saving settings reschedules affected cron loops **live** — no restart needed.
 
 **Built with TypeScript, local LLMs, and a healthy respect for risk.**
 
-⭐ *Trade responsibly.*
+⭐ *Draw your graph. Trade responsibly.*
 
 </div>
