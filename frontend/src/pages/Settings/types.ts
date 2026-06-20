@@ -12,6 +12,7 @@ export interface SettingsData {
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
+  binance_read_only: boolean
   stop_loss_atr: number
   take_profit_atr: number
   max_risk_per_trade: number
@@ -139,7 +140,7 @@ export type SetFn = <K extends keyof SettingsData>(key: K, value: SettingsData[K
 
 // Boolean settings that save immediately (and don't mark the form dirty).
 export type ToggleKey =
-  | 'approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve'
+  | 'approval_required' | 'binance_read_only' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve'
   | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_protect_winners' | 'monitor_sequential'
   | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'entry_confirm_rebound' | 'llm_allow_parallel_same_url'
   | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup'

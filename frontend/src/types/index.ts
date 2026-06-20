@@ -304,6 +304,7 @@ export interface Settings {
   stop_loss_atr_multiplier: number
   take_profit_atr_multiplier: number
   approval_required: boolean
+  binance_read_only: boolean
 }
 
 /** The BUY signal an entry intent was created from — the analyst's (or agent's) thesis. */

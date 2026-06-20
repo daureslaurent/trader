@@ -129,6 +129,10 @@ export function TradingSection({ settings, set, toggle }: SectionProps) {
       <Row label="Require approval" hint="Pause for human approval before executing trades">
         <Toggle label="Require approval" checked={settings.approval_required} onChange={() => toggle('approval_required')} />
       </Row>
+
+      <Row label="Binance read-only" hint="Safety lock: block all trades and OCO changes — only reads hit Binance. On by default.">
+        <Toggle label="Binance read-only" checked={settings.binance_read_only} onChange={() => toggle('binance_read_only')} />
+      </Row>
     </Panel>
   )
 }

@@ -121,6 +121,9 @@ export interface BotSettings {
   min_confidence: number
   max_position_size_usd: number
   approval_required: boolean
+  /** Read-only safety lock. When on (default), the bot never mutates Binance: trades,
+   *  OCO placement/replacement/cancellation are all refused. Reads still work. */
+  binance_read_only: boolean
   stop_loss_atr: number
   take_profit_atr: number
   max_risk_per_trade: number
