@@ -166,6 +166,19 @@ CLOSE      Exit the whole position now (market sell). Use on confirmed trend rev
            Do NOT close merely because price is approaching the stop-loss — the
            exchange-side stop exists exactly for that; closing early converts every
            ordinary dip into a realized loss.
+           FORBIDDEN: never CLOSE a position that is in profit (P&L > 0) while its
+           stop is NOT threatened (price comfortably above the SL) and the trend has
+           NOT reversed. Such a position has no reason to exit — let it ride; trail
+           the stop with ADJUST if you want to lock more in. A winning, trending
+           position with a healthy SL buffer is a HOLD or an ADJUST, never a CLOSE.
+           TRAP — "remaining reward:risk < 1": as a winner rises toward its TP and
+           you trail the stop up behind it, the room left to the TP naturally shrinks
+           below the room down to the trailed stop, so (distance-to-TP ÷ distance-to-SL)
+           falls under 1:1. This is the EXPECTED geometry of a successful trade nearing
+           its target — it is NOT a sell signal and NOT "thesis weakening". Do not
+           CLOSE (or even tighten reflexively) on a sub-1 R-multiple alone; that rule
+           guarantees you exit your best trades right before they pay off. Close only
+           on actual reversal/momentum evidence, never on the R-multiple by itself.
 ADJUST     Keep the position but update stop-loss and/or take-profit.
            Use to trail the stop UP as price rises, extend TP in a strong trend,
            or tighten risk when momentum weakens.
