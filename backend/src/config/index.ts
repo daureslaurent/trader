@@ -122,6 +122,9 @@ export const config = {
   },
   approvalTimeoutMs: num('APPROVAL_TIMEOUT_MINUTES', 5) * 60 * 1000,
   port: num('PORT', 3000),
+  // Max accepted body size (MB) for the DB import upload. A full backup (esp. with
+  // caches) can be large; raise via DB_IMPORT_MAX_MB if you hit HTTP 413.
+  dbImportMaxMb: num('DB_IMPORT_MAX_MB', 512),
   approvalsEnabled: process.argv.includes('--approval'),
   pipelineCron: opt('PIPELINE_CRON', ''),
   // Authentication gateway. Raw env values; resolved/validated in auth/config.ts.

@@ -4,6 +4,7 @@ import {
   exportCollections, importCollections, resolveExportSelection,
   getDbStats, clearCaches, reseedCounters, ensureIndexes,
 } from '../../db/index.js'
+import { config } from '../../config/index.js'
 import { logger } from '../../core/logger.js'
 
 export const router = Router()
@@ -37,8 +38,8 @@ router.post('/database/export', async (req: Request, res: Response) => {
 
 // Import a backup, replacing the contents of each collection it contains. A
 // dedicated large JSON body parser overrides the global 100kb limit for the
-// (potentially very large) upload.
-router.post('/database/import', express.json({ limit: '256mb' }), async (req: Request, res: Response) => {
+// (potentially very large) upload; the cap is DB_IMPORT_MAX_MB (default 512).
+router.post('/database/import', express.json({ limit: `${config.dbImportMaxMb}mb` }), async (req: Request, res: Response) => {
   try {
     logger.warn('Database import requested')
     const result = await importCollections(req.body)
@@ -46,6 +47,19 @@ router.post('/database/import', express.json({ limit: '256mb' }), async (req: Re
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
   }
+})
+
+// A body that exceeds the parser's limit surfaces as raw-body's 'entity.too.large'
+// (HTTP 413). This router is mounted pathless, so this error handler only sees
+// errors from its own routes — translate the 413 into a clear, actionable message.
+router.use((err: Error & { type?: string }, _req: Request, res: Response, next: express.NextFunction) => {
+  if (err?.type === 'entity.too.large') {
+    res.status(413).json({
+      error: `Backup exceeds the ${config.dbImportMaxMb}MB upload limit. Re-export without caches, or raise DB_IMPORT_MAX_MB.`,
+    })
+    return
+  }
+  next(err)
 })
 
 // Maintenance: empty all cache/log collections.
