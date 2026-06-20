@@ -18,9 +18,8 @@ export interface SettingsData {
   max_open_positions: number
   cache_ttl_hours: number
   monitor_auto_run: boolean
-  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc' | 'd'
-  monitor_d_sequential: boolean
-  monitor_d_retain_runs: number
+  monitor_sequential: boolean
+  monitor_retain_runs: number
   monitor_cron: string
   monitor_adjust_sltp: boolean
   monitor_auto_approve: boolean
@@ -32,8 +31,6 @@ export interface SettingsData {
   monitor_tp_pct_long: number
   monitor_trust_llm_sltp: boolean
   monitor_use_horizon: boolean
-  monitor_history_tf: string
-  monitor_history_count: number
   monitor_min_confidence: number
   monitor_protect_winners: boolean
   monitor_protect_winners_atr: number
@@ -70,20 +67,14 @@ export interface SettingsData {
   llm_discoverer_max_tokens: number
   llm_discoverer_extractor_endpoint: string
   llm_discoverer_extractor_max_tokens: number
-  llm_monitor_a_endpoint: string
-  llm_monitor_a_max_tokens: number
-  llm_monitor_b_endpoint: string
-  llm_monitor_b_max_tokens: number
-  llm_monitor_c_endpoint: string
-  llm_monitor_c_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
   llm_entryAgent_endpoint: string
   llm_entryAgent_max_tokens: number
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
-  llm_monitor_d_endpoint: string
-  llm_monitor_d_max_tokens: number
+  llm_monitor_endpoint: string
+  llm_monitor_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
   llm_webSearch_endpoint: string
@@ -92,13 +83,10 @@ export interface SettingsData {
   llm_stream_extractor: boolean
   llm_stream_discoverer: boolean
   llm_stream_discovererExtractor: boolean
-  llm_stream_monitorA: boolean
-  llm_stream_monitorB: boolean
-  llm_stream_monitorC: boolean
   llm_stream_summary: boolean
   llm_stream_entryAgent: boolean
   llm_stream_agent: boolean
-  llm_stream_monitorD: boolean
+  llm_stream_monitor: boolean
   llm_stream_agentSignal: boolean
   llm_stream_webSearch: boolean
   llm_analyst_fb_endpoint: string
@@ -109,20 +97,14 @@ export interface SettingsData {
   llm_discoverer_fb_max_tokens: number
   llm_discoverer_extractor_fb_endpoint: string
   llm_discoverer_extractor_fb_max_tokens: number
-  llm_monitor_a_fb_endpoint: string
-  llm_monitor_a_fb_max_tokens: number
-  llm_monitor_b_fb_endpoint: string
-  llm_monitor_b_fb_max_tokens: number
-  llm_monitor_c_fb_endpoint: string
-  llm_monitor_c_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
   llm_entryAgent_fb_endpoint: string
   llm_entryAgent_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
-  llm_monitor_d_fb_endpoint: string
-  llm_monitor_d_fb_max_tokens: number
+  llm_monitor_fb_endpoint: string
+  llm_monitor_fb_max_tokens: number
   llm_agentSignal_fb_endpoint: string
   llm_agentSignal_fb_max_tokens: number
   llm_webSearch_fb_endpoint: string
@@ -140,7 +122,6 @@ export interface SettingsData {
   telegram_notify_position_opened: boolean
   telegram_notify_position_closed: boolean
   telegram_notify_sl_tp_adjusted: boolean
-  telegram_notify_monitor_disagreement: boolean
   telegram_notify_portfolio: boolean
   telegram_notify_summary: boolean
   telegram_notify_discovery: boolean
@@ -157,11 +138,11 @@ export type SetFn = <K extends keyof SettingsData>(key: K, value: SettingsData[K
 // Boolean settings that save immediately (and don't mark the form dirty).
 export type ToggleKey =
   | 'approval_required' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve'
-  | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_protect_winners' | 'monitor_d_sequential'
+  | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_protect_winners' | 'monitor_sequential'
   | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'entry_confirm_rebound' | 'llm_allow_parallel_same_url'
   | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup'
   | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted'
-  | 'telegram_notify_monitor_disagreement' | 'telegram_notify_portfolio' | 'telegram_notify_summary'
+  | 'telegram_notify_portfolio' | 'telegram_notify_summary'
   | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors'
   | 'telegram_notify_update' | 'update_enabled'
 

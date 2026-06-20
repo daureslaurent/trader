@@ -1,22 +1,20 @@
 import { Router, Request, Response } from 'express'
 import { positionReviews, positionAdjustments, getSettings } from '../../db/index.js'
 import { bus } from '../../core/events.js'
-import { resolveLLM } from '../../config/llm.js'
-import { getReviews, getNotes as getMonitorNotes, isRunning as isMonitorRunning, getActiveMonitorModel } from '../../monitor/index.js'
-import { getMonitorDRuns, getActiveReviews, isRunningD } from '../../agent/index.js'
+import { getReviews, getNotes as getMonitorNotes } from '../../monitor/index.js'
+import { isMonitorRunning, getMonitorRuns, getActiveReviews } from '../../agent/index.js'
 
 export const router = Router()
 
-// Recent persisted Type D (agentic monitor) runs — verdict + transcript per coin per
-// cycle — plus any in-flight reviews of the current cycle, so the Agent Monitor page
-// rehydrates fully after a reload (including a run that is mid-flight).
-router.get('/monitor-d/runs', async (req: Request, res: Response) => {
+// Recent persisted Agent Monitor runs — verdict + transcript per coin per cycle — plus any
+// in-flight reviews of the current cycle, so the Agent Monitor page rehydrates fully after a
+// reload (including a run that is mid-flight).
+router.get('/monitor/runs', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '100', 10), 1), 500)
     res.json({
-      running: isRunningD(),
-      mode: getSettings().monitor_model,
-      runs: await getMonitorDRuns(limit),
+      running: isMonitorRunning(),
+      runs: await getMonitorRuns(limit),
       live: getActiveReviews(),
     })
   } catch (err) {
@@ -28,28 +26,10 @@ router.get('/monitor', async (_req: Request, res: Response) => {
   try {
     const limit = Math.min(Math.max(parseInt((_req.query.limit as string) || '100', 10), 1), 500)
     const reviews = await getReviews(limit)
-    // `running` reflects whichever monitor engine is active — the classic ensemble OR
-    // the Type D agentic monitor (monitor_model === 'd') — since both feed position_reviews.
-    res.json({ running: isMonitorRunning() || isRunningD(), reviews, notes: await getMonitorNotes() })
+    res.json({ running: isMonitorRunning(), reviews, notes: await getMonitorNotes() })
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
-})
-
-// Exposes the configured monitor LLM slots (A/B voters + the C synthesizer), the
-// selected mode, and which slot is the representative active one, so the Settings UI
-// can label each mode card and badge the model on the Monitor page.
-router.get('/monitor/models', (_req: Request, res: Response) => {
-  const a = resolveLLM('monitorA')
-  const b = resolveLLM('monitorB')
-  const c = resolveLLM('monitorC')
-  res.json({
-    active: getActiveMonitorModel().slot,
-    mode: getSettings().monitor_model,
-    a: { model: a.model, baseURL: a.baseURL },
-    b: { model: b.model, baseURL: b.baseURL },
-    c: { model: c.model, baseURL: c.baseURL },
-  })
 })
 
 router.post('/monitor/run', (_req: Request, res: Response) => {

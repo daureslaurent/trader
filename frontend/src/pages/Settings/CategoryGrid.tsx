@@ -12,10 +12,6 @@ const TONE: Record<ChipTone, string> = {
   neutral: 'bg-accent/10 text-accent border-accent/20',
 }
 
-const MONITOR_MODE_LABEL: Record<SettingsData['monitor_model'], string> = {
-  a: 'Slot A', b: 'Slot B', alternate: 'Alternate', ab: 'A + B', abc: 'A + B + C', d: 'Agent D',
-}
-
 // A small at-a-glance status chip per category, derived cheaply from settings.
 function statusFor(id: SectionId, s: SettingsData, themeLabel: string): { text: string; tone: ChipTone } | null {
   switch (id) {
@@ -23,7 +19,7 @@ function statusFor(id: SectionId, s: SettingsData, themeLabel: string): { text: 
     case 'entry':      return s.entry_timing_enabled ? { text: 'On', tone: 'on' } : { text: 'Off', tone: 'off' }
     case 'risk':       return { text: `${s.max_open_positions} max open`, tone: 'neutral' }
     case 'monitor':    return s.monitor_auto_run
-      ? { text: MONITOR_MODE_LABEL[s.monitor_model], tone: 'on' }
+      ? { text: 'Agent Monitor', tone: 'on' }
       : { text: 'Paused', tone: 'off' }
     case 'summary':    return s.summary_auto_run ? { text: 'Auto', tone: 'on' } : { text: 'Manual', tone: 'off' }
     case 'models':     return { text: `${s.llm_endpoints.length} endpoint${s.llm_endpoints.length === 1 ? '' : 's'}`, tone: 'neutral' }

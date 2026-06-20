@@ -400,8 +400,8 @@ export interface DiscoverResponse {
 export type ThesisStatus = 'intact' | 'weakening' | 'invalidated'
 export type MarketRegime = 'risk_on' | 'risk_off' | 'neutral'
 
-/** Optional structured risk metadata a reviewer may attach to a verdict (Agent D emits
- *  these; the classic monitor leaves them null). */
+/** Optional structured risk metadata a reviewer may attach to a verdict (the Agent Monitor
+ *  emits these). */
 export interface ReviewRiskFields {
   thesis_status?: ThesisStatus | null
   /** Remaining reward:risk as an R-multiple from the current price. */
@@ -465,19 +465,6 @@ export interface MonitorResponse {
   notes?: MonitorNote[]
 }
 
-export interface MonitorModelSlot {
-  model: string
-  baseURL: string
-}
-
-export interface MonitorModelsResponse {
-  active: 'a' | 'b' | 'c'
-  mode: 'a' | 'b' | 'alternate' | 'ab' | 'abc'
-  a: MonitorModelSlot
-  b: MonitorModelSlot
-  c: MonitorModelSlot
-}
-
 /** A named LLM endpoint in the shared catalog. Modules reference one by `id`. */
 /** One model served by an endpoint. Modules reference a model by its `id`. */
 export interface LLMModelEntry {
@@ -516,13 +503,10 @@ export type LLMModuleKey =
   | 'extractor'
   | 'discoverer'
   | 'discovererExtractor'
-  | 'monitorA'
-  | 'monitorB'
-  | 'monitorC'
   | 'summary'
   | 'entryAgent'
   | 'agent'
-  | 'monitorD'
+  | 'monitor'
   | 'agentSignal'
   | 'webSearch'
 

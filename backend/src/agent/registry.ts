@@ -15,7 +15,7 @@ import { getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import type { AgentToolPermission } from '../types.js'
 import {
-  TOOLS, AgentTool, MONITOR_D_TOOL_NAMES, AGENT_SIGNAL_TOOL_NAMES, ENTRY_AGENT_TOOL_NAMES,
+  TOOLS, AgentTool, MONITOR_TOOL_NAMES, AGENT_SIGNAL_TOOL_NAMES, ENTRY_AGENT_TOOL_NAMES,
   getToolSchemas, runTool, isReadOnlyTool,
 } from './tools.js'
 
@@ -31,7 +31,7 @@ export interface AgentDef {
   defaultGrant: (tool: AgentTool) => ToolPermission
 }
 
-const MONITOR_D_SET = new Set<string>(MONITOR_D_TOOL_NAMES)
+const MONITOR_SET = new Set<string>(MONITOR_TOOL_NAMES)
 const AGENT_SIGNAL_SET = new Set<string>(AGENT_SIGNAL_TOOL_NAMES)
 const ENTRY_AGENT_SET = new Set<string>(ENTRY_AGENT_TOOL_NAMES)
 
@@ -45,11 +45,11 @@ export const AGENTS: AgentDef[] = [
     defaultGrant: t => (t.readOnly ? 'read' : 'readwrite'),
   },
   {
-    id: 'monitorD',
-    label: 'Type D Monitor',
+    id: 'monitor',
+    label: 'Agent Monitor',
     description: 'The agentic per-position monitor. Investigates each open position with read-only tools before committing to a Hold / Adjust / Reduce / Close verdict — it never triggers engines or edits the watchlist mid-review.',
     // Curated read-only subset; everything else off.
-    defaultGrant: t => (MONITOR_D_SET.has(t.name) ? 'read' : 'off'),
+    defaultGrant: t => (MONITOR_SET.has(t.name) ? 'read' : 'off'),
   },
   {
     id: 'agentSignal',

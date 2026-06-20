@@ -20,7 +20,7 @@ type Tone = 'muted' | 'accent' | 'buy' | 'sell' | 'warn'
 
 interface Frame { type: string; icon: string; text: string; tone: Tone; at: number; detail?: ToolDetail }
 
-interface MonitorDRun {
+interface MonitorRun {
   id: number
   cycle_id: string
   coin: string
@@ -52,7 +52,7 @@ function fmtTok(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
-interface RunsResponse { running: boolean; mode: string; runs: MonitorDRun[]; live: ActiveReview[] }
+interface RunsResponse { running: boolean; runs: MonitorRun[]; live: ActiveReview[] }
 
 interface AgentStep extends Partial<Frame> {
   source?: string
@@ -64,7 +64,7 @@ const ACTION_VARIANT: Record<string, 'buy' | 'sell' | 'warning' | 'accent' | 'ne
   HOLD: 'neutral', CLOSE: 'sell', ADJUST: 'accent',
 }
 
-// Presentation for the structured risk metadata Agent D attaches to a verdict.
+// Presentation for the structured risk metadata the Agent Monitor attaches to a verdict.
 const THESIS_VARIANT: Record<string, 'buy' | 'warning' | 'sell'> = {
   intact: 'buy', weakening: 'warning', invalidated: 'sell',
 }
@@ -126,11 +126,10 @@ function Transcript({ frames }: { frames: Frame[] }) {
 type Selection = { kind: 'run'; id: number } | { kind: 'live'; coin: string } | null
 
 export default function AgentMonitor() {
-  const initial = useApi<RunsResponse>('/api/monitor-d/runs?limit=200')
+  const initial = useApi<RunsResponse>('/api/monitor/runs?limit=200')
 
-  const [runs, setRuns] = useState<MonitorDRun[]>([])
+  const [runs, setRuns] = useState<MonitorRun[]>([])
   const [live, setLive] = useState<Record<string, LiveReview>>({})
-  const [mode, setMode] = useState<string>('a')
   const [running, setRunning] = useState(false)
   const [selected, setSelected] = useState<Selection>(null)
 
@@ -138,7 +137,6 @@ export default function AgentMonitor() {
   useEffect(() => {
     if (initial.data) {
       setRuns(initial.data.runs)
-      setMode(initial.data.mode)
       setRunning(initial.data.running)
       const seeded: Record<string, LiveReview> = {}
       for (const a of initial.data.live ?? []) {
@@ -149,21 +147,16 @@ export default function AgentMonitor() {
   }, [initial.data])
 
   const onWs = useCallback((event: string, data: unknown) => {
-    if (event === 'settings_updated') {
-      const s = data as { monitor_model?: string }
-      if (s.monitor_model) setMode(s.monitor_model)
-      return
-    }
     if (event === 'monitor_started') {
-      if ((data as { strategy?: string }).strategy === 'agentic_d') { setRunning(true); setLive({}) }
+      if ((data as { strategy?: string }).strategy === 'agentic') { setRunning(true); setLive({}) }
       return
     }
     if (event === 'monitor_completed' || event === 'monitor_error') {
-      if ((data as { strategy?: string }).strategy === 'agentic_d') setRunning(false)
+      if ((data as { strategy?: string }).strategy === 'agentic') setRunning(false)
       return
     }
-    if (event === 'monitor_d_run_saved') {
-      const run = data as MonitorDRun
+    if (event === 'monitor_run_saved') {
+      const run = data as MonitorRun
       setRuns(prev => [run, ...prev.filter(r => r.id !== run.id)].slice(0, 300))
       setLive(prev => { const next = { ...prev }; delete next[run.coin]; return next })
       return
@@ -171,7 +164,7 @@ export default function AgentMonitor() {
     if (event !== 'agent_step') return
 
     const s = data as AgentStep
-    if (s.source !== 'monitor_d' || !s.coin || !s.type) return
+    if (s.source !== 'monitor' || !s.coin || !s.type) return
     const coin = s.coin
     const frame: Frame = { type: s.type, icon: s.icon ?? '•', text: s.text ?? '', tone: (s.tone as Tone) ?? 'muted', at: s.at ?? Date.now(), detail: s.detail }
 
@@ -199,12 +192,11 @@ export default function AgentMonitor() {
     } catch { setRunning(false) }
   }
 
-  const isActive = mode === 'd'
   const liveList = Object.values(live).sort((a, b) => b.startedAt - a.startedAt)
 
   // Group saved runs by cycle for the per-run decision table (newest cycle first).
   const cycles = useMemo(() => {
-    const map = new Map<string, MonitorDRun[]>()
+    const map = new Map<string, MonitorRun[]>()
     for (const r of runs) {
       const arr = map.get(r.cycle_id) ?? []
       arr.push(r)
@@ -220,7 +212,7 @@ export default function AgentMonitor() {
     if (!selected) return null
     if (selected.kind === 'live') {
       const lv = live[selected.coin]
-      if (lv) return { coin: lv.coin, frames: lv.frames, verdict: null as MonitorDRun | null, peak: lv.peakContext }
+      if (lv) return { coin: lv.coin, frames: lv.frames, verdict: null as MonitorRun | null, peak: lv.peakContext }
       const saved = runs.find(r => r.coin === selected.coin)
       return saved ? { coin: saved.coin, frames: saved.frames, verdict: saved, peak: saved.peak_context_tokens } : null
     }
@@ -236,23 +228,20 @@ export default function AgentMonitor() {
       <Card>
         <CardHeader
           title="Agent Monitor"
-          subtitle="Type D — the agentic position monitor. Select it in Settings → Position Monitor (model “Agent D”)."
+          subtitle="The agentic position monitor — a tool-calling agent reviews each open position on the monitor cron."
           action={
             <div className="flex items-center gap-2">
               <Badge variant={connected ? 'executed' : 'failed'} dot>{connected ? 'Live' : 'Offline'}</Badge>
-              <Badge variant={isActive ? 'accent' : 'neutral'} dot={isActive}>{isActive ? 'Agent D active' : `Inactive (mode: ${mode.toUpperCase()})`}</Badge>
               {running && <Badge variant="accent" dot>Reviewing</Badge>}
             </div>
           }
         />
         <div className="flex items-center justify-between gap-4">
           <p className="text-xs text-muted">
-            {isActive
-              ? 'Agent D drives the monitor cron. Each open position gets its own tool-calling review.'
-              : 'Agent D is not the selected monitor model — switch to “Agent D” in Settings to activate it.'}
+            The Agent Monitor drives the monitor cron. Each open position gets its own tool-calling review.
           </p>
-          <Button variant="primary" size="sm" onClick={runNow} disabled={!isActive || running} loading={running}>
-            {isActive ? 'Run now' : 'Select Agent D first'}
+          <Button variant="primary" size="sm" onClick={runNow} disabled={running} loading={running}>
+            Run now
           </Button>
         </div>
       </Card>
@@ -292,7 +281,7 @@ export default function AgentMonitor() {
             <CardHeader title="Run history" subtitle={`${runs.length} reviews across ${cycles.length} runs`} className="px-5 pt-5 mb-0" />
             {initial.loading && <p className="px-5 py-4 text-sm text-muted">Loading…</p>}
             {!initial.loading && cycles.length === 0 && (
-              <p className="px-5 py-6 text-sm text-muted">No runs yet. {isActive ? 'Run Agent D to populate this table.' : 'Activate Agent D in Settings.'}</p>
+              <p className="px-5 py-6 text-sm text-muted">No runs yet. Run the Agent Monitor to populate this table.</p>
             )}
             {cycles.length > 0 && (
               <div className="max-h-[40rem] overflow-y-auto">

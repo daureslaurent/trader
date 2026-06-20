@@ -55,17 +55,12 @@ export const config = {
     maxTokens: num('DISCOVERER_EXTRACTOR_MAX_TOKENS', 8192),
   },
   monitor: {
-    // Slot A (primary), slot B (alternate) and slot C (the A+B+C synthesizer) monitor
-    // models. Each can target its own endpoint; B and C fall back to A's values, which
-    // fall back to the llama defaults. Which slots run is chosen at runtime via the
-    // `monitor_model` setting ('a'/'b'/'alternate'/'ab'/'abc').
+    // Agent Monitor — the agentic position monitor (the sole monitor engine). A native
+    // tool-calling loop, so it needs a tool-calling-capable model. Env MONITOR_* falls back
+    // to the llama defaults.
     baseURL: opt('MONITOR_BASE_URL', llamaBaseURL),
     model: opt('MONITOR_MODEL', llamaModel),
-    baseURLB: opt('MONITOR_BASE_URL_B', opt('MONITOR_BASE_URL', llamaBaseURL)),
-    modelB: opt('MONITOR_MODEL_B', opt('MONITOR_MODEL', llamaModel)),
-    baseURLC: opt('MONITOR_BASE_URL_C', opt('MONITOR_BASE_URL', llamaBaseURL)),
-    modelC: opt('MONITOR_MODEL_C', opt('MONITOR_MODEL', llamaModel)),
-    maxTokens: num('MONITOR_MAX_TOKENS', 2048),
+    maxTokens: num('MONITOR_MAX_TOKENS', 4096),
   },
   summary: {
     // Portfolio-summary engine model. A larger context window helps here since the
@@ -92,18 +87,10 @@ export const config = {
     model: opt('AGENT_MODEL', llamaModel),
     maxTokens: num('AGENT_MAX_TOKENS', 4096),
   },
-  monitorD: {
-    // Type D agentic position monitor. Also a native tool-calling loop, so it needs a
-    // tool-calling-capable model. Separate from the chat agent so the two can use
-    // different models/endpoints. Falls back to the llama defaults.
-    baseURL: opt('MONITOR_D_BASE_URL', llamaBaseURL),
-    model: opt('MONITOR_D_MODEL', llamaModel),
-    maxTokens: num('MONITOR_D_MAX_TOKENS', 4096),
-  },
   agentSignal: {
     // Agent Signal — the agentic, single-coin entry engine. A native tool-calling loop
     // (one agent per watchlist coin), so it needs a tool-calling-capable model. Separate
-    // from the chat agent / Type D so each can use its own model. Falls back to llama.
+    // from the chat agent / Agent Monitor so each can use its own model. Falls back to llama.
     baseURL: opt('AGENT_SIGNAL_BASE_URL', llamaBaseURL),
     model: opt('AGENT_SIGNAL_MODEL', llamaModel),
     maxTokens: num('AGENT_SIGNAL_MAX_TOKENS', 4096),

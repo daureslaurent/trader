@@ -39,12 +39,10 @@ router.get('/llm/defaults', (_req: Request, res: Response) => {
     extractor: { baseURL: config.extractor.baseURL, model: config.extractor.model, maxTokens: config.extractor.maxTokens },
     discoverer: { baseURL: config.discoverer.baseURL, model: config.discoverer.model, maxTokens: config.discoverer.maxTokens },
     discovererExtractor: { baseURL: config.discovererExtractor.baseURL, model: config.discovererExtractor.model, maxTokens: config.discovererExtractor.maxTokens },
-    monitorA: { baseURL: config.monitor.baseURL, model: config.monitor.model, maxTokens: config.monitor.maxTokens },
-    monitorB: { baseURL: config.monitor.baseURLB, model: config.monitor.modelB, maxTokens: config.monitor.maxTokens },
     summary: { baseURL: config.summary.baseURL, model: config.summary.model, maxTokens: config.summary.maxTokens },
     entryAgent: { baseURL: config.entryAgent.baseURL, model: config.entryAgent.model, maxTokens: config.entryAgent.maxTokens },
     agent: { baseURL: config.agent.baseURL, model: config.agent.model, maxTokens: config.agent.maxTokens },
-    monitorD: { baseURL: config.monitorD.baseURL, model: config.monitorD.model, maxTokens: config.monitorD.maxTokens },
+    monitor: { baseURL: config.monitor.baseURL, model: config.monitor.model, maxTokens: config.monitor.maxTokens },
     agentSignal: { baseURL: config.agentSignal.baseURL, model: config.agentSignal.model, maxTokens: config.agentSignal.maxTokens },
     webSearch: { baseURL: config.webSearch.baseURL, model: config.webSearch.model, maxTokens: config.webSearch.maxTokens },
   })

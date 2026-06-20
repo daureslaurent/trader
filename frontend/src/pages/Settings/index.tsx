@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, FormEvent } from 'react'
 import { Button } from '../../components/ui/Button'
-import { MonitorModelsResponse, LLMDefaults, AgenticToolsConfig, AgentToolPermissions, AgentToolPermission } from '../../types'
+import { LLMDefaults, AgenticToolsConfig, AgentToolPermissions, AgentToolPermission } from '../../types'
 import { SettingsData, ToggleKey } from './types'
 import { SECTIONS, SectionId } from './constants'
 import { SectionIcon } from './widgets'
@@ -24,7 +24,6 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [activeCategory, setActiveCategory] = useState<SectionId | null>(null)
-  const [monitorModels, setMonitorModels] = useState<MonitorModelsResponse | null>(null)
   const [llmDefaults, setLlmDefaults] = useState<LLMDefaults | null>(null)
   const [endpointModalOpen, setEndpointModalOpen] = useState(false)
   const [toolsConfig, setToolsConfig] = useState<AgenticToolsConfig | null>(null)
@@ -40,13 +39,6 @@ export default function Settings() {
         setSettings(data)
         setBaseline(data)
       })
-      .catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    fetch('/api/monitor/models')
-      .then(r => r.json())
-      .then((data: MonitorModelsResponse) => setMonitorModels(data))
       .catch(() => {})
   }, [])
 
@@ -163,7 +155,7 @@ export default function Settings() {
       case 'trading':    return <TradingSection {...sectionProps} />
       case 'entry':      return <EntrySection {...sectionProps} />
       case 'risk':       return <RiskSection {...sectionProps} />
-      case 'monitor':    return <MonitorSection {...sectionProps} monitorModels={monitorModels} />
+      case 'monitor':    return <MonitorSection {...sectionProps} />
       case 'chart':      return <ChartSection {...sectionProps} />
       case 'summary':    return <SummarySection {...sectionProps} />
       case 'models':     return <ModelsSection {...sectionProps} llmDefaults={llmDefaults} modalOpen={endpointModalOpen} setModalOpen={setEndpointModalOpen} />

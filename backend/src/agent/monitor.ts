@@ -1,61 +1,57 @@
-// Type D — the agentic position monitor.
+// Agent Monitor — the agentic position monitor (the sole monitor engine). Lives in the agent
+// module alongside the other tool-calling agents; it pulls the shared monitor-domain helpers
+// from `monitor/` (a one-way agent → monitor dependency — monitor/ never imports agent/).
 //
-// Selected via `monitor_model === 'd'`, it runs on the SAME monitor cron as the classic
-// ensemble (a/b/alternate/ab/abc) — the scheduler's dispatchMonitorRun routes the tick
-// here when D is the chosen mode, so the two are mutually exclusive by construction.
+// Runs on the monitor cron: a native tool-calling loop per open position. The model reads
+// candles, position history and sentiment through the shared agent tool belt, reasons across
+// up to MAX_TOOL_ROUNDS rounds, then commits to one verdict — Hold, Adjust or Close.
 //
-// Where the classic monitor asks one model for a single-shot JSON verdict, Type D runs a
-// native tool-calling loop per open position: the model reads candles, position history
-// and sentiment through the shared agent tool belt, reasons across up to MAX_TOOL_ROUNDS
-// rounds, then commits to one verdict — Hold, Adjust or Close.
+// It builds the position set + per-cycle params via the shared context helpers and routes its
+// verdict through the SAME post-decision safety net (finalizeReview): confidence gates, ADJUST
+// downgrades, OCO half-leg seeding, adjust cooldown, persistence, and the close/adjust bus
+// events index.ts acts on. The monitor never executes a trade itself.
 //
-// It reuses the classic engine's position set + per-cycle params and, crucially, the SAME
-// post-decision safety net (finalizeReview): confidence gates, ADJUST downgrades,
-// OCO half-leg seeding, adjust cooldown, persistence, and the same close/adjust bus
-// events index.ts acts on. Type D never executes a trade itself.
-//
-// Every coin's review is also persisted to `monitor_d_runs` (verdict + the full transcript)
-// so the Agent Monitor page survives a reload and can show a per-run decision table and a
-// per-coin transcript. Old runs are pruned to `monitor_d_retain_runs`.
+// Every coin's review is also persisted to `monitor_runs` (verdict + the full transcript) so
+// the Agent Monitor page survives a reload and can show a per-run decision table and a per-coin
+// transcript. Old runs are pruned to `monitor_retain_runs`.
 import OpenAI from 'openai'
 import { scheduleChat, runInSession } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
-import { getSettings, nowSql, monitorDRuns } from '../db/index.js'
+import { getSettings, nowSql, monitorRuns } from '../db/index.js'
 import {
-  getMonitorEntries, filterReviewableEntries, buildCycleParams, placeholderEnsemble,
+  getMonitorEntries, filterReviewableEntries, buildCycleParams,
   buildReviewContext, parseReview, finalizeReview,
 } from '../monitor/index.js'
-import type { MonitorEntry, RawReview } from '../monitor/index.js'
-import type { PositionContext } from '../monitor/prompts.js'
-import type { MonitorDRun, MonitorDRunFrame, PositionReview, ReviewRiskFields } from '../types.js'
+import type { MonitorEntry, RawReview, PositionContext } from '../monitor/index.js'
+import type { MonitorRun, MonitorRunFrame, PositionReview, ReviewRiskFields } from '../types.js'
 import { isReadOnlyTool } from './tools.js'
 import { getAgentToolSchemas, getAgentToolPrompt, runAgentTool } from './registry.js'
 
-// This module IS the "monitorD" agent in the registry — its tool grants live under that id
+// This module IS the "monitor" agent in the registry — its tool grants live under that id
 // (read-only by default; configurable in Settings → Agent → Agentic Tools).
-const AGENT_ID = 'monitorD'
+const AGENT_ID = 'monitor'
 
 // Safety valve mirroring the chat agent: how many model↔tool round-trips one position's
 // review may take before we stop and commit to HOLD.
 const MAX_TOOL_ROUNDS = 6
 
 let running = false
-export function isRunningD(): boolean { return running }
+export function isRunning(): boolean { return running }
 
 type StoredToolCalls = OpenAI.Chat.Completions.ChatCompletionMessageToolCall[]
-type Tone = MonitorDRunFrame['tone']
+type Tone = MonitorRunFrame['tone']
 
 // In-progress reviews for the CURRENT cycle, kept in memory so the Agent Monitor page can
 // rehydrate a running cycle after a reload (live frames aren't persisted until the verdict
 // lands). Keyed by coin; cleared at the start of each cycle, and an entry is removed once
-// its run is persisted to monitor_d_runs (the saved run supersedes the live one).
+// its run is persisted to monitor_runs (the saved run supersedes the live one).
 export interface ActiveReview {
   coin: string
   cycle_id: string
   status: 'reviewing' | 'done' | 'error'
-  frames: MonitorDRunFrame[]
+  frames: MonitorRunFrame[]
   /** Running peak single-request context (prompt+completion) seen so far this review. */
   peak_context_tokens: number
   started_at_ms: number
@@ -78,7 +74,7 @@ const TOOL_FEED: Record<string, { icon: string; verb: string }> = {
   list_open_positions:   { icon: '📂', verb: 'Listing open positions' },
 }
 
-// Caps a tool result before it rides on a frame's `detail` (persisted to monitor_d_runs and
+// Caps a tool result before it rides on a frame's `detail` (persisted to monitor_runs and
 // broadcast live) — long arrays (e.g. candle bars) are trimmed to their first/last few entries
 // so the hover/pin popover stays useful without bloating storage.
 const DETAIL_ARRAY_CAP = 8
@@ -108,7 +104,7 @@ class Recorder {
     this.entry = { coin, cycle_id: cycleId, status: 'reviewing', frames: [], peak_context_tokens: 0, started_at_ms: Date.now() }
     activeReviews.set(coin, this.entry)
   }
-  get frames(): MonitorDRunFrame[] { return this.entry.frames }
+  get frames(): MonitorRunFrame[] { return this.entry.frames }
   get startedAt(): number { return this.entry.started_at_ms }
 
   /** Fold one call's usage into the run totals. */
@@ -122,13 +118,13 @@ class Recorder {
     this.entry.peak_context_tokens = this.peakContext
   }
 
-  push(type: string, icon: string, text: string, tone: Tone, extra: Record<string, unknown> = {}, detail?: MonitorDRunFrame['detail']): void {
-    const frame: MonitorDRunFrame = { type, icon, text, tone, at: Date.now(), ...(detail ? { detail } : {}) }
+  push(type: string, icon: string, text: string, tone: Tone, extra: Record<string, unknown> = {}, detail?: MonitorRunFrame['detail']): void {
+    const frame: MonitorRunFrame = { type, icon, text, tone, at: Date.now(), ...(detail ? { detail } : {}) }
     this.entry.frames.push(frame)
     if (type === 'error') this.entry.status = 'error'
     else if (type === 'decision') this.entry.status = 'done'
-    // `source: 'monitor_d'` lets the page tell these apart from the chat agent's frames.
-    broadcast('agent_step', { source: 'monitor_d', cycle_id: this.cycleId, coin: this.coin, ...frame, ...extra })
+    // `source: 'monitor'` lets the page tell these apart from the chat agent's frames.
+    broadcast('agent_step', { source: 'monitor', cycle_id: this.cycleId, coin: this.coin, ...frame, ...extra })
   }
 
   /** Drop the in-memory entry once the review is durably persisted (or abandoned). */
@@ -145,7 +141,7 @@ class Recorder {
 // Agentic Tools) — never hardcode a tool name/blurb here, or it can drift from the catalog
 // and describe a tool that's actually disabled.
 function buildSystemPrompt(toolPrompt: string): string {
-  return `You are "Type D", a SENIOR crypto portfolio risk manager reviewing ONE open long position at a time. You think in probabilities and asymmetry, not hope. Your mandate is to protect capital and let winners run — never to churn.
+  return `You are the Agent Monitor, a SENIOR crypto portfolio risk manager reviewing ONE open long position at a time. You think in probabilities and asymmetry, not hope. Your mandate is to protect capital and let winners run — never to churn.
 
 Your job: decide exactly one action — HOLD, ADJUST (move stop-loss / take-profit), or CLOSE it now.
 
@@ -215,7 +211,7 @@ function buildUserBriefing(ctx: PositionContext): string {
 // Runs the tool-calling loop for one coin and returns the parsed verdict, recording each
 // step. Falls back to a safe HOLD on any failure (no JSON, exhausted rounds, tool error).
 async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: string, rec: Recorder): Promise<RawReview> {
-  const active = resolveLLM('monitorD') // dedicated, tool-calling-capable module (Settings → LLM Models)
+  const active = resolveLLM('monitor') // dedicated, tool-calling-capable module (Settings → LLM Models)
   const tools = getAgentToolSchemas(AGENT_ID)
 
   const messages: OpenAI.ChatCompletionMessageParam[] = [
@@ -227,7 +223,7 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
     rec.push('thinking', '🤔', `Thinking… (round ${round + 1})`, 'muted', { round })
 
     const resp = await scheduleChat({
-      module: 'monitorD', lane: 'parallel', priority: 1, coin, cycleId,
+      module: 'monitor', lane: 'parallel', priority: 1, coin, cycleId,
       route: () => active,
       build: async (route) => ({
         model: route.model,
@@ -292,27 +288,27 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
     }
   }
 
-  logger.warn('Type D exhausted rounds without a JSON verdict — defaulting to HOLD', { coin, cycleId })
-  return { action: 'HOLD', confidence: 0, reasoning: '[Type D could not reach a conclusive verdict within the round budget]' }
+  logger.warn('Agent Monitor exhausted rounds without a JSON verdict — defaulting to HOLD', { coin, cycleId })
+  return { action: 'HOLD', confidence: 0, reasoning: '[Agent Monitor could not reach a conclusive verdict within the round budget]' }
 }
 
 // Reviews one position end-to-end: build the shared JIT context, run the agentic loop,
-// route the verdict through the classic safety net (finalizeReview), then persist the run
+// route the verdict through the shared safety net (finalizeReview), then persist the run
 // (verdict + transcript) and broadcast it so the page's table/detail update live.
-async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>, rec: Recorder): Promise<PositionReview | null> {
+async function reviewPosition(coin: string, entry: MonitorEntry, cycleId: string, p: ReturnType<typeof buildCycleParams>, rec: Recorder): Promise<PositionReview | null> {
   rec.push('coin_started', '🔍', `Reviewing ${coin}…`, 'accent')
 
   const { ctx, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
-  // One session per position: holds the monitorD endpoint across all rounds + nested tool
+  // One session per position: holds the monitor endpoint across all rounds + nested tool
   // LLM calls so no other module swaps the model mid-review.
   const verdict = await runInSession(
-    { route: () => resolveLLM('monitorD') },
+    { route: () => resolveLLM('monitor') },
     () => runAgenticReview(coin, ctx, cycleId, rec),
   )
 
-  const model = `type-d:${resolveLLM('monitorD').model}`
+  const model = `monitor:${resolveLLM('monitor').model}`
   const review = await finalizeReview({
-    ctx, raw: verdict, effectiveUseHorizon, modelName: model, cycleId, disagreement: null,
+    ctx, raw: verdict, effectiveUseHorizon, modelName: model, cycleId,
   }, p)
 
   const action = review?.action ?? verdict.action
@@ -332,65 +328,60 @@ async function reviewPositionD(coin: string, entry: MonitorEntry, cycleId: strin
 
   // Persist the run (verdict + full transcript) and broadcast the saved record. The
   // repository allocates the integer id on insert; we echo it back in the broadcast.
-  const runDoc: Omit<MonitorDRun, 'id'> = {
+  const runDoc: Omit<MonitorRun, 'id'> = {
     cycle_id: cycleId, coin, action, confidence, reasoning, discarded, ...riskFields,
     model, frames: rec.frames,
     prompt_tokens: rec.promptTokens, completion_tokens: rec.completionTokens, peak_context_tokens: rec.peakContext,
     started_at_ms: rec.startedAt, created_at: nowSql(),
   }
-  const id = Number(await monitorDRuns.insert(runDoc))
-  broadcast('monitor_d_run_saved', { id, ...runDoc } satisfies MonitorDRun)
+  const id = Number(await monitorRuns.insert(runDoc))
+  broadcast('monitor_run_saved', { id, ...runDoc } satisfies MonitorRun)
   rec.release() // the persisted run now supersedes the in-memory live entry
 
   // The shared position_reviews row finalizeReview persisted — returned so the cycle can
-  // include it in monitor_completed (drives the Monitor & Portfolio pages, same as classic).
+  // include it in monitor_completed (drives the Monitor & Portfolio pages).
   return review
 }
 
-// Keeps only the most recent `monitor_d_retain_runs` records (by id), pruning the rest.
+// Keeps only the most recent `monitor_retain_runs` records (by id), pruning the rest.
 async function pruneRuns(): Promise<void> {
-  const keep = Math.max(10, getSettings().monitor_d_retain_runs || 200)
-  const cutoffRow = (await monitorDRuns.find({}, { sort: { id: -1 }, skip: keep, limit: 1, projection: { id: 1 } }))[0] as { id: number } | undefined
-  if (cutoffRow) await monitorDRuns.deleteMany({ id: { $lte: cutoffRow.id } })
+  const keep = Math.max(10, getSettings().monitor_retain_runs || 200)
+  const cutoffRow = (await monitorRuns.find({}, { sort: { id: -1 }, skip: keep, limit: 1, projection: { id: 1 } }))[0] as { id: number } | undefined
+  if (cutoffRow) await monitorRuns.deleteMany({ id: { $lte: cutoffRow.id } })
 }
 
-// Cycle entrypoint. Routed here by dispatchMonitorRun only when monitor_model === 'd'; the
-// guard below is belt-and-braces enforcement of that single-engine-per-tick rule.
-export async function runMonitorD(cycleId: string): Promise<void> {
+// Cycle entrypoint. Runs whenever the monitor cron fires (gated by monitor_auto_run).
+export async function runMonitor(cycleId: string): Promise<void> {
   const s = getSettings()
-  if (s.monitor_model !== 'd') {
-    logger.info('Type D skipped — monitor_model is not "d"', { cycleId, mode: s.monitor_model })
-    return
-  }
   if (running) {
-    logger.warn('Type D already running, skipping', { cycleId })
+    logger.warn('Agent Monitor already running, skipping', { cycleId })
     return
   }
   running = true
-  const sequential = s.monitor_d_sequential
+  const sequential = s.monitor_sequential
   activeReviews.clear() // fresh cycle — drop any leftover live entries from the previous one
-  logger.info('Type D agentic monitor started', { cycleId, sequential })
-  broadcast('monitor_started', { cycle_id: cycleId, strategy: 'agentic_d' })
+  logger.info('Agent Monitor started', { cycleId, sequential })
+  broadcast('monitor_started', { cycle_id: cycleId, strategy: 'agentic' })
 
   try {
     const entries = await filterReviewableEntries(await getMonitorEntries())
     if (entries.length === 0) {
-      logger.info('Type D: no open positions to review', { cycleId })
-      broadcast('monitor_completed', { cycle_id: cycleId, reviews: [], message: 'No open positions', strategy: 'agentic_d' })
+      logger.info('Agent Monitor: no open positions to review', { cycleId })
+      broadcast('monitor_completed', { cycle_id: cycleId, reviews: [], message: 'No open positions', strategy: 'agentic' })
       return
     }
 
-    const p = buildCycleParams(s, placeholderEnsemble())
+    const p = buildCycleParams(s)
 
     const reviewOne = async (entry: MonitorEntry): Promise<PositionReview | null> => {
       const rec = new Recorder(cycleId, entry.coin)
       try {
-        return await reviewPositionD(entry.coin, entry, cycleId, p, rec)
+        return await reviewPosition(entry.coin, entry, cycleId, p, rec)
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
-        logger.error('Type D coin review failed', { coin: entry.coin, cycleId, error })
+        logger.error('Agent Monitor coin review failed', { coin: entry.coin, cycleId, error })
         rec.fail(error) // records the error frame + flags the live entry, kept until next cycle
-        broadcast('monitor_coin_error', { cycle_id: cycleId, coin: entry.coin, error, strategy: 'agentic_d' })
+        broadcast('monitor_coin_error', { cycle_id: cycleId, coin: entry.coin, error, strategy: 'agentic' })
         return null
       }
     }
@@ -409,22 +400,22 @@ export async function runMonitorD(cycleId: string): Promise<void> {
     const reviews = settled.filter((r): r is PositionReview => r !== null)
 
     await pruneRuns()
-    // Same shape the classic monitor emits, so the Monitor & Portfolio pages refresh and
-    // show Agent D's verdicts (they live in the shared position_reviews collection).
-    broadcast('monitor_completed', { cycle_id: cycleId, reviews, strategy: 'agentic_d' })
-    logger.info('Type D agentic monitor completed', { cycleId, reviewed: entries.length })
+    // Same shape the position reviews emit elsewhere, so the Monitor & Portfolio pages refresh
+    // and show the verdicts (they live in the shared position_reviews collection).
+    broadcast('monitor_completed', { cycle_id: cycleId, reviews, strategy: 'agentic' })
+    logger.info('Agent Monitor completed', { cycleId, reviewed: entries.length })
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
-    logger.error('Type D agentic monitor failed', { cycleId, error })
-    broadcast('monitor_error', { cycle_id: cycleId, error, strategy: 'agentic_d' })
+    logger.error('Agent Monitor failed', { cycleId, error })
+    broadcast('monitor_error', { cycle_id: cycleId, error, strategy: 'agentic' })
   } finally {
     running = false
   }
 }
 
-// Recent persisted Type D runs (newest first), for the Agent Monitor page to rehydrate
+// Recent persisted monitor runs (newest first), for the Agent Monitor page to rehydrate
 // after a reload. Returns the verdict + full transcript per coin per cycle.
-export async function getMonitorDRuns(limit = 100): Promise<MonitorDRun[]> {
+export async function getMonitorRuns(limit = 100): Promise<MonitorRun[]> {
   const capped = Math.min(Math.max(limit, 1), 500)
-  return monitorDRuns.find({}, { sort: { id: -1 }, limit: capped, projection: { _id: 0 } }) as unknown as Promise<MonitorDRun[]>
+  return monitorRuns.find({}, { sort: { id: -1 }, limit: capped, projection: { _id: 0 } }) as unknown as Promise<MonitorRun[]>
 }

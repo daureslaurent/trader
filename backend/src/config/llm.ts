@@ -6,21 +6,16 @@ import { isEndpointDown } from '../core/endpointHealth.js'
 import { getSettings } from '../db/index.js'
 import type { BotSettings } from '../types.js'
 
-// Modules whose LLM endpoint/model/max-tokens can be overridden at runtime from
-// Settings. The monitor exposes its two slots (A/B) as separate modules; which
-// slot a cycle uses is still chosen by the `monitor_model` setting.
+// Modules whose LLM endpoint/model/max-tokens can be overridden at runtime from Settings.
 export type LLMModule =
   | 'analyst'
   | 'extractor'
   | 'discoverer'
   | 'discovererExtractor'
-  | 'monitorA'
-  | 'monitorB'
-  | 'monitorC'
   | 'summary'
   | 'entryAgent'
   | 'agent'
-  | 'monitorD'
+  | 'monitor'
   | 'agentSignal'
   | 'webSearch'
 
@@ -68,26 +63,12 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     fbMaxTokensKey: 'llm_discoverer_extractor_fb_max_tokens',
     fallback: config.discovererExtractor,
   },
-  monitorA: {
-    endpointKey: 'llm_monitor_a_endpoint',
-    maxTokensKey: 'llm_monitor_a_max_tokens',
-    fbEndpointKey: 'llm_monitor_a_fb_endpoint',
-    fbMaxTokensKey: 'llm_monitor_a_fb_max_tokens',
-    fallback: { baseURL: config.monitor.baseURL, model: config.monitor.model, maxTokens: config.monitor.maxTokens },
-  },
-  monitorB: {
-    endpointKey: 'llm_monitor_b_endpoint',
-    maxTokensKey: 'llm_monitor_b_max_tokens',
-    fbEndpointKey: 'llm_monitor_b_fb_endpoint',
-    fbMaxTokensKey: 'llm_monitor_b_fb_max_tokens',
-    fallback: { baseURL: config.monitor.baseURLB, model: config.monitor.modelB, maxTokens: config.monitor.maxTokens },
-  },
-  monitorC: {
-    endpointKey: 'llm_monitor_c_endpoint',
-    maxTokensKey: 'llm_monitor_c_max_tokens',
-    fbEndpointKey: 'llm_monitor_c_fb_endpoint',
-    fbMaxTokensKey: 'llm_monitor_c_fb_max_tokens',
-    fallback: { baseURL: config.monitor.baseURLC, model: config.monitor.modelC, maxTokens: config.monitor.maxTokens },
+  monitor: {
+    endpointKey: 'llm_monitor_endpoint',
+    maxTokensKey: 'llm_monitor_max_tokens',
+    fbEndpointKey: 'llm_monitor_fb_endpoint',
+    fbMaxTokensKey: 'llm_monitor_fb_max_tokens',
+    fallback: config.monitor,
   },
   summary: {
     endpointKey: 'llm_summary_endpoint',
@@ -109,13 +90,6 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     fbEndpointKey: 'llm_agent_fb_endpoint',
     fbMaxTokensKey: 'llm_agent_fb_max_tokens',
     fallback: config.agent,
-  },
-  monitorD: {
-    endpointKey: 'llm_monitor_d_endpoint',
-    maxTokensKey: 'llm_monitor_d_max_tokens',
-    fbEndpointKey: 'llm_monitor_d_fb_endpoint',
-    fbMaxTokensKey: 'llm_monitor_d_fb_max_tokens',
-    fallback: config.monitorD,
   },
   agentSignal: {
     endpointKey: 'llm_agentSignal_endpoint',

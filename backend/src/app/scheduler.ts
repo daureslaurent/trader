@@ -3,8 +3,7 @@ import { logger } from '../core/logger.js'
 import { runLLMRetention, getSettings } from '../db/index.js'
 import { BotSettings } from '../types.js'
 import { checkOpenPositions } from '../portfolio/index.js'
-import { runMonitor } from '../monitor/index.js'
-import { runMonitorD, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
+import { runMonitor, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
 import { scheduleUpdateCheck, stopUpdateCheck } from '../host/index.js'
@@ -20,14 +19,10 @@ let positionCheckInterval: ReturnType<typeof setInterval> | null = null
 
 const POSITION_CHECK_INTERVAL_MS = 30 * 1000 // every 30 seconds
 
-// Runs whichever monitor engine the selected `monitor_model` resolves to. The classic
-// single-shot ensemble (a/b/alternate/ab/abc) and the Type D agentic monitor ('d') are
-// mutually exclusive. Shared by the routing monitor output and the
+// Runs the Agent Monitor engine. Shared by the routing monitor output and the
 // `monitor_run_requested` bus handler so manual triggers route the same way.
 export function dispatchMonitorRun(cycleId: string): Promise<void> {
-  return getSettings().monitor_model === 'd'
-    ? runMonitorD(cycleId)
-    : runMonitor(cycleId)
+  return runMonitor(cycleId)
 }
 
 // Runs whichever entry-signal engine `signal_model` resolves to. The classic research

@@ -7,6 +7,11 @@ import { logger } from '../core/logger.js'
 export async function ensureIndexes(): Promise<void> {
   const db = getDb()
 
+  // One-time rename: the agentic monitor's run collection was `monitor_d_runs` before the
+  // classic ensemble was removed and Agent D became the sole "Agent Monitor". Carry old runs
+  // over to `monitor_runs`. Idempotent — only fires when the old name still exists alone.
+  await renameLegacyCollection(db, 'monitor_d_runs', 'monitor_runs')
+
   await db.collection('counters').createIndex({ _id: 1 })
 
   // Trading
@@ -29,10 +34,10 @@ export async function ensureIndexes(): Promise<void> {
     { key: { created_at: -1 }, name: 'idx_position_reviews_created' },
     { key: { coin: 1 }, name: 'idx_position_reviews_coin' },
   ])
-  await db.collection('monitor_d_runs').createIndexes([
-    { key: { id: -1 }, name: 'idx_monitor_d_runs_id' },
-    { key: { cycle_id: 1 }, name: 'idx_monitor_d_runs_cycle' },
-    { key: { coin: 1 }, name: 'idx_monitor_d_runs_coin' },
+  await db.collection('monitor_runs').createIndexes([
+    { key: { id: -1 }, name: 'idx_monitor_runs_id' },
+    { key: { cycle_id: 1 }, name: 'idx_monitor_runs_cycle' },
+    { key: { coin: 1 }, name: 'idx_monitor_runs_coin' },
   ])
   await db.collection('agent_signal_runs').createIndexes([
     { key: { id: -1 }, name: 'idx_agent_signal_runs_id' },
@@ -86,4 +91,20 @@ export async function ensureIndexes(): Promise<void> {
   ])
 
   logger.info('MongoDB indexes ensured')
+}
+
+// Renames a collection on startup if (and only if) the old name exists and the new name does
+// not yet — so it migrates a pre-rename database exactly once and is a no-op thereafter. Index
+// (re)creation under the new name is handled by the normal ensureIndexes flow above.
+async function renameLegacyCollection(db: ReturnType<typeof getDb>, from: string, to: string): Promise<void> {
+  try {
+    const names = await db.listCollections({}, { nameOnly: true }).toArray()
+    const have = new Set(names.map(c => c.name))
+    if (have.has(from) && !have.has(to)) {
+      await db.collection(from).rename(to)
+      logger.info('Renamed legacy collection', { from, to })
+    }
+  } catch (err) {
+    logger.warn('Legacy collection rename skipped', { from, to, error: err instanceof Error ? err.message : String(err) })
+  }
 }

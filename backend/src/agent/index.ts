@@ -7,7 +7,7 @@ export {
 export { TOOLS } from './tools.js'
 export { getAgenticToolsConfig, AGENTS } from './registry.js'
 export type { AgenticToolInfo, AgenticAgentInfo, ToolPermission } from './registry.js'
-export { runMonitorD, isRunningD, getMonitorDRuns, getActiveReviews } from './monitorD.js'
+export { runMonitor, isRunning as isMonitorRunning, getMonitorRuns, getActiveReviews } from './monitor.js'
 export { runAgentSignal, runAgentSignalCoin, isRunningSignal, getSignalRuns, getActiveSignalReviews } from './signalD.js'
 export { runEntryAgent, runEntryAgentCoin, isRunningEntry, getEntryAgentRuns, getActiveEntryReviews } from './entryAgent.js'
 export type { ChatTurnResult } from './service.js'

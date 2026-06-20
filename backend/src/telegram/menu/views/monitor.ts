@@ -1,5 +1,6 @@
 import { Markup } from 'telegraf'
-import { getReviews, getNotes, isRunning } from '../../../monitor/index.js'
+import { getReviews, getNotes } from '../../../monitor/index.js'
+import { isMonitorRunning } from '../../../agent/index.js'
 import { formatCurrency, esc, coinLabel, confidenceBar, timeAgo } from '../../components/formatting.js'
 
 const ACTION_EMOJI: Record<string, string> = { HOLD: '⚪', CLOSE: '🔴', ADJUST: '⚙️' }
@@ -12,7 +13,7 @@ function fmtChange(oldVal: number | null, newVal: number | null): string | null 
 }
 
 export async function render(_ctx: any) {
-  const running = isRunning()
+  const running = isMonitorRunning()
   const [reviews, notes] = await Promise.all([getReviews(20), getNotes()])
 
   const lines = ['🩺 <b>Monitor</b>', '']

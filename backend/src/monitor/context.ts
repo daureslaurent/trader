@@ -1,118 +1,16 @@
-import OpenAI from 'openai'
 import { logger } from '../core/logger.js'
-import type { LLMTarget } from '../core/llm.js'
-import { scheduleChat } from '../core/llmScheduler.js'
 import {
-  getSettings, updateSetting, getRawSetting, nowSql,
+  getSettings, nowSql,
   positionReviews, monitorNotes, positionAdjustments, positions as positionsRepo, portfolioEntries,
 } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
 import { validateSlTpAdjustment, minStopGapPct } from '../portfolio/risk.js'
 import * as priceCache from '../market/index.js'
-import { getOHLCV, isTimeframe } from '../market/index.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
 import { PositionReview, BotSettings, ReviewRiskFields, ThesisStatus, MarketRegime } from '../types.js'
-import { buildMonitorPrompt, buildSynthesizerUser, fmtOffsetLabel, PositionContext, HorizonConfigs, MonitorNotes } from './prompts.js'
+import { PositionContext, HorizonConfigs, MonitorNotes, fmtOffsetLabel } from './types.js'
 import { LLMError } from '../core/errors.js'
-import { resolveLLM } from '../config/llm.js'
-
-let running = false
-
-interface MonitorSlot { slot: 'a' | 'b' | 'c'; model: string; baseURL: string; maxTokens: number; fallback?: LLMTarget }
-
-// Resolves a monitor slot through the shared Settings-aware LLM resolver, so the
-// model / endpoint / max-tokens overrides from the Settings page take effect.
-function resolveSlot(slot: 'a' | 'b' | 'c'): MonitorSlot {
-  const module = slot === 'b' ? 'monitorB' : slot === 'c' ? 'monitorC' : 'monitorA'
-  const { model, baseURL, maxTokens, fallback } = resolveLLM(module)
-  return { slot, model, baseURL, maxTokens, fallback }
-}
-
-// In 'alternate' mode the slot flips each cycle. `monitor_alternate_last` records
-// the slot used by the previous cycle; the next slot is its opposite (default 'a').
-function alternateNextSlot(): 'a' | 'b' {
-  return getRawSetting('monitor_alternate_last') === 'a' ? 'b' : 'a'
-}
-
-// Resolves the monitor LLM slot the user selected in settings into its concrete
-// model + endpoint. Exported so the API can surface the active model. This is a
-// pure peek — in 'alternate' mode it returns the slot the NEXT cycle will use
-// without advancing the rotation. For the ensemble modes ('ab'/'abc') it returns
-// slot A as the representative model.
-export function getActiveMonitorModel(): MonitorSlot {
-  const mode = getSettings().monitor_model
-  const slot = mode === 'alternate' ? alternateNextSlot() : (mode === 'b' ? 'b' : 'a')
-  return resolveSlot(slot)
-}
-
-interface MonitorLLM {
-  client: OpenAI
-  model: string
-  baseURL: string
-  maxTokens: number
-  fallback?: LLMTarget
-  /** 'A' | 'B' | 'C' — for logs, the stored review's badge, and disagreement alerts. */
-  label: string
-}
-
-// How the cycle's models are combined. 'single' runs one model (a / b / alternate);
-// 'ab' runs both voters and keeps the higher-confidence verdict; 'abc' runs both
-// voters and then has the synthesizer (C) write the final verdict from their output.
-interface MonitorEnsemble {
-  mode: 'single' | 'ab' | 'abc'
-  voters: MonitorLLM[]
-  synthesizer: MonitorLLM | null
-}
-
-// Wraps a resolved slot in a per-cycle OpenAI client + label.
-function buildLLM(slot: MonitorSlot, label: string): MonitorLLM {
-  return {
-    client: new OpenAI({ baseURL: slot.baseURL, apiKey: 'ollama' }),
-    model: slot.model,
-    baseURL: slot.baseURL,
-    maxTokens: slot.maxTokens,
-    fallback: slot.fallback,
-    label,
-  }
-}
-
-// Builds the model set for a cycle about to run from the `monitor_model` setting,
-// advancing the alternate rotation as a side effect so the next cycle flips.
-async function buildEnsemble(): Promise<MonitorEnsemble> {
-  const mode = getSettings().monitor_model
-  if (mode === 'ab' || mode === 'abc') {
-    const voters = [buildLLM(resolveSlot('a'), 'A'), buildLLM(resolveSlot('b'), 'B')]
-    const synthesizer = mode === 'abc' ? buildLLM(resolveSlot('c'), 'C') : null
-    return { mode, voters, synthesizer }
-  }
-  let slot: 'a' | 'b'
-  if (mode === 'alternate') {
-    slot = alternateNextSlot()
-    await updateSetting('monitor_alternate_last', slot)
-  } else {
-    slot = mode === 'b' ? 'b' : 'a'
-  }
-  return { mode: 'single', voters: [buildLLM(resolveSlot(slot), slot.toUpperCase())], synthesizer: null }
-}
-
-// Action severity for tie-breaking the confidence-weighted A+B merge: when both
-// models report the same confidence, the more capital-protective action wins.
-const ACTION_SEVERITY: Record<string, number> = { CLOSE: 3, ADJUST: 1, HOLD: 0 }
-
-interface Opinion { llm: MonitorLLM; review: RawReview }
-
-// A+B confidence-weighted merge: keep the higher-confidence verdict wholesale (so its
-// SL/TP numbers stay coherent). Ties break toward the more protective action,
-// then toward slot A for determinism.
-function pickHigherConfidence(opinions: Opinion[]): Opinion {
-  return [...opinions].sort((x, y) => {
-    if (y.review.confidence !== x.review.confidence) return y.review.confidence - x.review.confidence
-    const sev = (ACTION_SEVERITY[y.review.action] ?? 0) - (ACTION_SEVERITY[x.review.action] ?? 0)
-    if (sev !== 0) return sev
-    return x.llm.label.localeCompare(y.llm.label)
-  })[0]
-}
 
 export interface RawReview extends Partial<ReviewRiskFields> {
   action: 'HOLD' | 'CLOSE' | 'ADJUST'
@@ -125,9 +23,8 @@ export interface RawReview extends Partial<ReviewRiskFields> {
   notes?: string | null
 }
 
-// Defensive coercion for the optional structured risk fields (Agent D emits them; the
-// classic monitor leaves them absent). A missing or malformed field never invalidates a
-// verdict — it just resolves to null.
+// Defensive coercion for the optional structured risk fields the agentic monitor emits. A
+// missing or malformed field never invalidates a verdict — it just resolves to null.
 const THESIS_STATUSES: ThesisStatus[] = ['intact', 'weakening', 'invalidated']
 const MARKET_REGIMES: MarketRegime[] = ['risk_on', 'risk_off', 'neutral']
 function parseRiskFields(c: Record<string, unknown>): ReviewRiskFields {
@@ -173,7 +70,7 @@ export function parseReview(content: string): RawReview {
   return { ...(candidate as unknown as RawReview), ...parseRiskFields(candidate) }
 }
 
-// Approximate review cadence from the monitor cron expression, for the prompt.
+// Approximate review cadence from the monitor cron expression, for the cycle params.
 // Returns minutes between runs, or null when the pattern isn't a simple interval.
 function cronIntervalMinutes(expr: string): number | null {
   const parts = expr.trim().split(/\s+/)
@@ -189,7 +86,7 @@ function cronIntervalMinutes(expr: string): number | null {
   return null
 }
 
-async function pruneMonitorHistory(
+export async function pruneMonitorHistory(
   maxCycles = Math.max(1, getSettings().monitor_review_retain_cycles || 20),
 ): Promise<void> {
   // Keep the most recent `maxCycles` distinct cycles (by latest created_at), delete the rest.
@@ -202,20 +99,17 @@ async function pruneMonitorHistory(
   await positionReviews.deleteMany({ cycle_id: { $nin: keep } })
 }
 
-// One OPEN portfolio entry, aggregated across multiple fills (see runMonitor).
+// One OPEN portfolio entry, aggregated across multiple fills (see getMonitorEntries).
 export interface MonitorEntry { coin: string; quantity: number; avg_buy_price: number; avg_date_ms: number }
 
-// Per-cycle knobs resolved once from settings in runMonitor and shared by every
-// coin's review. These are configuration, not market data, so they don't go stale.
+// Per-cycle knobs resolved once from settings and shared by every coin's review. These are
+// configuration, not market data, so they don't go stale.
 export interface CycleParams {
-  ensemble: MonitorEnsemble
   adjustEnabled: boolean
   trustLlm: boolean
   useHorizon: boolean
   utcOffsetHours: number
   horizonConfigs: HorizonConfigs
-  historyTf: string
-  historyCount: number
   minConfidence: number
   protectWinners: boolean
   protectWinnersAtr: number
@@ -225,51 +119,28 @@ export interface CycleParams {
   adjustCooldownMin: number
 }
 
-// Everything a coin's review acts on: the fresh position context, the prompt built
-// from it, the recent-review history (for the prompt's decision log), and the horizon-resolved
-// guidance flag. Produced JIT by buildReviewContext, then reused by the merge/validate
-// stage so the prompt and the post-LLM logic always see the SAME market snapshot.
+// The fresh position context for a coin's review plus the horizon-resolved guidance flag.
+// Produced JIT by buildReviewContext, then reused by the merge/validate stage so the engine
+// always acts on the SAME market snapshot it reasoned over.
 interface ReviewContext {
   ctx: PositionContext
-  system: string
-  // Synthesizer (model C) system prompt — same shared body as `system` but with an
-  // arbiter opener instead of the reviewer opener. Used only in 'abc' mode.
-  synthSystem: string
-  user: string
-  history: PositionReview[]
   effectiveUseHorizon: boolean
 }
 
-// JIT context binding: gathers the live price, market indicators, fresh position
-// SL/TP, candles, review history and notes for a coin, then builds its prompt — all
-// at the moment the scheduler dispatches the call, never at cycle start. A monitor
-// run can queue many coins behind a serialized endpoint; building here keeps the
-// prompt's market/position values current rather than minutes-stale from the queue.
+// JIT context binding: gathers the live price, market indicators and fresh position SL/TP for
+// a coin at the moment the engine dispatches its review (never at cycle start). A monitor run
+// can queue many coins; building here keeps the position/market values current rather than
+// minutes-stale from the queue.
 export async function buildReviewContext(coin: string, entry: MonitorEntry, p: CycleParams): Promise<ReviewContext> {
   const snap = priceCache.getPrice(coin)
   const currentPrice = snap?.price ?? entry.avg_buy_price
 
-  const tf = isTimeframe(p.historyTf) ? p.historyTf : '1h'
-  const count = Math.max(1, Math.min(100, p.historyCount))
-
-  const [marketCtx, position, history, storedNotes, candles] = await Promise.all([
+  const [marketCtx, position] = await Promise.all([
     getMarketContext(coin, currentPrice),
     positionsRepo.findOne(
       { coin, status: 'OPEN' },
       { projection: { id: 1, stop_loss: 1, take_profit: 1, horizon: 1 } },
     ) as Promise<{ id: number; stop_loss: number | null; take_profit: number | null; horizon: string | null } | null>,
-    positionReviews.find(
-      { coin },
-      { sort: { created_at: -1 }, limit: 3 },
-    ) as unknown as Promise<PositionReview[]>,
-    monitorNotes.findOne(
-      { _id: coin },
-      { projection: { notes: 1, updated_at: 1 } },
-    ) as Promise<MonitorNotes | null>,
-    getOHLCV(coin, tf, count).catch((err): Awaited<ReturnType<typeof getOHLCV>> => {
-      logger.warn('Failed to fetch candle history for monitor prompt', { coin, tf, error: (err as Error).message })
-      return []
-    }),
   ])
 
   const pnlUsd = (currentPrice - entry.avg_buy_price) * entry.quantity
@@ -286,7 +157,7 @@ export async function buildReviewContext(coin: string, entry: MonitorEntry, p: C
     ? ((takeProfit - currentPrice) / currentPrice) * 100
     : null
 
-  // Weighted-average entry timestamp (epoch ms) from the runMonitor aggregation.
+  // Weighted-average entry timestamp (epoch ms) from the getMonitorEntries aggregation.
   const msFromJd = entry.avg_date_ms
   const ageHours = (Date.now() - msFromJd) / (1000 * 60 * 60)
   const entryDate = new Date(msFromJd + p.utcOffsetHours * 3600000)
@@ -321,198 +192,27 @@ export async function buildReviewContext(coin: string, entry: MonitorEntry, p: C
     perf7d: marketCtx.perf7d,
   }
 
-  // 'llm' horizon: monitor runs, but horizon guidance is suppressed in the prompt.
+  // 'llm' horizon: monitor runs, but horizon guidance is suppressed.
   const effectiveUseHorizon = horizon === 'llm' ? false : p.useHorizon
-  const { system, synthSystem, user } = buildMonitorPrompt(
-    ctx, history, p.horizonConfigs, effectiveUseHorizon, p.utcOffsetHours,
-    candles, tf, p.reviewIntervalMin, storedNotes, p.breakevenPct,
-  )
-
-  return { ctx, system, synthSystem, user, history, effectiveUseHorizon }
+  return { ctx, effectiveUseHorizon }
 }
 
-// Runs a single monitor model and returns its parsed verdict. The prompt is not
-// passed in — `promptFor` is invoked inside the scheduler's build thunk so the
-// request is materialized JIT at dispatch. Retries once on both LLM API/network
-// errors and parse failures (#2d).
-async function askModel(
-  llm: MonitorLLM,
-  promptFor: () => Promise<{ system: string; user: string }>,
-  coin: string,
-  cycleId: string,
-): Promise<RawReview> {
-  logger.info('Request LLM', { module: 'monitor', coin, slot: llm.label, model: llm.model })
-
-  let raw: RawReview | null = null
-  for (let attempt = 0; attempt <= 1; attempt++) {
-    let resp: OpenAI.ChatCompletion
-    try {
-      // Routed through the scheduler's PARALLEL lane: monitor positions are reviewed
-      // concurrently, while the per-endpoint gate still serializes calls hitting the
-      // same one-at-a-time server. Voters with distinct endpoints run in true parallel.
-      resp = await scheduleChat({
-        // priority > 0: open-position reviews jump ahead of other parallel-lane
-        // work (discovery, summary) when they contend for the same endpoint, so a
-        // position is never reviewed late because a discovery scan got the gate first.
-        module: 'monitor', lane: 'parallel', priority: 1, coin, cycleId,
-        route: () => ({ client: llm.client, model: llm.model, baseURL: llm.baseURL, maxTokens: llm.maxTokens, fallback: llm.fallback }),
-        // JIT: the prompt is generated here, at dispatch, against the current market +
-        // position snapshot — a job that waited in the queue is never sent stale context.
-        build: async (route) => {
-          const { system, user } = await promptFor()
-          return {
-            model: route.model,
-            messages: [
-              { role: 'system', content: system },
-              { role: 'user', content: user },
-            ],
-            temperature: 0.2,
-            max_tokens: route.maxTokens,
-            response_format: { type: 'json_object' },
-          }
-        },
-      })
-    } catch (apiErr) {
-      if (attempt === 0) {
-        logger.warn('Monitor LLM API error, retrying', { coin, slot: llm.label, error: (apiErr as Error).message })
-        continue
-      }
-      throw apiErr
-    }
-
-    const finish = resp.choices[0]?.finish_reason
-    const content = resp.choices[0]?.message?.content ?? ''
-
-    logger.info('Monitor LLM response', { coin, slot: llm.label, attempt, finish_reason: finish, length: content.length })
-
-    if (!content.trim()) {
-      if (attempt === 0) { logger.warn('Empty monitor response, retrying', { coin, slot: llm.label, finish_reason: finish }); continue }
-      throw new LLMError(`Empty LLM response (finish_reason: ${finish ?? 'unknown'})`)
-    }
-
-    try {
-      raw = parseReview(content)
-    } catch (err) {
-      if (attempt === 0) { logger.warn('Monitor parse failed, retrying', { coin, slot: llm.label, error: (err as Error).message }); continue }
-      throw err
-    }
-
-    break
-  }
-
-  if (!raw) throw new LLMError('Monitor returned no valid review after retries')
-  return raw
-}
-
-async function monitorCoin(
-  coin: string,
-  entry: MonitorEntry,
-  cycleId: string,
-  p: CycleParams,
-): Promise<PositionReview | null> {
-  const { ensemble } = p
-
-  // The coin's fresh context + prompt is built lazily and memoized: the first voter
-  // dispatched for this coin triggers the JIT build, every later voter (and the
-  // synthesizer) reuses that same snapshot, and the post-LLM merge/validate stage
-  // below reads it back — so prompt and engine logic agree on one market view.
-  let cachedContext: Promise<ReviewContext> | null = null
-  const getContext = (): Promise<ReviewContext> => {
-    // Share one snapshot across voters/synthesizer, but never cache a rejection — a
-    // failed build (e.g. a transient market fetch) must be retryable by askModel.
-    if (!cachedContext) cachedContext = buildReviewContext(coin, entry, p).catch((err) => { cachedContext = null; throw err })
-    return cachedContext
-  }
-  const voterPrompt = async () => { const c = await getContext(); return { system: c.system, user: c.user } }
-
-  // Gather each voter's independent verdict. Voters run concurrently — calls to the
-  // same endpoint are still serialized by the per-URL LLM gate, so this only adds
-  // real parallelism when A and B point at different endpoints.
-  const opinions: Opinion[] = await Promise.all(
-    ensemble.voters.map(async (voter) => ({ llm: voter, review: await askModel(voter, voterPrompt, coin, cycleId) })),
-  )
-
-  // Read back the JIT snapshot the voters reviewed (already resolved at this point).
-  const { ctx, effectiveUseHorizon } = await getContext()
-  const useHorizon = effectiveUseHorizon
-
-  // Resolve the voters into the single verdict the engine will act on.
-  let raw: RawReview
-  let finalLlm: MonitorLLM
-  if (ensemble.mode === 'abc' && ensemble.synthesizer) {
-    // Model C is the final arbiter: it sees the position + both voter verdicts and
-    // writes its own. Its output is authoritative. Its prompt is likewise built JIT.
-    const voterSummaries = opinions.map(o => ({
-      label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence,
-      reasoning: o.review.reasoning, new_stop_loss_pct: o.review.new_stop_loss_pct,
-      new_take_profit_pct: o.review.new_take_profit_pct,
-    }))
-    const synthPrompt = async () => { const c = await getContext(); return { system: c.synthSystem, user: buildSynthesizerUser(c.user, voterSummaries) } }
-    raw = await askModel(ensemble.synthesizer, synthPrompt, coin, cycleId)
-    finalLlm = ensemble.synthesizer
-  } else if (ensemble.mode === 'ab') {
-    // Confidence-weighted: the more certain verdict wins, intact.
-    const winner = pickHigherConfidence(opinions)
-    raw = winner.review
-    finalLlm = winner.llm
-    logger.info('Monitor A+B merged', { coin, cycleId, winner: winner.llm.label, votes: opinions.map(o => `${o.llm.label}:${o.review.action}@${o.review.confidence.toFixed(2)}`) })
-  } else {
-    raw = opinions[0].review
-    finalLlm = opinions[0].llm
-  }
-
-  // Detect disagreement among the underlying models (voters, plus C's override in
-  // 'abc'). Surfaced via Telegram so contested positions are visible even though the
-  // engine still acts on the resolved verdict.
-  const ensembleActions = opinions.map(o => o.review.action)
-  if (ensemble.mode === 'abc') ensembleActions.push(raw.action)
-  const modelsDisagreed = ensemble.mode !== 'single' && new Set(ensembleActions).size > 1
-
-  // Package the disagreement (classic ensembles only) so finalizeReview can emit it
-  // once the resolved confidence is known. Type D passes null (no voter ensemble).
-  const disagreement: DisagreementInfo | null =
-    modelsDisagreed && (ensemble.mode === 'ab' || ensemble.mode === 'abc')
-      ? {
-          mode: ensemble.mode,
-          opinions: opinions.map(o => ({ label: o.llm.label, model: o.llm.model, action: o.review.action, confidence: o.review.confidence })),
-          synthesizerModel: ensemble.synthesizer ? ensemble.synthesizer.model : null,
-        }
-      : null
-
-  // Hand the resolved verdict to the shared safety net: confidence gates, ADJUST
-  // downgrades, OCO half-leg seeding, adjust cooldown, persistence and event emission.
-  return finalizeReview({
-    ctx, raw, effectiveUseHorizon, modelName: finalLlm.model, cycleId, disagreement,
-  }, p)
-}
-
-// The disagreement alert payload built by the classic ensemble path and passed into
-// finalizeReview (the agentic Type D monitor has no voter ensemble, so it passes null).
-export interface DisagreementInfo {
-  mode: 'ab' | 'abc'
-  opinions: { label: string; model: string; action: string; confidence: number }[]
-  /** Set in 'abc' mode so the synthesizer (C) shows up in the alert as its own opinion. */
-  synthesizerModel: string | null
-}
-
-// Everything finalizeReview needs about a resolved verdict, independent of HOW it was
-// produced (single-shot ensemble OR the Type D agentic loop).
+// Everything finalizeReview needs about a resolved verdict, independent of HOW it was produced.
 export interface FinalizeReviewInput {
   ctx: PositionContext
   raw: RawReview
   /** Whether horizon guidance applied to this coin's review (see buildReviewContext). */
   effectiveUseHorizon: boolean
-  /** The model id credited on the stored review (final voter / synthesizer / Type D agent). */
+  /** The model id credited on the stored review. */
   modelName: string
   cycleId: string
-  disagreement: DisagreementInfo | null
 }
 
 // The shared post-decision safety net. Takes a resolved verdict + the live position
-// context and applies every guard the classic monitor enforces before it acts:
-// confidence threshold, ADJUST downgrades, OCO half-leg seeding, adjust cooldown,
-// then persists a position_reviews row and emits the close/adjust bus events.
-// Returns the stored review, or null if the position closed mid-analysis.
+// context and applies every guard the monitor enforces before it acts: confidence
+// threshold, ADJUST downgrades, OCO half-leg seeding, adjust cooldown, then persists a
+// position_reviews row and emits the close/adjust bus events. Returns the stored review,
+// or null if the position closed mid-analysis.
 export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams): Promise<PositionReview | null> {
   const { ctx, effectiveUseHorizon: useHorizon, cycleId } = input
   let raw = input.raw
@@ -732,21 +432,6 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
   logger.info('Position review saved', { coin: ctx.coin, action: raw.action, confidence })
   broadcast('monitor_coin_completed', { cycle_id: cycleId, review })
 
-  // Alert when the ensemble's models genuinely disagreed on the action. The engine
-  // still executes the resolved verdict above; this only flags the contested call.
-  if (input.disagreement) {
-    const d = input.disagreement
-    const opinionPayload = d.opinions.map(o => ({ label: o.label, model: o.model, action: o.action, confidence: o.confidence }))
-    if (d.mode === 'abc' && d.synthesizerModel) {
-      opinionPayload.push({ label: 'C', model: d.synthesizerModel, action: raw.action, confidence })
-    }
-    logger.info('Monitor models disagreed', { coin: ctx.coin, cycleId, mode: d.mode, finalAction: raw.action, opinions: opinionPayload.map(o => `${o.label}:${o.action}`) })
-    bus.emit('monitor_disagreement', {
-      coin: ctx.coin, mode: d.mode, finalAction: raw.action, finalConfidence: confidence,
-      opinions: opinionPayload, cycleId,
-    })
-  }
-
   // Fire close immediately — don't wait for other coins
   if (raw.action === 'CLOSE' && ctx.positionId != null) {
     bus.emit('monitor_close_requested', {
@@ -779,10 +464,6 @@ export async function finalizeReview(input: FinalizeReviewInput, p: CycleParams)
   return review
 }
 
-export function isRunning(): boolean {
-  return running
-}
-
 export async function clearReviewsForCoin(coin: string): Promise<void> {
   await positionReviews.deleteMany({ coin })
   await monitorNotes.deleteMany({ _id: coin })
@@ -791,8 +472,7 @@ export async function clearReviewsForCoin(coin: string): Promise<void> {
 
 // Aggregates the OPEN portfolio into one entry per coin, using a weighted-average
 // entry timestamp (#2c: centre of mass in epoch ms, not MIN) so a position built
-// across multiple fills ages from its true cost basis. Shared by the classic monitor
-// and the Type D agentic monitor so both review exactly the same position set.
+// across multiple fills ages from its true cost basis.
 export async function getMonitorEntries(): Promise<MonitorEntry[]> {
   return portfolioEntries.aggregate<MonitorEntry>([
     { $match: { status: 'OPEN', coin: { $ne: 'USDC' } } },
@@ -818,7 +498,7 @@ export async function getMonitorEntries(): Promise<MonitorEntry[]> {
 
 // Drops positions whose horizon is 'disabled' (a stable per-position config field):
 // those are skipped entirely so no LLM call is ever wasted on a position the user
-// has opted out of automated review for. Shared by both monitor engines.
+// has opted out of automated review for.
 export async function filterReviewableEntries(entries: MonitorEntry[]): Promise<MonitorEntry[]> {
   const posRows = (await positionsRepo.find(
     { status: 'OPEN', coin: { $ne: 'USDC' } },
@@ -828,19 +508,10 @@ export async function filterReviewableEntries(entries: MonitorEntry[]): Promise<
   return entries.filter(e => (horizonByCoin.get(e.coin) ?? 'medium') !== 'disabled')
 }
 
-// A no-op voter ensemble for callers (the Type D agentic monitor) that reuse
-// buildCycleParams + finalizeReview but don't run the classic A/B/C voters.
-// finalizeReview never reads `ensemble`, so this placeholder is purely structural.
-export function placeholderEnsemble(): MonitorEnsemble {
-  return { mode: 'single', voters: [], synthesizer: null }
-}
-
 // Resolves every per-cycle knob from settings once. These are configuration, not
 // market data, so they're safe to bind at cycle start and share across all coins.
-// `ensemble` is required by the classic path; Type D passes a placeholder it never reads.
-export function buildCycleParams(s: BotSettings, ensemble: MonitorEnsemble): CycleParams {
+export function buildCycleParams(s: BotSettings): CycleParams {
   return {
-    ensemble,
     adjustEnabled: s.monitor_adjust_sltp,
     trustLlm: s.monitor_trust_llm_sltp,
     useHorizon: s.monitor_use_horizon,
@@ -850,8 +521,6 @@ export function buildCycleParams(s: BotSettings, ensemble: MonitorEnsemble): Cyc
       medium: { slPct: s.monitor_sl_pct_medium, tpPct: s.monitor_tp_pct_medium },
       long:   { slPct: s.monitor_sl_pct_long,   tpPct: s.monitor_tp_pct_long   },
     },
-    historyTf: s.monitor_history_tf,
-    historyCount: s.monitor_history_count,
     minConfidence: Math.min(1, Math.max(0, s.monitor_min_confidence)),
     protectWinners: s.monitor_protect_winners,
     protectWinnersAtr: s.monitor_protect_winners_atr >= 0 ? s.monitor_protect_winners_atr : 1,
@@ -859,85 +528,6 @@ export function buildCycleParams(s: BotSettings, ensemble: MonitorEnsemble): Cyc
     breakevenPct: s.monitor_breakeven_pct > 0 ? s.monitor_breakeven_pct : 3,
     feeRate: s.fee_rate,
     adjustCooldownMin: s.monitor_adjust_cooldown_min,
-  }
-}
-
-export async function runMonitor(cycleId: string): Promise<void> {
-  if (running) {
-    logger.warn('Monitor already running, skipping')
-    return
-  }
-  running = true
-  logger.info('Position monitor started', { cycleId })
-  broadcast('monitor_started', { cycle_id: cycleId })
-
-  try {
-    const entries = await getMonitorEntries()
-
-    if (entries.length === 0) {
-      logger.info('Position monitor: no open positions to review')
-      broadcast('monitor_completed', { cycle_id: cycleId, reviews: [], message: 'No open positions' })
-      return
-    }
-
-    // Subscribe early so the live price feed is warm by the time each coin's prompt
-    // is built JIT inside the scheduler (buildReviewContext reads priceCache.getPrice).
-    priceCache.subscribe(entries.map(e => e.coin))
-
-    const s = getSettings()
-    const ensemble = await buildEnsemble()
-    logger.info('Monitor using model', {
-      cycleId,
-      mode: s.monitor_model,
-      voters: ensemble.voters.map(v => `${v.label}:${v.model}`),
-      synthesizer: ensemble.synthesizer ? `${ensemble.synthesizer.label}:${ensemble.synthesizer.model}` : null,
-    })
-
-    const p = buildCycleParams(s, ensemble)
-
-    // Decide which coins to review using only the horizon (a stable position-config
-    // field): a `disabled` position is skipped entirely so no LLM call is wasted on
-    // it. All live market/position values are fetched fresh at dispatch, not here.
-    const posRows = (await positionsRepo.find(
-      { status: 'OPEN', coin: { $ne: 'USDC' } },
-      { projection: { coin: 1, horizon: 1 } },
-    )) as unknown as { coin: string; horizon: string | null }[]
-    const horizonByCoin = new Map(posRows.map(r => [r.coin, r.horizon ?? 'medium']))
-
-    const toReview = entries.filter(e => (horizonByCoin.get(e.coin) ?? 'medium') !== 'disabled')
-    const skipped = entries.length - toReview.length
-    if (skipped > 0) logger.info('Monitor skipping disabled positions', { cycleId, skipped })
-
-    logger.info('Monitor scheduling coins for review', { cycleId, coins: toReview.map(e => e.coin) })
-
-    // Hand every coin to the LLM scheduler up front (each coin enqueues its voter
-    // jobs synchronously below), so the scheduler sees the full set of waiting monitor
-    // calls at once and can order/batch them by model affinity. Each coin's prompt is
-    // built JIT when its call is actually dispatched — never here — so a coin that
-    // waited behind a busy endpoint is still reviewed against current market data.
-    const settled = await Promise.all(
-      toReview.map(async (entry): Promise<PositionReview | null> => {
-        try {
-          return await monitorCoin(entry.coin, entry, cycleId, p)
-        } catch (err) {
-          logger.error('Monitor coin failed', { coin: entry.coin, cycleId, error: (err as Error).message })
-          broadcast('monitor_coin_error', { cycle_id: cycleId, coin: entry.coin, error: (err as Error).message })
-          return null
-        }
-      }),
-    )
-    const reviews: PositionReview[] = settled.filter((r): r is PositionReview => r !== null)
-
-    await pruneMonitorHistory()
-
-    broadcast('monitor_completed', { cycle_id: cycleId, reviews })
-    logger.info('Position monitor completed', { cycleId, reviewed: reviews.length })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    logger.error('Position monitor failed', { cycleId, error: message })
-    broadcast('monitor_error', { cycle_id: cycleId, error: message })
-  } finally {
-    running = false
   }
 }
 

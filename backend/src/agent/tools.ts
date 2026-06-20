@@ -484,8 +484,8 @@ function cancelEntry(args: Record<string, unknown>): unknown {
   return { ok: true, coin, note: 'Entry intent cancelled.' }
 }
 
-// ── Type D position-monitor tools ─────────────────────────────────────────────
-// Added for the agentic Type D monitor (agent/monitorD.ts), but registered on the
+// ── Position-monitor tools ────────────────────────────────────────────────────
+// Added for the Agent Monitor (agent/monitor.ts), but registered on the
 // shared belt so the chat agent can call them too. All read-only.
 
 // Recent OHLCV candles. Cache-first by design: getOHLCV reads the local `ohlcv_cache`
@@ -523,7 +523,7 @@ async function getCandleData(args: Record<string, unknown>): Promise<unknown> {
 }
 
 // Past performance for one coin: realized PnL across executed trades plus the recent
-// monitor verdict history, so Type D can judge how this position has been managed.
+// monitor verdict history, so the Agent Monitor can judge how this position has been managed.
 async function getPositionHistory(args: Record<string, unknown>): Promise<unknown> {
   const coin = normalizeCoin(args.coin)
   if (!coin) return { error: 'Provide a coin, e.g. "BTC".' }
@@ -555,7 +555,7 @@ async function getPositionHistory(args: Record<string, unknown>): Promise<unknow
 }
 
 // The persistent per-coin monitor note — the position monitor's own memory across
-// reviews (what it decided last time and why, what it's watching for). Gives Type D
+// reviews (what it decided last time and why, what it's watching for). Gives the Agent Monitor
 // continuity so it doesn't re-reason from scratch or flip-flop versus its past self.
 async function getCoinNotes(args: Record<string, unknown>): Promise<unknown> {
   const coin = normalizeCoin(args.coin)
@@ -1169,11 +1169,11 @@ export const TOOLS: AgentTool[] = [
 
 const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]))
 
-// The curated belt the Type D agentic monitor exposes to its model: only the
-// position-evaluation reads it needs to reach a Hold/Adjust/Close verdict. It is
-// deliberately a SUBSET — Type D must never trigger engines or mutate the watchlist
-// mid-review, so the trigger_*/watchlist tools are excluded.
-export const MONITOR_D_TOOL_NAMES = [
+// The curated belt the Agent Monitor exposes to its model: only the position-evaluation reads
+// it needs to reach a Hold/Adjust/Close verdict. It is deliberately a SUBSET — the monitor must
+// never trigger engines or mutate the watchlist mid-review, so the trigger_*/watchlist tools
+// are excluded.
+export const MONITOR_TOOL_NAMES = [
   'get_portfolio', 'list_open_positions', 'get_market', 'get_candle_data',
   'get_position_history', 'get_coin_sentiment', 'web_search', 'get_coin_notes', 'list_position_reviews',
   'list_recent_trades', 'list_recent_signals',
@@ -1202,7 +1202,7 @@ export function isReadOnlyTool(name: string): boolean {
 }
 
 /** OpenAI `tools` array built from the registry. Pass `only` to expose a subset
- *  (e.g. the Type D monitor belt); omit it for the full chat-agent belt. */
+ *  (e.g. the Agent Monitor belt); omit it for the full chat-agent belt. */
 export function getToolSchemas(only?: readonly string[]): {
   type: 'function'
   function: { name: string; description: string; parameters: Record<string, unknown> }

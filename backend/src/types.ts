@@ -100,7 +100,7 @@ export interface BotSettings {
   /** Which engine produces the entry (BUY/HOLD) signal for watchlist coins on the pipeline
    *  trigger: 'classic' = the research → extractor → analyst pipeline; 'agent' = the Agent
    *  Signal engine — one agentic, single-coin tool-calling agent per watchlist coin that keeps
-   *  long-term per-coin memory and a thesis. Mutually exclusive (mirrors `monitor_model: 'd'`). */
+   *  long-term per-coin memory and a thesis. Mutually exclusive. */
   signal_model: 'classic' | 'agent'
   /** Agent Signal only: when true, skip coins currently held in the portfolio (they belong to
    *  the monitor); when false, run an agent on every watchlist coin regardless of holdings. */
@@ -132,19 +132,12 @@ export interface BotSettings {
   discover_auto_add: boolean
   discover_min_volume_usd: number
   monitor_auto_run: boolean
-  /** Which monitor configuration drives open-position review on the monitor cron:
-   *  'a' = slot A only, 'b' = slot B only, 'alternate' = flip A/B each cycle,
-   *  'ab' = run A and B together and keep the higher-confidence verdict (confidence-weighted),
-   *  'abc' = run A and B, then model C synthesizes the final verdict from both,
-   *  'd' = the Type D agentic per-position monitor (tool-calling loop, uses the Agent model).
-   *  All modes are mutually exclusive — exactly one runs per tick (same cron). */
-  monitor_model: 'a' | 'b' | 'alternate' | 'ab' | 'abc' | 'd'
-  /** Type D only: review one position at a time (sequential) instead of all concurrently.
+  /** Agent Monitor: review one position at a time (sequential) instead of all concurrently.
    *  Keeps a single-lane local LLM from being flooded and makes the live feed readable. */
-  monitor_d_sequential: boolean
-  /** Type D only: how many of the most recent run records (per coin per cycle) to keep in
-   *  monitor_d_runs; older ones are pruned after each cycle. */
-  monitor_d_retain_runs: number
+  monitor_sequential: boolean
+  /** Agent Monitor: how many of the most recent run records (per coin per cycle) to keep in
+   *  monitor_runs; older ones are pruned after each cycle. */
+  monitor_retain_runs: number
   monitor_cron: string
   monitor_adjust_sltp: boolean
   monitor_auto_approve: boolean
@@ -166,10 +159,6 @@ export interface BotSettings {
   monitor_trust_llm_sltp: boolean
   /** When true, inject per-horizon behavior guidance and SL/TP targets into the monitor LLM prompt. When false, the LLM decides freely. */
   monitor_use_horizon: boolean
-  /** Timeframe for the historical candle table shown in the monitor prompt (e.g. '1h', '4h'). */
-  monitor_history_tf: string
-  /** Number of historical candles to include in the monitor prompt (1–100). */
-  monitor_history_count: number
   /** Minimum LLM confidence required to execute a monitor CLOSE; lower-confidence proposals are downgraded to HOLD. */
   monitor_min_confidence: number
   /** Profit-protection guard: when on, a monitor CLOSE on a position that is in profit, whose stop is
@@ -248,8 +237,7 @@ export interface BotSettings {
    *  `llm_<module>_endpoint`; a blank id falls back to the module's env-var config. */
   llm_endpoints: LLMEndpoint[]
   /** Per-module endpoint selection (id into `llm_endpoints`; blank = env default)
-   *  plus a max-tokens override (0 = fall back to the env-var default). The monitor
-   *  exposes its two slots (A/B) here; `monitor_model` still selects which slot runs. */
+   *  plus a max-tokens override (0 = fall back to the env-var default). */
   llm_analyst_endpoint: string
   llm_analyst_max_tokens: number
   llm_extractor_endpoint: string
@@ -258,13 +246,6 @@ export interface BotSettings {
   llm_discoverer_max_tokens: number
   llm_discoverer_extractor_endpoint: string
   llm_discoverer_extractor_max_tokens: number
-  llm_monitor_a_endpoint: string
-  llm_monitor_a_max_tokens: number
-  llm_monitor_b_endpoint: string
-  llm_monitor_b_max_tokens: number
-  /** Slot C — the synthesizer model used in 'abc' (A + B + C) mode to write the final verdict. */
-  llm_monitor_c_endpoint: string
-  llm_monitor_c_max_tokens: number
   llm_summary_endpoint: string
   llm_summary_max_tokens: number
   /** Entry Agent — the agentic per-coin entry engine. Needs a tool-calling-capable model. */
@@ -273,9 +254,9 @@ export interface BotSettings {
   /** Conversational agent (Agent page). Needs a tool-calling-capable model. */
   llm_agent_endpoint: string
   llm_agent_max_tokens: number
-  /** Type D agentic position monitor. Needs a tool-calling-capable model. */
-  llm_monitor_d_endpoint: string
-  llm_monitor_d_max_tokens: number
+  /** Agent Monitor — the agentic position monitor. Needs a tool-calling-capable model. */
+  llm_monitor_endpoint: string
+  llm_monitor_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
   /** Generic web_search agent tool — per-page query-relevant extraction. */
@@ -286,18 +267,15 @@ export interface BotSettings {
    *  socket warm (avoids idle-timeout "Premature close" drops on local servers) and
    *  powers the live token view in LLM Debug. The streamed result is reconstructed
    *  into an identical ChatCompletion, so module behavior is unchanged. Keyed by the
-   *  `LLMModule` name (e.g. `monitorD`), matching the `module` recorded on each call. */
+   *  `LLMModule` name (e.g. `monitor`), matching the `module` recorded on each call. */
   llm_stream_analyst: boolean
   llm_stream_extractor: boolean
   llm_stream_discoverer: boolean
   llm_stream_discovererExtractor: boolean
-  llm_stream_monitorA: boolean
-  llm_stream_monitorB: boolean
-  llm_stream_monitorC: boolean
   llm_stream_summary: boolean
   llm_stream_entryAgent: boolean
   llm_stream_agent: boolean
-  llm_stream_monitorD: boolean
+  llm_stream_monitor: boolean
   llm_stream_agentSignal: boolean
   llm_stream_webSearch: boolean
   /** Per-module failover endpoint selection (id into `llm_endpoints`; blank = no
@@ -311,20 +289,14 @@ export interface BotSettings {
   llm_discoverer_fb_max_tokens: number
   llm_discoverer_extractor_fb_endpoint: string
   llm_discoverer_extractor_fb_max_tokens: number
-  llm_monitor_a_fb_endpoint: string
-  llm_monitor_a_fb_max_tokens: number
-  llm_monitor_b_fb_endpoint: string
-  llm_monitor_b_fb_max_tokens: number
-  llm_monitor_c_fb_endpoint: string
-  llm_monitor_c_fb_max_tokens: number
   llm_summary_fb_endpoint: string
   llm_summary_fb_max_tokens: number
   llm_entryAgent_fb_endpoint: string
   llm_entryAgent_fb_max_tokens: number
   llm_agent_fb_endpoint: string
   llm_agent_fb_max_tokens: number
-  llm_monitor_d_fb_endpoint: string
-  llm_monitor_d_fb_max_tokens: number
+  llm_monitor_fb_endpoint: string
+  llm_monitor_fb_max_tokens: number
   llm_agentSignal_fb_endpoint: string
   llm_agentSignal_fb_max_tokens: number
   llm_webSearch_fb_endpoint: string
@@ -332,7 +304,7 @@ export interface BotSettings {
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
    *  of the most recent (non-tool) messages — bounds the tokens spent per title. */
   agent_title_context_messages: number
-  /** Per-agent tool grants for the tool-calling agents (Chat Agent, Type D monitor, …).
+  /** Per-agent tool grants for the tool-calling agents (Chat Agent, Agent Monitor, …).
    *  Sparse: only holds cells the user changed away from each agent's registry default.
    *  Resolved/enforced by the backend agent registry. */
   agent_tool_permissions: AgentToolPermissions
@@ -363,8 +335,6 @@ export interface BotSettings {
   telegram_notify_position_closed: boolean
   /** The monitor adjusted a position's SL/TP. */
   telegram_notify_sl_tp_adjusted: boolean
-  /** In A+B / A+B+C monitor modes, the underlying models disagreed on the action for a position. */
-  telegram_notify_monitor_disagreement: boolean
   /** Portfolio snapshot (total value + open-position count) after each cycle. Noisy. */
   telegram_notify_portfolio: boolean
   /** A portfolio summary was produced by the summary engine. */
@@ -568,7 +538,7 @@ export type ThesisStatus = 'intact' | 'weakening' | 'invalidated'
 export type MarketRegime = 'risk_on' | 'risk_off' | 'neutral'
 
 /** Optional structured risk metadata a reviewer may attach to a verdict, for auditability.
- *  Produced by the agentic Type D monitor; the classic monitor leaves these null. */
+ *  Produced by the Agent Monitor's per-position review. */
 export interface ReviewRiskFields {
   /** Entry-thesis re-validation. */
   thesis_status: ThesisStatus | null
@@ -594,13 +564,13 @@ export interface PositionReview extends ReviewRiskFields {
   created_at: string
 }
 
-// One persisted Type D (agentic monitor) review: the resolved verdict for a single
-// coin in a single cycle, plus the full transcript of the agent's tool-calling loop
-// (the same frames streamed live to the Agent Monitor page). Lets the page rehydrate
-// after a reload and power the per-run decision table + per-coin detail view.
+// One persisted Agent Monitor review: the resolved verdict for a single coin in a single
+// cycle, plus the full transcript of the agent's tool-calling loop (the same frames streamed
+// live to the Agent Monitor page). Lets the page rehydrate after a reload and power the
+// per-run decision table + per-coin detail view.
 // A single rendered transcript line. The server computes the presentation (icon/text/
 // tone) so the live feed and the persisted/reloaded detail view render identically.
-export interface MonitorDRunFrame {
+export interface MonitorRunFrame {
   type: string
   icon: string
   text: string
@@ -610,7 +580,7 @@ export interface MonitorDRunFrame {
   detail?: { tool: string; args?: Record<string, unknown>; result?: unknown }
 }
 
-export interface MonitorDRun extends ReviewRiskFields {
+export interface MonitorRun extends ReviewRiskFields {
   id: number
   cycle_id: string
   coin: string
@@ -619,10 +589,10 @@ export interface MonitorDRun extends ReviewRiskFields {
   reasoning: string
   /** True when the position closed mid-analysis and the verdict was not applied. */
   discarded: boolean
-  /** Model id credited (e.g. "type-d:<model>"). */
+  /** Model id credited (e.g. "monitor:<model>"). */
   model: string
   /** The agent's loop transcript (thinking / tool_call / tool_result / decision …). */
-  frames: MonitorDRunFrame[]
+  frames: MonitorRunFrame[]
   /** Token accounting across every LLM call in this run. `peak_context_tokens` is the
    *  largest single request (prompt+completion) — what presses against the model's
    *  context window; `prompt`/`completion` are summed over all the round-trips. */
@@ -635,8 +605,8 @@ export interface MonitorDRun extends ReviewRiskFields {
 
 // ── Agent Signal (the agentic, single-coin entry engine) ────────────────────
 // One agent per watchlist coin reasons with the shared tool belt and commits to BUY or
-// HOLD. The transcript reuses the Type-D frame shape so the page renders both identically.
-export type SignalRunFrame = MonitorDRunFrame
+// HOLD. The transcript reuses the monitor frame shape so the page renders both identically.
+export type SignalRunFrame = MonitorRunFrame
 
 export interface SignalRun {
   id: number
@@ -687,8 +657,8 @@ export interface SignalMemory {
 // ── Entry Agent (the agentic, per-coin entry-position engine) ────────────────
 // One agent per active entry intent reasons with the shared tool belt + the original
 // BUY thesis / Agent Signal memory, then adapts the entry band, fires, waits, or cancels
-// via action tools. The transcript reuses the Type-D frame shape so the page renders it
-// identically to Agent Signal / Type D.
+// via action tools. The transcript reuses the monitor frame shape so the page renders it
+// identically to Agent Signal / Agent Monitor.
 export interface EntryAgentRun {
   id: number
   cycle_id: string

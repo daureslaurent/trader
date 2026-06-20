@@ -3,7 +3,7 @@
 // Selected via `signal_model === 'agent'`, it replaces the classic research pipeline
 // (researcher → extractor → analyst) as the BUY/HOLD signal source for watchlist coins.
 // The scheduler's dispatchPipelineRun routes the pipeline tick here when 'agent' is chosen,
-// so the two engines are mutually exclusive by construction (mirrors monitor_model 'd').
+// so the two engines are mutually exclusive by construction.
 //
 // Where the classic pipeline runs a fixed chain, Agent Signal runs ONE agent per watchlist
 // coin: a native tool-calling loop that reads candles, live indicators, news sentiment and

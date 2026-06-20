@@ -2,8 +2,7 @@ import { logger } from '../core/logger.js'
 import { getSettings } from '../db/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
-import { runMonitor } from '../monitor/index.js'
-import { runMonitorD, runAgentSignal, runAgentSignalCoin, runEntryAgent } from '../agent/index.js'
+import { runMonitor, runAgentSignal, runAgentSignalCoin, runEntryAgent } from '../agent/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { RouteNode, FireContext } from './types.js'
 
@@ -36,12 +35,6 @@ function guarded(moduleType: string, run: () => Promise<unknown>): boolean {
     .catch((err) => logger.error('Routed engine run failed', { module: moduleType, error: err instanceof Error ? err.message : String(err) }))
     .finally(() => running.set(moduleType, false))
   return true
-}
-
-// Same A/B/…/D dispatch as the legacy monitor cron, kept local to avoid a
-// circular import through app/scheduler.
-function dispatchMonitor(cycleId: string): Promise<void> {
-  return getSettings().monitor_model === 'd' ? runMonitorD(cycleId) : runMonitor(cycleId)
 }
 
 // Entry-signal dispatch: the agentic Agent Signal engine when signal_model === 'agent',
@@ -81,7 +74,7 @@ const HANDLERS: Record<string, OutputHandler> = {
   },
 
   module_monitor: () =>
-    result(guarded('module_monitor', () => dispatchMonitor(cycle('monitor')))),
+    result(guarded('module_monitor', () => runMonitor(cycle('monitor')))),
 
   module_discovery: () =>
     result(guarded('module_discovery', () => runDiscovery(cycle('discovery')))),
