@@ -1,5 +1,5 @@
 import { settings as settingsRepo, Row } from './repositories.js'
-import { BotSettings, LLMEndpoint, AgentToolPermissions, AgentToolPermission } from '../types.js'
+import { BotSettings, LLMEndpoint, LLMModelEntry, AgentToolPermissions, AgentToolPermission } from '../types.js'
 
 // In-memory settings cache. getSettings() is called synchronously in dozens of
 // hot paths (config resolution, every engine tick, every route), so we keep the
@@ -14,8 +14,24 @@ export async function loadSettings(): Promise<void> {
   rawMap = map
 }
 
+// Parse the models nested under one endpoint, with the same defensive coercion as
+// the endpoints themselves (drops blank-id models, clamps max-tokens).
+function parseModels(raw: unknown): LLMModelEntry[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
+    .map(m => ({
+      id: String(m.id ?? ''),
+      model: String(m.model ?? ''),
+      maxTokens: Number.isFinite(Number(m.maxTokens)) ? Math.max(0, Math.floor(Number(m.maxTokens))) : 0,
+      disabled: m.disabled === true,
+    }))
+    .filter(m => m.id)
+}
+
 // Parse the persisted endpoint catalog, defensively skipping malformed entries so
-// a corrupt row can never crash settings reads (which run on every LLM call).
+// a corrupt row can never crash settings reads (which run on every LLM call). Old
+// flat rows (no `models` array) parse to an endpoint with `models: []`.
 function parseEndpoints(raw: string | undefined): LLMEndpoint[] {
   if (!raw) return []
   try {
@@ -27,11 +43,10 @@ function parseEndpoints(raw: string | undefined): LLMEndpoint[] {
         id: String(e.id ?? ''),
         name: String(e.name ?? ''),
         baseURL: String(e.baseURL ?? ''),
-        model: String(e.model ?? ''),
-        maxTokens: Number.isFinite(Number(e.maxTokens)) ? Math.max(0, Math.floor(Number(e.maxTokens))) : 0,
         parallel: e.parallel === true,
         maxParallel: Number.isFinite(Number(e.maxParallel)) ? Math.max(0, Math.floor(Number(e.maxParallel))) : 0,
         disabled: e.disabled === true,
+        models: parseModels(e.models),
       }))
       .filter(e => e.id)
   } catch {

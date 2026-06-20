@@ -475,22 +475,35 @@ export interface MonitorModelsResponse {
 }
 
 /** A named LLM endpoint in the shared catalog. Modules reference one by `id`. */
+/** One model served by an endpoint. Modules reference a model by its `id`. */
+export interface LLMModelEntry {
+  /** Globally-unique id referenced by per-module endpoint selections. */
+  id: string
+  model: string
+  /** Default max-tokens for this model (0 = use the env-var default). A
+   *  per-module override takes precedence. */
+  maxTokens: number
+  /** When true, this model is taken out of rotation: modules selecting it route
+   *  to their failover. */
+  disabled: boolean
+}
+
+/** A named endpoint (server URL) holding a list of models. */
 export interface LLMEndpoint {
   id: string
   name: string
   baseURL: string
-  model: string
-  /** Default max-tokens for this endpoint (0 = use the env-var default). A
-   *  per-module override takes precedence. */
-  maxTokens: number
   /** When true, calls to this endpoint may run in parallel even while same-URL
    *  serialization is on. */
   parallel: boolean
   /** Max concurrent calls when `parallel` is on (0 = unlimited). */
   maxParallel: number
-  /** When true, the endpoint is taken out of rotation: the router treats it as
-   *  permanently offline and modules selecting it route to their failover. */
+  /** When true, the whole endpoint (server) is taken out of rotation: the router
+   *  treats it as permanently offline and modules selecting its models route to
+   *  their failover. */
   disabled: boolean
+  /** The models this endpoint serves. */
+  models: LLMModelEntry[]
 }
 
 /** Module keys whose LLM endpoint/model/max-tokens can be overridden from Settings. */

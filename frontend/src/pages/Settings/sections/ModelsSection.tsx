@@ -4,12 +4,17 @@ import { Button } from '../../../components/ui/Button'
 import { Input } from '../../../components/ui/Input'
 import { Modal } from '../../../components/ui/Modal'
 import { cn } from '../../../lib/utils'
-import { LLMEndpoint, LLMDefaults } from '../../../types'
+import { LLMEndpoint, LLMModelEntry, LLMDefaults } from '../../../types'
 import { SectionProps, SettingsData, SetFn } from '../types'
 import { LLM_MODULES, LLMModule } from '../constants'
-import { Panel, Row, UnitInput, EndpointSelect } from '../widgets'
+import { Panel, Row, UnitInput, findModelById } from '../widgets'
+import { ModelPicker } from '../ModelPicker'
 
-// One row in the LLM Models section: a primary endpoint picker + max-tokens, plus a
+function uid(): string {
+  return crypto.randomUUID?.() ?? `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+// One row in the LLM Models section: a primary model picker + max-tokens, plus a
 // collapsible "failover" block. The fallback only fires when the primary call
 // throws, so it's a subordinate, opt-in panel — auto-expanded when already
 // configured, with a live status dot so an active fallback reads at a glance.
@@ -24,26 +29,26 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
   const maxTokens = settings[m.maxTokensKey] as number
   const fbEndpoint = (settings[m.fbEndpointKey] as string) ?? ''
   const fbMaxTokens = settings[m.fbMaxTokensKey] as number
-  const fbActive = !!fbEndpoint && endpoints.some(e => e.id === fbEndpoint)
+  const fbSelected = findModelById(endpoints, fbEndpoint)
+  const fbActive = !!fbSelected
   const [open, setOpen] = useState(fbActive)
 
-  // The env-var default the module uses when no endpoint is picked.
+  // The env-var default the module uses when no model is picked.
   const envLabel = def ? `Env default · ${def.model}` : 'Env default'
 
-  // What a blank max-tokens field resolves to: the selected endpoint's own default
+  // What a blank max-tokens field resolves to: the selected model's own default
   // if set, else the env default. Mirrors resolveMaxTokens() on the backend so the
   // placeholder honestly previews the effective budget.
-  const selectedEp = endpoints.find(e => e.id === (settings[m.endpointKey] as string))
-  // Selected primary is disabled in the catalog → the backend treats it as offline
-  // and routes to the fallback (or the env default when none is configured).
-  const primaryDisabled = !!selectedEp?.disabled
-  const primaryDefaultTokens = (selectedEp?.maxTokens && selectedEp.maxTokens > 0)
-    ? selectedEp.maxTokens
+  const selected = findModelById(endpoints, settings[m.endpointKey] as string)
+  // Selected primary is disabled in the catalog (model or its endpoint) → the
+  // backend treats it as offline and routes to the fallback (or env default).
+  const primaryDisabled = !!selected && (selected.ep.disabled || selected.m.disabled)
+  const primaryDefaultTokens = (selected?.m.maxTokens && selected.m.maxTokens > 0)
+    ? selected.m.maxTokens
     : def?.maxTokens
   const primaryEffectiveTokens = maxTokens > 0 ? maxTokens : primaryDefaultTokens
-  const fbEp = endpoints.find(e => e.id === fbEndpoint)
-  const fbDefaultTokens = (fbEp?.maxTokens && fbEp.maxTokens > 0)
-    ? fbEp.maxTokens
+  const fbDefaultTokens = (fbSelected?.m.maxTokens && fbSelected.m.maxTokens > 0)
+    ? fbSelected.m.maxTokens
     : primaryEffectiveTokens
 
   function clearFallback() {
@@ -51,9 +56,9 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
     set(m.fbMaxTokensKey, 0 as SettingsData[typeof m.fbMaxTokensKey])
   }
 
-  // No endpoints defined yet — nudge the user to the catalog modal instead of
-  // showing an empty dropdown.
-  if (endpoints.length === 0) {
+  // No models defined anywhere yet — nudge the user to the catalog modal instead of
+  // showing an empty picker.
+  if (endpoints.every(e => e.models.length === 0)) {
     return (
       <Row label={m.label} hint={m.hint} stacked>
         <button
@@ -64,7 +69,7 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
           <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
           </svg>
-          Add an endpoint to assign — falls back to {def ? def.model : 'the env default'} until then
+          Add an endpoint &amp; model to assign — falls back to {def ? def.model : 'the env default'} until then
         </button>
       </Row>
     )
@@ -73,12 +78,12 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
   return (
     <Row label={m.label} hint={m.hint} stacked>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px]">
-        <EndpointSelect
+        <ModelPicker
           value={settings[m.endpointKey] as string}
           onChange={v => set(m.endpointKey, v as SettingsData[typeof m.endpointKey])}
           endpoints={endpoints}
           emptyLabel={envLabel}
-          ariaLabel={`${m.label} endpoint`}
+          ariaLabel={`${m.label} model`}
         />
         <UnitInput
           type="number"
@@ -110,7 +115,7 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
           </svg>
           <span>
-            This endpoint is disabled — calls route to {fbActive ? 'the fallback below' : 'the env default'}.
+            This model is disabled — calls route to {fbActive ? 'the fallback below' : 'the env default'}.
           </span>
         </div>
       )}
@@ -146,15 +151,15 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
           <div className="mt-2 space-y-2 rounded-lg border border-border/60 border-l-2 border-l-accent/50 bg-surface-elevated/40 p-3">
             <p className="text-[11px] leading-relaxed text-muted">
               Used only if the primary call fails (endpoint down, timeout, 5xx, unknown model).
-              Pick an endpoint to enable failover.
+              Pick a model to enable failover.
             </p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px]">
-              <EndpointSelect
+              <ModelPicker
                 value={fbEndpoint}
                 onChange={v => set(m.fbEndpointKey, v as SettingsData[typeof m.fbEndpointKey])}
                 endpoints={endpoints}
                 emptyLabel="No fallback"
-                ariaLabel={`${m.label} fallback endpoint`}
+                ariaLabel={`${m.label} fallback model`}
               />
               <UnitInput
                 type="number"
@@ -184,26 +189,39 @@ function LLMModuleRow({ m, settings, set, def, endpoints, onManage }: {
   )
 }
 
-// Modal that manages the shared endpoint catalog: add / edit / delete named
-// {URL, model, parallel} entries that the module dropdowns select from. Edits flow
-// straight to the parent's settings state via `onChange`, so they join the dirty
-// diff and persist with the main Save button (like the watchlist).
+// Modal that manages the shared catalog: each endpoint is a server URL holding a
+// list of models. Edits flow straight to the parent's settings state via `onChange`,
+// so they join the dirty diff and persist with the main Save button (like the watchlist).
 function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
   open: boolean
   onClose: () => void
   endpoints: LLMEndpoint[]
   onChange: (next: LLMEndpoint[]) => void
-  usage: (id: string) => string[]
+  usage: (modelId: string) => string[]
 }) {
-  function update(id: string, patch: Partial<LLMEndpoint>) {
+  function updateEp(id: string, patch: Partial<LLMEndpoint>) {
     onChange(endpoints.map(e => e.id === id ? { ...e, ...patch } : e))
   }
-  function add() {
-    const id = (crypto.randomUUID?.() ?? `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`)
-    onChange([...endpoints, { id, name: '', baseURL: '', model: '', maxTokens: 0, parallel: false, maxParallel: 0, disabled: false }])
+  function addEp() {
+    onChange([...endpoints, { id: uid(), name: '', baseURL: '', parallel: false, maxParallel: 0, disabled: false, models: [] }])
   }
-  function remove(id: string) {
+  function removeEp(id: string) {
     onChange(endpoints.filter(e => e.id !== id))
+  }
+  function addModel(epId: string) {
+    onChange(endpoints.map(e => e.id === epId
+      ? { ...e, models: [...e.models, { id: uid(), model: '', maxTokens: 0, disabled: false }] }
+      : e))
+  }
+  function updateModel(epId: string, modelId: string, patch: Partial<LLMModelEntry>) {
+    onChange(endpoints.map(e => e.id === epId
+      ? { ...e, models: e.models.map(mm => mm.id === modelId ? { ...mm, ...patch } : mm) }
+      : e))
+  }
+  function removeModel(epId: string, modelId: string) {
+    onChange(endpoints.map(e => e.id === epId
+      ? { ...e, models: e.models.filter(mm => mm.id !== modelId) }
+      : e))
   }
 
   return (
@@ -211,7 +229,7 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
       open={open}
       onClose={onClose}
       title="LLM Endpoints"
-      subtitle="Define each URL + model once; modules pick from these."
+      subtitle="Define each server URL once, then add the models it serves; modules pick from these."
       footer={
         <div className="flex items-center justify-between gap-3">
           <p className="text-[11px] text-muted">Changes save with the page's Save button.</p>
@@ -222,14 +240,13 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
       <div className="space-y-3">
         {endpoints.length === 0 && (
           <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted">
-            No endpoints yet. Add one to start assigning models to modules.
+            No endpoints yet. Add a server URL, then add the models it serves.
           </div>
         )}
 
         {endpoints.map(ep => {
-          const used = usage(ep.id)
-          const incomplete = !ep.baseURL.trim() || !ep.model.trim()
           const isDisabled = ep.disabled
+          const urlIncomplete = !ep.baseURL.trim()
           return (
             <div
               key={ep.id}
@@ -238,11 +255,12 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                 isDisabled ? 'border-dashed border-border bg-surface-elevated/20' : 'border-border bg-surface-elevated/40',
               )}
             >
+              {/* Endpoint (server) header */}
               <div className="flex items-center gap-2">
                 <Input
                   type="text"
                   value={ep.name}
-                  onChange={e => update(ep.id, { name: e.target.value })}
+                  onChange={e => updateEp(ep.id, { name: e.target.value })}
                   placeholder="Name (e.g. Local Ollama)"
                   className="flex-1 text-sm"
                   aria-label="Endpoint name"
@@ -254,7 +272,7 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                 )}
                 <button
                   type="button"
-                  onClick={() => remove(ep.id)}
+                  onClick={() => removeEp(ep.id)}
                   className="shrink-0 rounded-lg p-2 text-muted transition-colors hover:bg-sell/10 hover:text-sell"
                   aria-label="Delete endpoint"
                 >
@@ -264,42 +282,24 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                 </button>
               </div>
 
-              <div className={cn('grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_120px]', isDisabled && 'opacity-50')}>
+              <div className={cn(isDisabled && 'opacity-50')}>
                 <Input
                   type="text"
                   value={ep.baseURL}
-                  onChange={e => update(ep.id, { baseURL: e.target.value })}
+                  onChange={e => updateEp(ep.id, { baseURL: e.target.value })}
                   placeholder="Base URL (http://localhost:11434/v1)"
                   className="font-mono text-xs"
                   aria-label="Endpoint base URL"
                 />
-                <Input
-                  type="text"
-                  value={ep.model}
-                  onChange={e => update(ep.id, { model: e.target.value })}
-                  placeholder="Model (qwen2.5:14b)"
-                  className="font-mono text-xs"
-                  aria-label="Endpoint model"
-                />
-                <UnitInput
-                  type="number"
-                  min="0"
-                  step="256"
-                  unit="tok"
-                  value={ep.maxTokens || ''}
-                  onChange={e => update(ep.id, { maxTokens: parseInt(e.target.value) || 0 })}
-                  placeholder="default"
-                  className="font-mono text-xs"
-                  aria-label="Endpoint default max tokens"
-                />
               </div>
 
+              {/* Server-level concurrency */}
               <div className={cn('flex flex-wrap items-center justify-between gap-3', isDisabled && 'opacity-50')}>
                 <div className="flex items-center gap-2.5">
                   <Toggle
                     label="Allow parallel calls"
                     checked={ep.parallel}
-                    onChange={() => update(ep.id, { parallel: !ep.parallel })}
+                    onChange={() => updateEp(ep.id, { parallel: !ep.parallel })}
                   />
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-foreground">Run in parallel</p>
@@ -316,39 +316,108 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
                         step="1"
                         unit="∥"
                         value={ep.maxParallel || ''}
-                        onChange={e => update(ep.id, { maxParallel: parseInt(e.target.value) || 0 })}
+                        onChange={e => updateEp(ep.id, { maxParallel: parseInt(e.target.value) || 0 })}
                         placeholder="∞"
                         className="w-20 font-mono text-xs"
                         aria-label="Max concurrent calls"
                       />
                     </label>
                   )}
-                  {incomplete && (
-                    <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-500">Incomplete</span>
-                  )}
-                  {used.length > 0 && (
-                    <span className="rounded-md bg-accent/10 px-2 py-0.5 text-[11px] text-accent" title={used.join(', ')}>
-                      Used by {used.length} {used.length === 1 ? 'module' : 'modules'}
-                    </span>
+                  {urlIncomplete && (
+                    <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-500">No URL</span>
                   )}
                 </div>
               </div>
 
+              {/* Models list */}
+              <div className={cn('space-y-2 border-t border-border pt-3', isDisabled && 'opacity-50')}>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Models</p>
+                {ep.models.length === 0 && (
+                  <p className="text-[11px] text-muted">No models yet — add one below.</p>
+                )}
+                {ep.models.map(mm => {
+                  const used = usage(mm.id)
+                  const modelIncomplete = !mm.model.trim()
+                  return (
+                    <div key={mm.id} className="flex items-center gap-2">
+                      <Input
+                        type="text"
+                        value={mm.model}
+                        onChange={e => updateModel(ep.id, mm.id, { model: e.target.value })}
+                        placeholder="Model (qwen2.5:14b)"
+                        className="flex-1 font-mono text-xs"
+                        aria-label="Model id"
+                      />
+                      <UnitInput
+                        type="number"
+                        min="0"
+                        step="256"
+                        unit="tok"
+                        value={mm.maxTokens || ''}
+                        onChange={e => updateModel(ep.id, mm.id, { maxTokens: parseInt(e.target.value) || 0 })}
+                        placeholder="default"
+                        className="w-24 font-mono text-xs"
+                        aria-label="Model default max tokens"
+                      />
+                      {modelIncomplete && (
+                        <span className="shrink-0 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-500">empty</span>
+                      )}
+                      {used.length > 0 && (
+                        <span className="shrink-0 rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent" title={used.join(', ')}>
+                          {used.length} use{used.length === 1 ? '' : 's'}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => updateModel(ep.id, mm.id, { disabled: !mm.disabled })}
+                        title={mm.disabled ? 'Model disabled — click to enable' : 'Disable this model'}
+                        aria-label="Toggle model disabled"
+                        className={cn(
+                          'shrink-0 rounded-lg p-1.5 transition-colors',
+                          mm.disabled ? 'text-sell hover:bg-sell/10' : 'text-muted hover:bg-surface-hover hover:text-foreground',
+                        )}
+                      >
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeModel(ep.id, mm.id)}
+                        className="shrink-0 rounded-lg p-1.5 text-muted transition-colors hover:bg-sell/10 hover:text-sell"
+                        aria-label="Delete model"
+                      >
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  )
+                })}
+                <button
+                  type="button"
+                  onClick={() => addModel(ep.id)}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-1.5 text-[11px] text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+                >
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                  </svg>
+                  Add model
+                </button>
+              </div>
+
+              {/* Disable whole server */}
               <div className="flex items-center gap-2.5 border-t border-border pt-3">
                 <Toggle
                   label="Disable endpoint"
                   danger
                   checked={isDisabled}
-                  onChange={() => update(ep.id, { disabled: !isDisabled })}
+                  onChange={() => updateEp(ep.id, { disabled: !isDisabled })}
                 />
                 <div className="min-w-0">
-                  <p className="text-xs font-medium text-foreground">Disable (take out of rotation)</p>
+                  <p className="text-xs font-medium text-foreground">Disable server (take out of rotation)</p>
                   <p className="text-[11px] leading-tight text-muted">
-                    {isDisabled
-                      ? used.length > 0
-                        ? `Treated as offline — ${used.length === 1 ? 'the module' : 'modules'} using it route to their failover.`
-                        : 'Treated as offline. Modules selecting it route to their failover.'
-                      : 'Stop sending it traffic without deleting it or re-pointing modules.'}
+                    Treated as offline — every module selecting one of its models routes to their failover.
                   </p>
                 </div>
               </div>
@@ -358,7 +427,7 @@ function EndpointModal({ open, onClose, endpoints, onChange, usage }: {
 
         <button
           type="button"
-          onClick={add}
+          onClick={addEp}
           className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border px-3 py-3 text-sm text-muted transition-colors hover:border-accent/40 hover:text-foreground"
         >
           <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -377,11 +446,12 @@ export function ModelsSection({ settings, set, toggle, llmDefaults, modalOpen, s
   setModalOpen: (v: boolean) => void
 }) {
   const endpoints = settings.llm_endpoints
+  const modelCount = endpoints.reduce((n, e) => n + e.models.length, 0)
   return (
     <Panel>
       <Row
         label="Endpoint catalog"
-        hint={`Your reusable URL + model entries. ${endpoints.length} defined.`}
+        hint={`Your reusable server URLs and the models they serve. ${endpoints.length} endpoint${endpoints.length === 1 ? '' : 's'}, ${modelCount} model${modelCount === 1 ? '' : 's'}.`}
       >
         <Button type="button" variant="secondary" size="sm" onClick={() => setModalOpen(true)}>
           Manage endpoints
@@ -428,10 +498,10 @@ export function ModelsSection({ settings, set, toggle, llmDefaults, modalOpen, s
         onClose={() => setModalOpen(false)}
         endpoints={endpoints}
         onChange={next => set('llm_endpoints', next)}
-        usage={id =>
+        usage={modelId =>
           LLM_MODULES.flatMap(m =>
-            settings[m.endpointKey] === id ? [m.label]
-              : settings[m.fbEndpointKey] === id ? [`${m.label} (fallback)`]
+            settings[m.endpointKey] === modelId ? [m.label]
+              : settings[m.fbEndpointKey] === modelId ? [`${m.label} (fallback)`]
               : [],
           )
         }

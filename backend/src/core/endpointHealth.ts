@@ -69,27 +69,31 @@ async function probeAll(): Promise<EndpointHealth[]> {
   }
 
   const checkedAt = new Date().toISOString()
+  // One health row per (endpoint, model). The probe is still issued once per base
+  // URL (shared via `probe`), then fanned out across that endpoint's models.
   return Promise.all(
-    endpoints.map(async ep => {
+    endpoints.flatMap(ep => {
       const baseURL = ep.baseURL.trim()
-      // A user-disabled endpoint is intentionally out of rotation — never probe it;
-      // report it as `disabled` so the UI distinguishes it from a genuine outage.
-      if (ep.disabled) {
-        return { id: ep.id, name: ep.name, baseURL, model: ep.model, status: 'disabled' as const, latencyMs: 0, modelPresent: false, checkedAt }
-      }
-      if (!baseURL || !ep.model.trim()) {
-        return { id: ep.id, name: ep.name, baseURL, model: ep.model, status: 'down' as const, latencyMs: 0, modelPresent: false, error: 'Endpoint not configured', checkedAt }
-      }
-      const ping = await probe(baseURL)
-      const modelPresent = ping.ok && modelAdvertised(ep.model, ping.models)
-      // `degraded` is suppressed when the server lists no models at all (some
-      // healthy servers return an empty list).
-      const status: EndpointHealth['status'] = !ping.ok
-        ? 'down'
-        : ping.models.length > 0 && !modelPresent
-          ? 'degraded'
-          : 'up'
-      return { id: ep.id, name: ep.name, baseURL, model: ep.model, status, latencyMs: ping.latencyMs, modelPresent, error: ping.error, checkedAt }
+      return ep.models.map(async (m): Promise<EndpointHealth> => {
+        // A user-disabled endpoint or model is intentionally out of rotation —
+        // never probe it; report `disabled` so the UI distinguishes it from an outage.
+        if (ep.disabled || m.disabled) {
+          return { id: m.id, name: ep.name, baseURL, model: m.model, status: 'disabled', latencyMs: 0, modelPresent: false, checkedAt }
+        }
+        if (!baseURL || !m.model.trim()) {
+          return { id: m.id, name: ep.name, baseURL, model: m.model, status: 'down', latencyMs: 0, modelPresent: false, error: 'Endpoint not configured', checkedAt }
+        }
+        const ping = await probe(baseURL)
+        const modelPresent = ping.ok && modelAdvertised(m.model, ping.models)
+        // `degraded` is suppressed when the server lists no models at all (some
+        // healthy servers return an empty list).
+        const status: EndpointHealth['status'] = !ping.ok
+          ? 'down'
+          : ping.models.length > 0 && !modelPresent
+            ? 'degraded'
+            : 'up'
+        return { id: m.id, name: ep.name, baseURL, model: m.model, status, latencyMs: ping.latencyMs, modelPresent, error: ping.error, checkedAt }
+      })
     }),
   )
 }

@@ -1,8 +1,8 @@
 import { ReactNode, useState, KeyboardEvent } from 'react'
 import { Card } from '../../components/ui/Card'
-import { Input, Select } from '../../components/ui/Input'
+import { Input } from '../../components/ui/Input'
 import { cn } from '../../lib/utils'
-import { LLMEndpoint } from '../../types'
+import { LLMEndpoint, LLMModelEntry } from '../../types'
 import { CRON_PRESETS, describeCron, isValidCron } from './constants'
 
 export function SectionIcon({ path, className }: { path: string; className?: string }) {
@@ -170,40 +170,22 @@ export function WatchlistEditor({ value, onChange }: { value: string[]; onChange
   )
 }
 
-// Short label for an endpoint in the dropdowns: "Name · model" (+ a ∥ marker when
-// the endpoint is flagged parallel-capable, + a disabled marker when out of rotation).
-export function endpointLabel(e: LLMEndpoint): string {
-  let s = e.name ? `${e.name} · ${e.model}` : (e.model || e.baseURL || 'endpoint')
-  if (e.maxTokens > 0) s += ` · ${e.maxTokens} tok`
-  if (e.parallel) s += e.maxParallel > 0 ? ` ∥${e.maxParallel}` : ' ∥'
-  if (e.disabled) s += ' · disabled'
-  return s
+// Find a model entry (and its parent endpoint) by the model's globally-unique id.
+export function findModelById(endpoints: LLMEndpoint[], id: string): { ep: LLMEndpoint; m: LLMModelEntry } | undefined {
+  if (!id) return undefined
+  for (const ep of endpoints) {
+    const m = ep.models.find(x => x.id === id)
+    if (m) return { ep, m }
+  }
+  return undefined
 }
 
-// A catalog-backed endpoint picker. `value` is the selected endpoint id; an empty
-// id selects the first option (`emptyLabel`). If the stored id no longer matches a
-// catalog entry (endpoint deleted), a disabled placeholder keeps it visible so the
-// stale selection is obvious rather than silently snapping to the default.
-export function EndpointSelect({ value, onChange, endpoints, emptyLabel, ariaLabel }: {
-  value: string
-  onChange: (v: string) => void
-  endpoints: LLMEndpoint[]
-  emptyLabel: string
-  ariaLabel: string
-}) {
-  const missing = !!value && !endpoints.some(e => e.id === value)
-  return (
-    <Select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      aria-label={ariaLabel}
-      className="text-xs"
-    >
-      <option value="">{emptyLabel}</option>
-      {endpoints.map(e => (
-        <option key={e.id} value={e.id}>{endpointLabel(e)}</option>
-      ))}
-      {missing && <option value={value} disabled>⚠ deleted endpoint</option>}
-    </Select>
-  )
+// Short label for a model selection: "Endpoint · model" (+ a ∥ marker when the
+// endpoint is parallel-capable, + a disabled marker when out of rotation).
+export function modelLabel(ep: LLMEndpoint, m: LLMModelEntry): string {
+  let s = `${ep.name || ep.baseURL || 'endpoint'} · ${m.model || 'model'}`
+  if (m.maxTokens > 0) s += ` · ${m.maxTokens} tok`
+  if (ep.parallel) s += ep.maxParallel > 0 ? ` ∥${ep.maxParallel}` : ' ∥'
+  if (ep.disabled || m.disabled) s += ' · disabled'
+  return s
 }

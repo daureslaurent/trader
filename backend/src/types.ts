@@ -44,29 +44,42 @@ export interface PortfolioSnapshot {
   created_at: string
 }
 
-/** A named LLM endpoint in the shared catalog. Modules reference one by `id`
- *  (via `llm_<module>_endpoint`) instead of storing a URL/model each. */
-export interface LLMEndpoint {
-  /** Stable identifier referenced by per-module endpoint selections. */
+/** One model served by an endpoint. Modules reference a model by its `id` (via
+ *  `llm_<module>_endpoint`); resolution finds the parent endpoint for the URL. */
+export interface LLMModelEntry {
+  /** Globally-unique identifier referenced by per-module endpoint selections. */
   id: string
-  /** Friendly label shown in the Settings dropdowns. */
-  name: string
-  baseURL: string
+  /** The model id as advertised by the server (e.g. `qwen2.5:14b`). */
   model: string
-  /** Default max-tokens for this endpoint (0 = fall back to the env-var default).
+  /** Default max-tokens for this model (0 = fall back to the env-var default).
    *  A per-module override (`llm_<module>_max_tokens` > 0) takes precedence. */
   maxTokens: number
+  /** When true, this model is taken out of rotation: any module selecting it
+   *  routes to its configured failover (or the env default). */
+  disabled: boolean
+}
+
+/** A named LLM endpoint (a server URL) in the shared catalog, holding a list of
+ *  models. Modules reference a model by its `id` (via `llm_<module>_endpoint`)
+ *  instead of storing a URL/model each. */
+export interface LLMEndpoint {
+  /** Stable identifier for the endpoint (server). */
+  id: string
+  /** Friendly label shown in the Settings selectors. */
+  name: string
+  baseURL: string
   /** When true, calls to this endpoint may run in parallel even while same-URL
    *  serialization is on — for a server that can handle concurrent requests. */
   parallel: boolean
   /** Max concurrent calls allowed when `parallel` is on (0 = unlimited). Calls
    *  beyond this queue and run as in-flight ones complete. */
   maxParallel: number
-  /** When true, the endpoint is treated as permanently offline: the router never
-   *  sends it traffic and any module selecting it routes to its configured
-   *  failover (or the env default). Lets you take a model out of rotation without
-   *  deleting it or re-pointing every module. */
+  /** When true, the whole endpoint (server) is treated as permanently offline:
+   *  the router never sends it traffic and any module selecting one of its models
+   *  routes to its configured failover (or the env default). */
   disabled: boolean
+  /** The models this endpoint serves. */
+  models: LLMModelEntry[]
 }
 
 /** Per-(agent, tool) access level granted in Settings → Agent → Agentic Tools.

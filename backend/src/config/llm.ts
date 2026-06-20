@@ -143,17 +143,22 @@ export interface ResolvedLLM {
   fallback?: LLMTarget
 }
 
-// Looks up a catalog endpoint by id. Returns undefined for a blank id or one that
-// no longer resolves (e.g. the endpoint was deleted), so callers fall back cleanly.
-// `maxTokens` is the endpoint's own default budget (0 = none configured).
+// Looks up a catalog model by its (globally-unique) id, returning its parent
+// endpoint's URL. Returns undefined for a blank id or one that no longer resolves
+// (e.g. the model/endpoint was deleted), so callers fall back cleanly. `maxTokens`
+// is the model's own default budget (0 = none configured). A model is effectively
+// disabled when either it or its parent endpoint is disabled.
 function findEndpoint(settings: BotSettings, id: string): { baseURL: string; model: string; maxTokens: number; disabled: boolean } | undefined {
   if (!id) return undefined
-  const ep = settings.llm_endpoints.find(e => e.id === id)
-  if (!ep) return undefined
-  const baseURL = ep.baseURL.trim()
-  const model = ep.model.trim()
-  if (!baseURL || !model) return undefined
-  return { baseURL, model, maxTokens: ep.maxTokens, disabled: ep.disabled === true }
+  for (const ep of settings.llm_endpoints) {
+    const m = ep.models.find(x => x.id === id)
+    if (!m) continue
+    const baseURL = ep.baseURL.trim()
+    const model = m.model.trim()
+    if (!baseURL || !model) return undefined
+    return { baseURL, model, maxTokens: m.maxTokens, disabled: ep.disabled === true || m.disabled === true }
+  }
+  return undefined
 }
 
 // Resolves a module's effective LLM endpoint/model/max-tokens. A selected catalog

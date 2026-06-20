@@ -93,23 +93,25 @@ async function runLimited<T>(key: string, limit: number, task: () => Promise<T>)
   }
 }
 
-/** The catalog entry matching this base URL + model, if any (first match). */
-function findCatalogEndpoint(baseURL: string, model: string) {
-  return getSettings().llm_endpoints.find(e => e.baseURL.trim() === baseURL && e.model.trim() === model)
+/** The catalog endpoint (server) serving this base URL, if any (first match). */
+function findEndpointByURL(baseURL: string) {
+  return getSettings().llm_endpoints.find(e => e.baseURL.trim() === baseURL)
 }
 
 /**
  * The concurrency gate for a call, or null for unlimited parallelism:
  *   • serialized (limit 1, keyed by base URL) — default for a one-at-a-time server
- *   • parallel + a per-endpoint max — keyed by endpoint at that limit
+ *   • parallel + a per-server max — keyed by base URL at that limit
  *   • parallel + no max — null (no gate)
+ * The gate key is always the base URL: `parallel`/`maxParallel` are server-level
+ * properties, so every model on one server shares its concurrency budget.
  */
-function resolveGate(baseURL: string, model: string): { key: string; limit: number } | null {
-  const ep = findCatalogEndpoint(baseURL, model)
+function resolveGate(baseURL: string): { key: string; limit: number } | null {
+  const ep = findEndpointByURL(baseURL)
   const parallel = getSettings().llm_allow_parallel_same_url || ep?.parallel === true
   if (!parallel) return { key: baseURL, limit: 1 }
   const max = ep?.maxParallel ?? 0
-  return max > 0 ? { key: `${baseURL}::${model}`, limit: max } : null
+  return max > 0 ? { key: baseURL, limit: max } : null
 }
 
 /**
@@ -119,14 +121,14 @@ function resolveGate(baseURL: string, model: string): { key: string; limit: numb
  * concurrent calls per gate key, `runChat`'s own `runLimited` becomes a no-op
  * pass-through and the scheduler's priority/affinity ordering is authoritative.
  *
- * The gate KEY is the unit of model contention: a serialized one-server endpoint is
- * keyed by base URL alone, so multiple models pointed at it share one gate and a
- * model swap is real — that is exactly where model-affinity batching pays off. A
- * capped-parallel endpoint is keyed by base URL + model, so each model has its own
- * lane and affinity is a no-op (the single-fixed-model deployment case).
+ * The gate KEY is the unit of model contention: it is always the base URL, so every
+ * model pointed at one server shares a single gate. A model swap is therefore real
+ * and model-affinity batching pays off whether the server is serialized or
+ * capped-parallel (`parallel`/`maxParallel` are server-level). `model` is accepted
+ * for call-site convenience but does not affect the gate.
  */
-export function endpointGate(baseURL: string, model: string): { key: string; limit: number } | null {
-  return resolveGate(baseURL, model)
+export function endpointGate(baseURL: string, _model: string): { key: string; limit: number } | null {
+  return resolveGate(baseURL)
 }
 
 // OpenAI clients are cheap to reuse but shouldn't be rebuilt on every call. We
@@ -561,7 +563,7 @@ async function runChat(
   // Pick this call's concurrency gate (serialized, capped-parallel, or unlimited).
   // A call that arrives while its gate is at capacity starts "queued" and flips to
   // "running" once it reaches the front of the waiting list.
-  const gate = resolveGate(baseUrl, params.model)
+  const gate = resolveGate(baseUrl)
   const willStream = streamEnabled(meta.module)
 
   const toTs = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
