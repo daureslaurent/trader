@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { Card, CardHeader } from '../components/ui/Card'
 import { useApi } from '../hooks/useApi'
-import { HostStats } from '../types'
+import { HostStats, AppUsageResponse, ContainerStat } from '../types'
 import { cn } from '../lib/utils'
 import { SoftwareCard } from '../components/update/SoftwareCard'
 
@@ -119,6 +119,173 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between py-2 border-b border-border/60 last:border-0">
       <span className="text-xs text-muted">{label}</span>
       <span className="text-xs font-medium text-foreground tabular-nums">{value}</span>
+    </div>
+  )
+}
+
+/** Tiny SVG trend line for a metric's recent history. */
+function Sparkline({ values, stroke, height = 34 }: { values: number[]; stroke: string; height?: number }) {
+  const width = 120
+  if (values.length < 2) {
+    return <div style={{ height }} className="flex items-center text-[10px] text-muted/40">collecting…</div>
+  }
+  const max = Math.max(...values)
+  const min = Math.min(...values)
+  const range = max - min || 1
+  const step = width / (values.length - 1)
+  const pts = values
+    .map((v, i) => `${(i * step).toFixed(1)},${(height - ((v - min) / range) * (height - 4) - 2).toFixed(1)}`)
+    .join(' ')
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} preserveAspectRatio="none" className="block">
+      <polyline fill="none" stroke={stroke} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" points={pts} />
+    </svg>
+  )
+}
+
+/** One compose container's CPU / memory / uptime with trend lines. */
+function ContainerCard({ c, cpuSeries, memSeries }: { c: ContainerStat; cpuSeries: number[]; memSeries: number[] }) {
+  const cpuTone = loadTone(Math.min(100, c.cpuPct))
+  const memTone = loadTone(c.memPct)
+  const running = c.state === 'running'
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-foreground truncate">{c.name}</p>
+          <p className="text-[10px] text-muted truncate">{c.image}</p>
+        </div>
+        <span className={cn('flex items-center gap-1.5 text-[10px] font-medium', running ? 'text-buy' : 'text-muted')}>
+          <span className={cn('w-1.5 h-1.5 rounded-full', running ? 'bg-buy animate-pulse' : 'bg-muted')} />
+          {c.state}
+        </span>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <LoadBar label={`CPU · ${c.cpuCores} core${c.cpuCores > 1 ? 's' : ''}`} pct={Math.min(100, c.cpuPct)} valueText={`${c.cpuPct.toFixed(1)}%`} />
+          <div className="mt-1"><Sparkline values={cpuSeries} stroke={cpuTone.stroke} /></div>
+        </div>
+        <div>
+          <LoadBar
+            label="Memory"
+            pct={c.memPct}
+            valueText={c.memLimitBytes > 0 ? `${fmtBytes(c.memUsedBytes)} / ${fmtBytes(c.memLimitBytes)}` : fmtBytes(c.memUsedBytes)}
+          />
+          <div className="mt-1"><Sparkline values={memSeries} stroke={memTone.stroke} /></div>
+        </div>
+      </div>
+
+      <div className="mt-3 pt-2 border-t border-border/60">
+        <InfoRow label="Uptime" value={fmtUptime(c.uptimeSeconds)} />
+      </div>
+    </Card>
+  )
+}
+
+/** App resource usage — per-container CPU/mem, Mongo footprint, backend process. */
+function AppUsageSection() {
+  const { data, error, reload } = useApi<AppUsageResponse>('/api/host/app')
+
+  useEffect(() => {
+    const id = setInterval(reload, POLL_MS)
+    return () => clearInterval(id)
+  }, [reload])
+
+  // Build per-container history series keyed by name.
+  const series = useMemo(() => {
+    const cpu: Record<string, number[]> = {}
+    const mem: Record<string, number[]> = {}
+    for (const pt of data?.history ?? []) {
+      for (const c of pt.containers) {
+        ;(cpu[c.name] ??= []).push(c.cpuPct)
+        ;(mem[c.name] ??= []).push(c.memUsedBytes)
+      }
+    }
+    return { cpu, mem }
+  }, [data])
+
+  const mongoSeries = useMemo(() => (data?.history ?? []).map(p => p.mongoTotalBytes ?? 0), [data])
+  const backendSeries = useMemo(() => (data?.history ?? []).map(p => p.backendRssBytes), [data])
+
+  const current = data?.current
+  if (!current) {
+    return (
+      <Card>
+        <CardHeader title="Application usage" subtitle="resources consumed by this app" />
+        <p className="text-xs text-muted">{error ? `Failed to load: ${error}` : 'Collecting app usage…'}</p>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-end justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-foreground tracking-tight">Application usage</h3>
+          <p className="text-xs text-muted mt-0.5">Resources consumed by this app's containers &amp; database</p>
+        </div>
+      </div>
+
+      {/* Containers */}
+      {current.dockerAvailable ? (
+        current.containers.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {current.containers.map(c => (
+              <ContainerCard key={c.id} c={c} cpuSeries={series.cpu[c.name] ?? []} memSeries={series.mem[c.name] ?? []} />
+            ))}
+          </div>
+        ) : (
+          <Card><p className="text-xs text-muted">No project containers reported.</p></Card>
+        )
+      ) : (
+        <Card className="border-warn/30">
+          <p className="text-xs text-warn">
+            Docker stats unavailable{current.dockerError ? `: ${current.dockerError}` : ''}. Mount
+            <code className="mx-1 px-1 rounded bg-surface-elevated">/var/run/docker.sock</code>
+            into the backend to enable per-container usage.
+          </p>
+        </Card>
+      )}
+
+      {/* Mongo + backend process */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader title="MongoDB footprint" subtitle="on-disk database size" />
+          {current.mongo ? (
+            <>
+              <div className="flex items-end gap-2 mb-3">
+                <span className="text-[26px] font-bold text-foreground tabular-nums leading-none">{fmtBytes(current.mongo.totalSizeBytes)}</span>
+                <span className="text-[11px] text-muted mb-0.5">on disk</span>
+              </div>
+              <Sparkline values={mongoSeries} stroke="rgb(var(--accent-rgb))" height={40} />
+              <div className="mt-2">
+                <InfoRow label="Data (logical)" value={fmtBytes(current.mongo.dataSizeBytes)} />
+                <InfoRow label="Storage (compressed)" value={fmtBytes(current.mongo.storageSizeBytes)} />
+                <InfoRow label="Indexes" value={fmtBytes(current.mongo.indexSizeBytes)} />
+                <InfoRow label="Collections" value={String(current.mongo.collections)} />
+                <InfoRow label="Documents" value={current.mongo.objects.toLocaleString()} />
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-muted">Mongo stats unavailable.</p>
+          )}
+        </Card>
+
+        <Card>
+          <CardHeader title="Backend process" subtitle={`PID ${current.backend.pid} · Node`} />
+          <div className="flex items-end gap-2 mb-3">
+            <span className="text-[26px] font-bold text-foreground tabular-nums leading-none">{fmtBytes(current.backend.rssBytes)}</span>
+            <span className="text-[11px] text-muted mb-0.5">resident memory</span>
+          </div>
+          <Sparkline values={backendSeries} stroke="rgb(var(--accent-rgb))" height={40} />
+          <div className="mt-2">
+            <InfoRow label="Heap used" value={fmtBytes(current.backend.heapUsedBytes)} />
+            <InfoRow label="Heap total" value={fmtBytes(current.backend.heapTotalBytes)} />
+            <InfoRow label="Process uptime" value={fmtUptime(current.backend.uptimeSeconds)} />
+          </div>
+        </Card>
+      </div>
     </div>
   )
 }
@@ -285,6 +452,10 @@ export default function Host() {
           </div>
         </Card>
       )}
+
+      {/* App-level resource usage (containers, Mongo, backend process) */}
+      <div className="pt-2 border-t border-border/60" />
+      <AppUsageSection />
     </div>
   )
 }

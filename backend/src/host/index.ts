@@ -10,6 +10,10 @@ export { requestUpdate, requestReboot, getUpdateReadiness, requestCheck, readUpd
 export type { UpdateReadiness, UpdateStatus, UpdateCommit } from './update.js'
 // Periodic update-availability check engine.
 export { runUpdateCheck, scheduleUpdateCheck, stopUpdateCheck } from './updateChecker.js'
+// App-level resource usage (per-container CPU/mem, Mongo footprint, backend process).
+export { getAppStats, getAppUsage, startAppSampler, stopAppSampler } from './app.js'
+export type { AppStats, AppStatsPoint, MongoUsage, BackendProcessUsage } from './app.js'
+export type { DockerContainerStat } from './docker.js'
 
 export interface CpuCoreLoad {
   core: number

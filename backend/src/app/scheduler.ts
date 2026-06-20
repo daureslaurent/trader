@@ -6,7 +6,7 @@ import { checkOpenPositions } from '../portfolio/index.js'
 import { runMonitor, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
-import { scheduleUpdateCheck, stopUpdateCheck } from '../host/index.js'
+import { scheduleUpdateCheck, stopUpdateCheck, startAppSampler, stopAppSampler } from '../host/index.js'
 import { syncFromSettings, stopRouting, refreshBinanceStreams, refreshHeldCoins } from '../routing/index.js'
 
 // The four engine triggers (pipeline / discovery / monitor / summary) are no
@@ -73,6 +73,10 @@ export function startSchedulers(settings: BotSettings): void {
 
   // Periodic "is origin/main ahead?" check — drives the sidebar update pin.
   scheduleUpdateCheck(settings.update_check_interval_hours)
+
+  // Rolling app-usage sampler (per-container CPU/mem, Mongo footprint) feeding
+  // the System page sparklines.
+  startAppSampler()
 }
 
 /** Reschedule on settings save: sync the managed engine timers + re-probe endpoints. */
@@ -92,4 +96,5 @@ export function stopSchedulers(): void {
   stopRouting()
   stopEndpointHealthMonitor()
   stopUpdateCheck()
+  stopAppSampler()
 }

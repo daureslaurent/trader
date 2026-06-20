@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { getHostStats, requestUpdate, requestReboot, getUpdateReadiness, readUpdateStatus, runUpdateCheck } from '../../host/index.js'
+import { getHostStats, getAppUsage, requestUpdate, requestReboot, getUpdateReadiness, readUpdateStatus, runUpdateCheck } from '../../host/index.js'
 import { getSettings } from '../../db/index.js'
 import { logger } from '../../core/logger.js'
 
@@ -13,6 +13,13 @@ router.get('/host/stats', async (_req: Request, res: Response) => {
     logger.error('host stats failed', { err: err instanceof Error ? err.message : String(err) })
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
+})
+
+// App-level resource usage (per-container CPU/mem, Mongo footprint, backend
+// process) + rolling history for the System page's sparklines. Served from the
+// in-memory sampler cache, so this is cheap to poll.
+router.get('/host/app', (_req: Request, res: Response) => {
+  res.json(getAppUsage())
 })
 
 // Update status: whether the action is usable (feature toggle + host bind mount

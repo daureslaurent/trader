@@ -30,6 +30,59 @@ export interface HostStats {
   }
 }
 
+/** Per-container resource usage (one compose service: backend/frontend/mongo). */
+export interface ContainerStat {
+  id: string
+  name: string
+  image: string
+  state: string
+  cpuPct: number // 0..(cores*100) — Docker convention, can exceed 100
+  cpuCores: number
+  memUsedBytes: number
+  memLimitBytes: number
+  memPct: number
+  uptimeSeconds: number
+}
+
+export interface MongoUsage {
+  collections: number
+  objects: number
+  dataSizeBytes: number
+  storageSizeBytes: number
+  indexSizeBytes: number
+  totalSizeBytes: number
+}
+
+export interface BackendProcessUsage {
+  pid: number
+  uptimeSeconds: number
+  rssBytes: number
+  heapUsedBytes: number
+  heapTotalBytes: number
+}
+
+/** App-level resource usage (what this app consumes), from GET /api/host/app. */
+export interface AppStats {
+  timestamp: number
+  dockerAvailable: boolean
+  dockerError?: string
+  containers: ContainerStat[]
+  mongo: MongoUsage | null
+  backend: BackendProcessUsage
+}
+
+export interface AppStatsPoint {
+  t: number
+  containers: { name: string; cpuPct: number; memUsedBytes: number }[]
+  mongoTotalBytes: number | null
+  backendRssBytes: number
+}
+
+export interface AppUsageResponse {
+  current: AppStats | null
+  history: AppStatsPoint[]
+}
+
 /** One commit that origin/main is ahead of the deployed checkout. */
 export interface UpdateCommit {
   sha: string

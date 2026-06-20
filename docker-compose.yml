@@ -40,6 +40,10 @@ services:
       # here; a host systemd watcher (tools/updater) sees it and runs
       # update_run.sh. Bind-mounted so the trigger reaches the host.
       - ./.update:/app/.update
+      # Read-only Docker socket: the System page reads per-container CPU/memory
+      # for this compose project via the Docker API. Read-only — the app only
+      # queries stats, never controls containers.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
