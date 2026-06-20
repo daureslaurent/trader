@@ -20,8 +20,13 @@ function num(key: string, def: number): number {
   return isNaN(parsed) ? def : parsed
 }
 
-const llamaBaseURL = req('LLAMA_BASE_URL')
-const llamaModel = req('LLAMA_MODEL')
+// LLM defaults are OPTIONAL here so a fresh install boots into SETUP MODE with no
+// env at all (the backend must come up to serve the setup wizard). When empty,
+// modules with no selected catalog endpoint simply have no usable LLM until one
+// is configured in Settings → LLM Models. Set these (or per-module *_BASE_URL /
+// *_MODEL) to seed the fallback target.
+const llamaBaseURL = opt('LLAMA_BASE_URL', '')
+const llamaModel = opt('LLAMA_MODEL', '')
 
 export const config = {
   // Binance keys are OPTIONAL here: when empty, the first-run setup wizard
