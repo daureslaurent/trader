@@ -25,6 +25,7 @@ export function RebootButton({
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [phase, setPhase] = useState<'idle' | 'triggering' | 'rebooting'>('idle')
+  const [logSince, setLogSince] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
   async function trigger() {
@@ -36,6 +37,8 @@ export function RebootButton({
         const body = await res.json().catch(() => ({}))
         throw new Error((body as { error?: string }).error || `Request failed (${res.status})`)
       }
+      const body = (await res.json().catch(() => ({}))) as { logOffset?: number }
+      setLogSince(typeof body.logOffset === 'number' ? body.logOffset : 0)
       setConfirmOpen(false)
       setPhase('rebooting')
     } catch (e) {
@@ -106,6 +109,7 @@ export function RebootButton({
         <RestartOverlay
           title="Rebooting CryptoBot…"
           message="Restarting the containers. This page will reload automatically once it’s back online."
+          logSince={logSince}
         />
       )}
     </>

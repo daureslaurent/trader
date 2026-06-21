@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { getHostStats, getAppUsage, requestUpdate, requestReboot, getUpdateReadiness, readUpdateStatus, runUpdateCheck } from '../../host/index.js'
+import { getHostStats, getAppUsage, requestUpdate, requestReboot, getUpdateReadiness, readUpdateStatus, runUpdateCheck, readUpdateLog, getUpdateLogSize } from '../../host/index.js'
 import { getSettings } from '../../db/index.js'
 import { logger } from '../../core/logger.js'
 
@@ -70,11 +70,26 @@ router.post('/host/update', async (_req: Request, res: Response) => {
     return
   }
   try {
+    // Capture the log's current size *before* triggering so the overlay can tail
+    // only this run's output (the log is append-only across updates).
+    const logOffset = await getUpdateLogSize()
     await requestUpdate({ by: 'web' })
     logger.warn('host self-update requested via web')
-    res.json({ ok: true })
+    res.json({ ok: true, logOffset })
   } catch (err) {
     logger.error('host update trigger failed', { err: err instanceof Error ? err.message : String(err) })
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Tail the host update/reboot log. `since` is a byte offset (from the trigger
+// response or the previous poll); returns only newly-appended text plus the next
+// offset. Read-only and cheap — the overlay polls this while the stack restarts.
+router.get('/host/update/log', async (req: Request, res: Response) => {
+  const since = Number(req.query.since)
+  try {
+    res.json(await readUpdateLog(Number.isFinite(since) ? since : 0))
+  } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
@@ -94,9 +109,10 @@ router.post('/host/reboot', async (_req: Request, res: Response) => {
     return
   }
   try {
+    const logOffset = await getUpdateLogSize()
     await requestReboot({ by: 'web' })
     logger.warn('host stack reboot requested via web')
-    res.json({ ok: true })
+    res.json({ ok: true, logOffset })
   } catch (err) {
     logger.error('host reboot trigger failed', { err: err instanceof Error ? err.message : String(err) })
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })

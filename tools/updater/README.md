@@ -1,8 +1,8 @@
 # tools/updater — host self-update watcher
 
 Lets the **Settings → System → "Update app"** button update the whole stack
-(git pull + `docker compose down/up --build`) even though the backend runs inside
-a container that the update tears down and rebuilds.
+(git pull + `docker compose build` then `up -d`) even though the backend runs inside
+a container that the update rebuilds and swaps.
 
 ## How it works
 

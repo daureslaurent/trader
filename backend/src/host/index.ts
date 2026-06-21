@@ -6,8 +6,8 @@ import os from 'node:os'
 import fs from 'node:fs/promises'
 
 // Host self-update bridge (trigger-file → host systemd watcher).
-export { requestUpdate, requestReboot, getUpdateReadiness, requestCheck, readUpdateStatus } from './update.js'
-export type { UpdateReadiness, UpdateStatus, UpdateCommit } from './update.js'
+export { requestUpdate, requestReboot, getUpdateReadiness, requestCheck, readUpdateStatus, readUpdateLog, getUpdateLogSize } from './update.js'
+export type { UpdateReadiness, UpdateStatus, UpdateCommit, UpdateLogChunk } from './update.js'
 // Periodic update-availability check engine.
 export { runUpdateCheck, scheduleUpdateCheck, stopUpdateCheck } from './updateChecker.js'
 // App-level resource usage (per-container CPU/mem, Mongo footprint, backend process).

@@ -1,16 +1,73 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '../ui/Button'
 import { UpdateCommit } from '../../types'
 import { stashPendingUpdate } from '../../lib/whatsNew'
+
+/**
+ * Live tail of the host update/reboot log, shown inside the restart overlay.
+ * Polls `GET /api/host/update/log?since=<offset>` and appends only the new bytes,
+ * so it streams the host-side `git pull` + `docker compose build` output as it
+ * happens. With the build running while the old backend still serves, most of the
+ * log arrives live; the brief container swap at the end just pauses the poll
+ * (failed fetches are swallowed) and it resumes once the backend is back.
+ */
+function UpdateLogConsole({ since }: { since: number }) {
+  const [text, setText] = useState('')
+  const offsetRef = useRef(since)
+  const boxRef = useRef<HTMLPreElement>(null)
+  const pinnedToBottom = useRef(true)
+
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/host/update/log?since=${offsetRef.current}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const chunk = (await res.json()) as { text: string; offset: number; size: number }
+        // A shrunk file means the log was rotated/cleared — restart the tail.
+        if (chunk.size < offsetRef.current) { offsetRef.current = 0; setText(''); return }
+        offsetRef.current = chunk.offset
+        if (chunk.text && !cancelled) setText(prev => prev + chunk.text)
+      } catch {
+        /* backend down mid-swap — keep what we have and retry next tick */
+      }
+    }
+    void poll()
+    const id = setInterval(poll, 1500)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
+  // Keep the view pinned to the newest output unless the user scrolls up.
+  useEffect(() => {
+    const el = boxRef.current
+    if (el && pinnedToBottom.current) el.scrollTop = el.scrollHeight
+  }, [text])
+
+  if (!text) return null
+  return (
+    <pre
+      ref={boxRef}
+      onScroll={e => {
+        const el = e.currentTarget
+        pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+      }}
+      className="mx-4 h-48 w-full max-w-2xl overflow-auto rounded-lg border border-border bg-black/40 p-3 text-left font-mono text-[11px] leading-relaxed text-muted whitespace-pre-wrap"
+    >
+      {text}
+    </pre>
+  )
+}
 
 /**
  * Full-screen takeover shown while the host restarts the stack (update rebuild or
  * a plain reboot). The backend (and frontend container) go down mid-restart, so we
  * can't be told when it's done — instead we poll the API: once we've seen it go
  * *down* and then come back *up*, the stack is live again and we reload to pick it
- * up. Reused by both the update and reboot flows with different copy.
+ * up. Reused by both the update and reboot flows with different copy. When given
+ * `logSince` (the byte offset captured at trigger time), it also tails the host
+ * update log so the user sees what's happening on the host.
  */
-export function RestartOverlay({ title, message }: { title: string; message: string }) {
+export function RestartOverlay({ title, message, logSince }: { title: string; message: string; logSince?: number }) {
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -49,6 +106,7 @@ export function RestartOverlay({ title, message }: { title: string; message: str
         <p className="mt-1.5 max-w-sm text-sm text-muted">{message}</p>
         <p className="mt-3 font-mono text-xs text-muted/70">elapsed {mm}:{ss}</p>
       </div>
+      {logSince !== undefined && <UpdateLogConsole since={logSince} />}
       <Button type="button" variant="ghost" size="sm" onClick={() => window.location.reload()}>
         Reload now
       </Button>
@@ -57,11 +115,12 @@ export function RestartOverlay({ title, message }: { title: string; message: str
 }
 
 /** Overlay shown while an update rebuilds the stack. */
-export function UpdatingOverlay() {
+export function UpdatingOverlay({ logSince }: { logSince?: number }) {
   return (
     <RestartOverlay
       title="Updating CryptoBot…"
       message="Pulling the latest version and rebuilding the stack. This page will reload automatically once it’s back online."
+      logSince={logSince}
     />
   )
 }
@@ -95,6 +154,7 @@ export function UpdateButton({
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [phase, setPhase] = useState<'idle' | 'triggering' | 'updating'>('idle')
+  const [logSince, setLogSince] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
   async function trigger() {
@@ -106,6 +166,8 @@ export function UpdateButton({
         const body = await res.json().catch(() => ({}))
         throw new Error((body as { error?: string }).error || `Request failed (${res.status})`)
       }
+      const body = (await res.json().catch(() => ({}))) as { logOffset?: number }
+      setLogSince(typeof body.logOffset === 'number' ? body.logOffset : 0)
       // Capture what's being applied so we can celebrate it once the rebuild lands.
       if (commits && commits.length) {
         stashPendingUpdate({ fromVersion: fromVersion ?? '', toVersion: toVersion ?? '', commits })
@@ -176,7 +238,7 @@ export function UpdateButton({
         </div>
       )}
 
-      {phase === 'updating' && <UpdatingOverlay />}
+      {phase === 'updating' && <UpdatingOverlay logSince={logSince} />}
     </>
   )
 }

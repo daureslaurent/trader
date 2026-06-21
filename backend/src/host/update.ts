@@ -1,6 +1,6 @@
 // Host self-update bridge. The backend runs inside a container, but the update
-// itself (`update_run.sh`: git pull + `docker compose down/up --build`) must run
-// on the *host*, because it tears down and rebuilds this very container — a
+// itself (`update_run.sh`: git pull + `docker compose build` then `up -d`) must
+// run on the *host*, because it rebuilds and swaps this very container — a
 // process can't reliably kill its own container and survive to bring it back.
 //
 // We decouple the two: this module never runs docker or git. It only drops a
@@ -24,6 +24,10 @@ const CHECK_TRIGGER_FILE = path.join(TRIGGER_DIR, 'check')
 const REBOOT_TRIGGER_FILE = path.join(TRIGGER_DIR, 'reboot')
 // Where the host watcher (check_run.sh) writes the comparison result.
 const STATUS_FILE = path.join(TRIGGER_DIR, 'status.json')
+// Where the systemd update/reboot services append their stdout+stderr
+// (StandardOutput=append:.../update.log). Bind-mounted, so the backend can tail
+// it to stream host-side progress into the "Updating…" overlay.
+const LOG_FILE = path.join(TRIGGER_DIR, 'update.log')
 
 export interface UpdateReadiness {
   /** True when the trigger directory is mounted and writable. */
@@ -68,6 +72,52 @@ export async function requestCheck(meta: { by?: string } = {}): Promise<void> {
   await fs.mkdir(TRIGGER_DIR, { recursive: true })
   const payload = JSON.stringify({ requestedAt: new Date().toISOString(), by: meta.by ?? 'auto' })
   await fs.writeFile(CHECK_TRIGGER_FILE, payload + '\n', 'utf8')
+}
+
+/** Current byte size of the host update log (0 when it doesn't exist yet). */
+export async function getUpdateLogSize(): Promise<number> {
+  try {
+    return (await fs.stat(LOG_FILE)).size
+  } catch {
+    return 0
+  }
+}
+
+/** A slice of the host update log, read from `since` to the current end. */
+export interface UpdateLogChunk {
+  /** New text appended since the requested offset (empty when nothing new). */
+  text: string
+  /** Byte offset to pass as `since` on the next poll. */
+  offset: number
+  /** Current total log size, so the client can detect truncation/rotation. */
+  size: number
+}
+
+// Read the host update log from byte `since` to the end. The log is append-only
+// across runs, so callers pass the offset captured when their update started to
+// see only this run's output. A single read is capped (MAX_CHUNK) to bound the
+// payload; if the file shrank below `since` (rotated/cleared) we restart from 0.
+const MAX_CHUNK = 256 * 1024
+export async function readUpdateLog(since = 0): Promise<UpdateLogChunk> {
+  let size = 0
+  try {
+    size = (await fs.stat(LOG_FILE)).size
+  } catch {
+    return { text: '', offset: 0, size: 0 }
+  }
+  let start = Number.isFinite(since) && since >= 0 && since <= size ? since : 0
+  if (start >= size) return { text: '', offset: size, size }
+  // On the first read of a long pre-existing log, only return the tail.
+  if (size - start > MAX_CHUNK) start = size - MAX_CHUNK
+  const fh = await fs.open(LOG_FILE, 'r')
+  try {
+    const len = size - start
+    const buf = Buffer.alloc(len)
+    const { bytesRead } = await fh.read(buf, 0, len, start)
+    return { text: buf.toString('utf8', 0, bytesRead), offset: size, size }
+  } finally {
+    await fh.close()
+  }
 }
 
 /** One commit that `origin/main` is ahead of the deployed checkout. */
