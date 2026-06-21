@@ -1191,13 +1191,14 @@ export const AGENT_SIGNAL_TOOL_NAMES = [
 ] as const
 
 // The curated belt the Entry Agent exposes per active intent: the live-market reads it needs
-// to time an entry, the Agent Signal thesis/memory for the coin, this intent's own state — plus
-// the three ACTION tools (set band / fire / cancel) that let it drive the deferred BUY. It must
-// never trigger engines or mutate the watchlist mid-pass, so those tools are excluded.
+// to time an entry, the Agent Signal thesis/memory for the coin, and this intent's own state.
+// It is strictly READ-ONLY — the agent does NOT operate the entry through tools. The entry
+// decision (adjust band / fire / cancel) is carried in its final JSON verdict and executed by
+// the engine (see agent/entryAgent.ts), so the displayed verdict and the real action can never
+// diverge. It must also never trigger engines or mutate the watchlist mid-pass.
 export const ENTRY_AGENT_TOOL_NAMES = [
   'get_entry_intent', 'get_market', 'get_candle_data', 'get_coin_sentiment', 'web_search',
   'recall_signal_memory', 'get_coin_signal_history', 'list_recent_signals', 'list_entry_events',
-  'set_entry_band', 'fire_entry_now', 'cancel_entry',
 ] as const
 
 export function isReadOnlyTool(name: string): boolean {

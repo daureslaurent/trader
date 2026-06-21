@@ -61,9 +61,9 @@ export const AGENTS: AgentDef[] = [
   {
     id: 'entryAgent',
     label: 'Entry Agent',
-    description: 'The agentic, per-coin entry-position engine. One agent per active entry intent reads live market structure + the BUY thesis / Agent Signal memory and drives the deferred BUY — adjusting the entry band, firing now, or cancelling via its action tools. Coin-scoped; it never triggers engines or edits the watchlist mid-pass.',
-    // Curated belt: reads read-only, the three entry action tools (set band / fire / cancel) fully enabled.
-    defaultGrant: t => (ENTRY_AGENT_SET.has(t.name) ? (t.readOnly ? 'read' : 'readwrite') : 'off'),
+    description: 'The agentic, per-coin entry-position engine. One agent per active entry intent reads live market structure + the BUY thesis / Agent Signal memory, then drives the deferred BUY — adjusting the entry band, firing now, or cancelling — via its final JSON verdict, which the engine executes (it has no action tools). Coin-scoped; it never triggers engines or edits the watchlist mid-pass.',
+    // Curated, strictly read-only belt — the entry decision rides on the JSON verdict, not tools.
+    defaultGrant: t => (ENTRY_AGENT_SET.has(t.name) ? 'read' : 'off'),
   },
 ]
 

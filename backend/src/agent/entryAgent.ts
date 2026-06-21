@@ -3,9 +3,13 @@
 // Selected via `entry_model === 'agent'`, it replaces the static/Entry-Planner band logic
 // for deferred BUYs on the Entry Desk. Where the static engine sets a fixed band once,
 // the Entry Agent runs ONE tool-calling agent per active entry intent that reads live
-// market structure, the original BUY thesis and the Agent Signal memory, then DRIVES the
-// deferred BUY through its action tools — re-anchoring the entry band (set_entry_band),
-// firing now (fire_entry_now), or abandoning it (cancel_entry).
+// market structure, the original BUY thesis and the Agent Signal memory, then DECIDES how
+// to drive the deferred BUY.
+//
+// The agent has NO action tools — its tool belt is strictly read-only. The decision (ADJUST
+// the band / FIRE now / CANCEL / WAIT) is carried in the agent's final JSON verdict, and the
+// ENGINE executes it here (applyEntryVerdict). This guarantees the displayed verdict and the
+// real side effect can never diverge: a "CANCEL" verdict cancels, a "WAIT" does nothing.
 //
 // It is a LIVING manager: a routing output node (`module_entry_agent`) re-fires it on a
 // tick / price-move, and each pass re-evaluates every active intent and adapts. The fast
@@ -75,9 +79,6 @@ const TOOL_FEED: Record<string, { icon: string; verb: string }> = {
   get_coin_signal_history: { icon: '🗂️', verb: 'Reviewing prior verdicts' },
   list_recent_signals:     { icon: '🔔', verb: 'Scanning recent signals' },
   list_entry_events:       { icon: '📜', verb: 'Reading entry history' },
-  set_entry_band:          { icon: '🎚️', verb: 'Setting entry band' },
-  fire_entry_now:          { icon: '🚀', verb: 'Firing entry now' },
-  cancel_entry:            { icon: '🚫', verb: 'Cancelling entry' },
 }
 
 // Caps a tool result before it rides on a frame's `detail` (persisted + broadcast) — long
@@ -137,11 +138,22 @@ class Recorder {
 
 // ── verdict ──────────────────────────────────────────────────────────────────
 
+// The band levels an ADJUST verdict carries (percentages relative to the LIVE price at apply
+// time). Every field optional — an omitted level keeps its current value when applied.
+interface VerdictBand {
+  pullbackPct?: number
+  invalidatePct?: number
+  chaseCapPct?: number
+  ttlMinutes?: number
+}
+
 interface EntryVerdict {
   action: EntryAction
   confidence: number
   reasoning: string
   notes: string | null
+  /** Populated only for ADJUST — the levels the engine should apply to the band. */
+  band: VerdictBand
 }
 
 function num(v: unknown): number | null {
@@ -149,9 +161,9 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-// Parse the agent's final summary JSON. The side effects already happened via the action
-// tools; this is the explanation + the action label for the run record. Throws when no
-// valid object is present so the loop can nudge once more.
+// Parse the agent's final verdict JSON. The agent has NO action tools, so this verdict IS the
+// decision — the engine executes it (applyEntryVerdict). For an ADJUST it also carries the band
+// levels to set. Throws when no valid object is present so the loop can nudge once more.
 function parseEntryVerdict(content: string): EntryVerdict {
   const stripped = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
   let parsed: unknown
@@ -166,11 +178,19 @@ function parseEntryVerdict(content: string): EntryVerdict {
   if (typeof c !== 'object' || c === null) throw new Error('Invalid verdict in Entry Agent response')
   const action = String(c.action ?? '').toUpperCase()
   const valid: EntryAction[] = ['ADJUST', 'FIRE', 'CANCEL', 'WAIT']
+  // null → undefined so an omitted level isn't applied (applyAgentBand treats null as "keep").
+  const opt = (v: unknown) => num(v) ?? undefined
   return {
     action: (valid.includes(action as EntryAction) ? action : 'WAIT') as EntryAction,
     confidence: num(c.confidence) ?? 0,
     reasoning: typeof c.reasoning === 'string' ? c.reasoning.trim() : '',
     notes: typeof c.notes === 'string' && c.notes.trim() ? c.notes.trim() : null,
+    band: {
+      pullbackPct: opt(c.pullback_pct),
+      invalidatePct: opt(c.invalidate_pct),
+      chaseCapPct: opt(c.chase_cap_pct),
+      ttlMinutes: opt(c.ttl_minutes),
+    },
   }
 }
 
@@ -181,26 +201,31 @@ function parseEntryVerdict(content: string): EntryVerdict {
 function buildSystemPrompt(coin: string, toolPrompt: string): string {
   return `You are "Entry Agent", an autonomous execution trader managing the ENTRY for a single deferred BUY — ${coin}.
 
-A BUY for ${coin} has already been decided and is staged on the Entry Desk: instead of buying at market, the engine waits for a good price inside an entry band (a pullback target to buy at, an invalidate level that abandons on a breakdown, a chase cap that abandons if price runs away, and a TTL). Your job each pass is to read the live setup, DRIVE this entry to the best outcome — then get out of the way.
+A BUY for ${coin} has already been decided and is staged on the Entry Desk: instead of buying at market, the engine waits for a good price inside an entry band (a pullback target to buy at, an invalidate level that abandons on a breakdown, a chase cap that abandons if price runs away, and a TTL). Your job each pass is to read the live setup and decide how to DRIVE this entry to the best outcome — then get out of the way.
 
-Method — gather evidence with your tools BEFORE acting:
+Method — gather evidence with your READ-ONLY tools BEFORE deciding:
 ${toolPrompt}
-ALWAYS start by calling get_entry_intent (your current band, age, and full band history) and recall_signal_memory (the analyst's thesis/levels) so you adapt the existing window instead of starting blind. Read price structure (candles) and momentum/volatility before moving levels. You have at most ${MAX_TOOL_ROUNDS} tool rounds; call only the tools you need.
+ALWAYS start by calling get_entry_intent (your current band, age, and full band history) and recall_signal_memory (the analyst's thesis/levels) so you adapt the existing window instead of starting blind. Read price structure (candles) and momentum/volatility before choosing levels. You have at most ${MAX_TOOL_ROUNDS} tool rounds; call only the tools you need.
 
-Decide and ACT via your action tools (the side effect IS the decision). Default to doing NOTHING — act only when the evidence clearly calls for it:
+You have NO action tools — you decide by returning ONE action in your final JSON, and the engine executes it. Default to doing NOTHING; act only when the evidence clearly calls for it:
 - WAIT (do nothing) — the right answer on most passes. If the band is already well-placed and nothing material has changed since the last pass, leave it untouched for the watch loop. A no-op tweak is churn, not management.
-- set_entry_band — re-shape the band ONLY when the setup has genuinely changed: a deeper pullback as volatility rises / momentum weakens; a shallower pullback (or fire now) in a strengthening uptrend you shouldn't wait on; a tighter invalidate when structure turns fragile. EVERY field is optional — pass ONLY the levels you are changing, and the rest stay as they are. Any percentage is relative to the LIVE price; the band must stay ordered (invalidate below the target, chase cap above it).
-- fire_entry_now — buy immediately when the entry is good right now and waiting risks missing it.
-- cancel_entry — abandon when the thesis is broken, the risk/reward has decayed, OR the entry has been waiting a long time across several refreshes and simply isn't triggering. Protecting capital and freeing the slot beats babysitting a stale entry.
+- ADJUST — re-shape the band ONLY when the setup has genuinely changed: a deeper pullback as volatility rises / momentum weakens; a shallower pullback in a strengthening uptrend you shouldn't wait on; a tighter invalidate when structure turns fragile. Put the new levels in the JSON below — EVERY level field is optional, so include ONLY the ones you are changing and the rest stay as they are. Any percentage is relative to the LIVE price; the band must stay ordered (invalidate below the target, chase cap above it).
+- FIRE — buy immediately when the entry is good right now and waiting risks missing it.
+- CANCEL — abandon when the thesis is broken, the risk/reward has decayed, OR the entry has been waiting a long time across several refreshes and simply isn't triggering. Protecting capital and freeing the slot beats babysitting a stale entry.
 
-TTL discipline — the TTL is a TIME-BOX, not a renewable lease, and refreshing it for no new reason is the single most common failure here. Do NOT extend the TTL just to "keep the window open"; that quietly defeats its purpose. Extend it ONLY for a specific, newly-observed reason that justifies more patience, and never repeatedly. If a setup already carries several TTL-only refreshes and still hasn't triggered, do not refresh it again — CANCEL and release the capital, or WAIT and let it expire on its own.
+TTL discipline — the TTL is a TIME-BOX, not a renewable lease, and refreshing it for no new reason is the single most common failure here. Do NOT extend the TTL (via ttl_minutes on an ADJUST) just to "keep the window open"; that quietly defeats its purpose. Extend it ONLY for a specific, newly-observed reason that justifies more patience, and never repeatedly. If a setup already carries several TTL-only refreshes and still hasn't triggered, do not refresh it again — CANCEL and release the capital, or WAIT and let it expire on its own.
 
 When — and only when — you are done, reply with ONE JSON object and NOTHING else:
 {
-  "action": "ADJUST" | "FIRE" | "CANCEL" | "WAIT",   // what you did this pass
+  "action": "ADJUST" | "FIRE" | "CANCEL" | "WAIT",   // the engine executes exactly this
   "confidence": 0.0-1.0,                              // how sure you are in this action
-  "reasoning": "1-3 sentences citing concrete evidence for what you did",
-  "notes": string | null                             // optional short memo
+  "reasoning": "1-3 sentences citing concrete evidence for your decision",
+  "notes": string | null,                            // optional short memo
+  // Include these ONLY for "ADJUST" — every field optional; omit a level to leave it unchanged:
+  "pullback_pct": number,    // buy target as % BELOW the live price (0 = buy at market)
+  "invalidate_pct": number,  // cancel-on-breakdown as % below the live price (ends up below the target)
+  "chase_cap_pct": number,   // cancel-on-runaway as % above the live price
+  "ttl_minutes": number      // new time-box in minutes from now
 }`
 }
 
@@ -249,19 +274,21 @@ function buildUserBriefing(coin: string, intent: EntryIntent, price: number, ctx
 
 // ── tool loop ──────────────────────────────────────────────────────────────────
 
-// Runs the tool-calling loop for one intent and returns the parsed verdict, recording each
-// step and tracking which action tools fired (so the run records the TRUE action, not just
-// the model's claim). Stops early once the intent is consumed (fired/cancelled).
+// Runs the read-only tool-calling loop for one intent and returns the parsed verdict. The
+// agent only GATHERS evidence here (no action tools); the decision rides on the final JSON
+// verdict, which the caller hands to applyEntryVerdict to execute.
 async function runAgenticEntry(coin: string, intent: EntryIntent, price: number, ctx: MarketContext, cycleId: string, rec: Recorder): Promise<EntryVerdict> {
-  const tools = getAgentToolSchemas(AGENT_ID)
+  // Defence-in-depth: even if a saved Agentic-Tools override re-enabled an action tool for this
+  // agent, never expose it — the entry is driven by the JSON verdict, not by tools.
+  const tools = getAgentToolSchemas(AGENT_ID).filter(t => isReadOnlyTool(t.function.name))
+  const toolPrompt = getAgentToolPrompt(AGENT_ID)
+    .split('\n')
+    .filter(line => { const m = /^- (\w+):/.exec(line); return !m || isReadOnlyTool(m[1]) })
+    .join('\n')
   const messages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: buildSystemPrompt(coin, getAgentToolPrompt(AGENT_ID)) },
+    { role: 'system', content: buildSystemPrompt(coin, toolPrompt) },
     { role: 'user', content: buildUserBriefing(coin, intent, price, ctx) },
   ]
-
-  const observed = { fired: false, cancelled: false, adjusted: false }
-  const deriveAction = (): EntryAction =>
-    observed.fired ? 'FIRE' : observed.cancelled ? 'CANCEL' : observed.adjusted ? 'ADJUST' : 'WAIT'
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     rec.push('thinking', '🤔', `Thinking… (round ${round + 1})`, 'muted', { round })
@@ -305,45 +332,70 @@ async function runAgenticEntry(coin: string, intent: EntryIntent, price: number,
 
         const result = await runAgentTool(AGENT_ID, name, args)
         const res = result as Record<string, unknown> | undefined
-        const ok = res?.ok === true
         const resultDetail = { tool: name, result: truncateForDetail(result) }
-
-        // Track real side effects so the run records the true action.
-        if (ok && name === 'set_entry_band') observed.adjusted = true
-        if (ok && name === 'fire_entry_now') observed.fired = true
-        if (ok && name === 'cancel_entry') observed.cancelled = true
 
         if (res?.error) {
           rec.push('tool_result', '⚠️', `${meta.verb} → ${String(res.error)}`, 'warn', { tool: name }, resultDetail)
         } else {
-          const tone: Tone = name === 'fire_entry_now' && ok ? 'buy' : name === 'cancel_entry' && ok ? 'warn' : 'muted'
-          rec.push('tool_result', '✓', `${meta.verb} complete`, tone, { tool: name }, resultDetail)
+          rec.push('tool_result', '✓', `${meta.verb} complete`, 'muted', { tool: name }, resultDetail)
         }
 
         messages.push({ role: 'tool', content: JSON.stringify(result), tool_call_id: tc.id })
       }
-
-      // The intent was consumed (fired/cancelled) — nothing left to manage; synthesize a verdict.
-      if (observed.fired || observed.cancelled) {
-        return { action: deriveAction(), confidence: 0.7, reasoning: content || '', notes: null }
-      }
       continue
     }
 
-    // No tool calls → the model is committing. Read its JSON summary for reasoning/confidence,
-    // but the recorded action is ALWAYS what actually happened via the tools (a claimed FIRE
-    // with no fire_entry_now call did nothing → WAIT), so the run never overstates.
+    // No tool calls → the model is committing its verdict. This JSON IS the decision.
     try {
-      const v = parseEntryVerdict(content)
-      return { ...v, action: deriveAction() }
+      return parseEntryVerdict(content)
     } catch {
       messages.push({ role: 'assistant', content: content || null })
-      messages.push({ role: 'user', content: 'Respond now with ONLY the JSON summary object specified — no prose, no code fences.' })
+      messages.push({ role: 'user', content: 'Respond now with ONLY the JSON verdict object specified — no prose, no code fences.' })
     }
   }
 
   logger.warn('Entry Agent exhausted rounds without a JSON verdict', { coin, cycleId })
-  return { action: deriveAction(), confidence: 0, reasoning: '', notes: '[Entry Agent could not reach a conclusive summary within the round budget]' }
+  return { action: 'WAIT', confidence: 0, reasoning: '', notes: '[Entry Agent could not reach a conclusive verdict within the round budget]', band: {} }
+}
+
+// Execute the agent's verdict — the agent has no action tools, so the ENGINE drives the entry
+// here. Returns the action that ACTUALLY took effect (downgraded to WAIT if the intent vanished
+// mid-pass or the entry service rejected the change), so the recorded/displayed verdict never
+// overstates what happened. Each effect is pushed as a frame for the live feed + transcript.
+async function applyEntryVerdict(coin: string, v: EntryVerdict, rec: Recorder): Promise<EntryAction> {
+  if (v.action === 'WAIT') return 'WAIT'
+
+  // The static safety net (falling-knife / chase-cap / TTL) may have filled or cancelled the
+  // intent between the LLM call finishing and now — don't act on a stale decision.
+  if (!entry.hasActiveIntent(coin)) {
+    rec.push('tool_result', '⚠️', `Entry for ${coin} is no longer active — ${v.action} skipped`, 'warn')
+    return 'WAIT'
+  }
+
+  if (v.action === 'CANCEL') {
+    entry.cancel(coin, 'agent')
+    rec.push('tool_result', '🚫', 'Entry cancelled', 'warn', { tool: 'cancel_entry' })
+    return 'CANCEL'
+  }
+
+  if (v.action === 'FIRE') {
+    const res = entry.fireNow(coin)
+    if (!res.ok) {
+      rec.push('tool_result', '⚠️', `Fire failed: ${res.error ?? 'unknown error'}`, 'warn')
+      return 'WAIT'
+    }
+    rec.push('tool_result', '🚀', 'Entry fired at market', 'buy', { tool: 'fire_entry_now' })
+    return 'FIRE'
+  }
+
+  // ADJUST — re-anchor the band to the levels in the verdict (omitted levels stay as-is).
+  const res = await entry.applyAgentBand(coin, { ...v.band, reason: v.reasoning })
+  if (!res.ok) {
+    rec.push('tool_result', '⚠️', `Band update failed: ${res.error ?? 'unknown error'}`, 'warn')
+    return 'WAIT'
+  }
+  rec.push('tool_result', '🎚️', 'Entry band updated', 'accent', { tool: 'set_entry_band' })
+  return 'ADJUST'
 }
 
 // ── per-intent pass ──────────────────────────────────────────────────────────────
@@ -377,6 +429,10 @@ async function reviewIntent(coin: string, cycleId: string): Promise<void> {
       () => runAgenticEntry(coin, intent, price, ctx, cycleId, rec),
     )
 
+    // The agent has no action tools — the engine executes its JSON verdict here, and the run
+    // records the action that ACTUALLY took effect (so the desk never shows a phantom CANCEL).
+    verdict.action = await applyEntryVerdict(coin, verdict, rec)
+
     const tone: Tone = verdict.action === 'FIRE' ? 'buy' : verdict.action === 'CANCEL' ? 'warn' : verdict.action === 'ADJUST' ? 'accent' : 'muted'
     const icon = verdict.action === 'FIRE' ? '🚀' : verdict.action === 'CANCEL' ? '🚫' : verdict.action === 'ADJUST' ? '🎚️' : '✋'
     rec.push('decision', icon, `Decision: ${verdict.action}`, tone, { action: verdict.action, confidence: verdict.confidence, reasoning: verdict.reasoning })
@@ -393,7 +449,7 @@ async function reviewIntent(coin: string, cycleId: string): Promise<void> {
 }
 
 function waitVerdict(reasoning = ''): EntryVerdict {
-  return { action: 'WAIT', confidence: 0, reasoning, notes: null }
+  return { action: 'WAIT', confidence: 0, reasoning, notes: null, band: {} }
 }
 
 // Persist one intent's pass (verdict + full transcript) and broadcast the saved record.
