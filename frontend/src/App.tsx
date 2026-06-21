@@ -11,6 +11,8 @@ import { EndpointStatusBadge } from './components/layout/EndpointStatusBadge'
 import { Page, Toast, ApprovalRequest, UpdateInfo } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
+import { WhatsNewModal } from './components/update/WhatsNewModal'
+import { consumeWhatsNew, WhatsNewData } from './lib/whatsNew'
 import Dashboard from './pages/Dashboard'
 import TradingState from './pages/TradingState'
 import Portfolio from './pages/Portfolio'
@@ -106,6 +108,8 @@ function AppInner() {
   const [pendingCount, setPendingCount] = useState(0)
   const pendingRef = useRef(0)
   const [updateAvailable, setUpdateAvailable] = useState(false)
+  // Post-update changelog: surfaced once when the rebuilt app comes back online.
+  const [whatsNew, setWhatsNew] = useState<WhatsNewData | null>(() => consumeWhatsNew())
 
   // Seed the update pin from the server on load so it survives a page reload.
   useEffect(() => {
@@ -256,6 +260,8 @@ function AppInner() {
       </div>
 
       <ToastList toasts={toasts} onDismiss={dismissToast} />
+
+      {whatsNew && <WhatsNewModal data={whatsNew} onClose={() => setWhatsNew(null)} />}
     </div>
   )
 }

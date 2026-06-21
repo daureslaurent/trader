@@ -78,6 +78,8 @@ export interface UpdateCommit {
   date: string
   author: string
   subject: string
+  /** Full commit body (everything after the subject line). Empty when none. */
+  body: string
 }
 
 /** Result of the host-side `git fetch` comparison, written to status.json. */
@@ -91,6 +93,10 @@ export interface UpdateStatus {
   branch: string
   /** Number of commits origin/main is ahead of the deployed checkout (0 = up to date). */
   behindBy: number
+  /** App version string of the deployed checkout (from version.json). Empty when unknown. */
+  currentVersion: string
+  /** App version string origin/main would deploy. Empty when unknown. */
+  remoteVersion: string
   /** The commits ahead, newest first. Empty when up to date or on error. */
   commits: UpdateCommit[]
   /** Set when the host check itself failed (e.g. git fetch could not reach the remote). */
@@ -128,6 +134,7 @@ export async function readUpdateStatus(): Promise<UpdateStatus | null> {
         date: String(c.date ?? ''),
         author: decodeB64(c.authorB64),
         subject: decodeB64(c.subjectB64),
+        body: decodeB64(c.bodyB64),
       }))
     const behindBy = Number.isFinite(Number(o.behindBy)) ? Math.max(0, Math.floor(Number(o.behindBy))) : 0
     return {
@@ -138,6 +145,8 @@ export async function readUpdateStatus(): Promise<UpdateStatus | null> {
       remoteShortSha: String(o.remoteShortSha ?? ''),
       branch: String(o.branch ?? 'main'),
       behindBy,
+      currentVersion: String(o.currentVersion ?? ''),
+      remoteVersion: String(o.remoteVersion ?? ''),
       commits,
       error: o.error ? String(o.error) : undefined,
     }

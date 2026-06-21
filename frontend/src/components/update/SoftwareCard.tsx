@@ -5,6 +5,7 @@ import { UpdateInfo } from '../../types'
 import { UpdateButton, BridgeNotReadyHint } from './AppUpdate'
 import { RebootButton } from './AppReboot'
 import { cn } from '../../lib/utils'
+import { APP_VERSION } from '../../version'
 
 function relTime(iso: string): string {
   if (!iso) return 'never'
@@ -70,6 +71,8 @@ export function SoftwareCard() {
   const ready = info?.ready ?? false
   const count = status?.behindBy ?? 0
   const hasUpdate = !!info?.updateAvailable
+  const fromVersion = status?.currentVersion || APP_VERSION
+  const toVersion = status?.remoteVersion || ''
 
   return (
     <Card>
@@ -118,6 +121,16 @@ export function SoftwareCard() {
           </span>
         )}
 
+        {hasUpdate && toVersion && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-elevated px-2.5 py-1 text-[11px] font-semibold text-foreground">
+            <span className="font-mono text-muted/70">v{fromVersion}</span>
+            <svg className="h-3 w-3 text-accent" fill="none" stroke="currentColor" strokeWidth={2.2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+            <span className="font-mono text-accent">v{toVersion}</span>
+          </span>
+        )}
+
         {status?.checkedAt && (
           <span className="text-[11px] text-muted">Last checked {relTime(status.checkedAt)}</span>
         )}
@@ -149,9 +162,18 @@ export function SoftwareCard() {
                 <h2 className="text-base font-semibold text-foreground">
                   {count} new commit{count === 1 ? '' : 's'} on <code className="font-mono text-accent">main</code>
                 </h2>
-                <p className="mt-0.5 text-xs text-muted font-mono">
-                  {status.currentShortSha} → {status.remoteShortSha}
-                </p>
+                {toVersion ? (
+                  <p className="mt-1 flex items-center gap-1.5 text-xs">
+                    <span className="font-mono text-muted">v{fromVersion}</span>
+                    <span className="text-accent">→</span>
+                    <span className="font-mono font-semibold text-accent">v{toVersion}</span>
+                    <span className="font-mono text-muted/60">· {status.currentShortSha}…{status.remoteShortSha}</span>
+                  </p>
+                ) : (
+                  <p className="mt-0.5 text-xs text-muted font-mono">
+                    {status.currentShortSha} → {status.remoteShortSha}
+                  </p>
+                )}
               </div>
               <button onClick={() => setModalOpen(false)} className="text-muted hover:text-foreground transition-colors">
                 <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -166,6 +188,11 @@ export function SoftwareCard() {
                   <li key={c.sha} className="relative">
                     <span className="absolute -left-[23px] top-1.5 h-2 w-2 rounded-full bg-accent" />
                     <p className="text-sm text-foreground leading-snug">{c.subject || '(no message)'}</p>
+                    {c.body?.trim() && (
+                      <p className="mt-1 whitespace-pre-line border-l-2 border-border pl-2.5 text-xs leading-relaxed text-muted">
+                        {c.body.trim()}
+                      </p>
+                    )}
                     <p className="mt-1 flex items-center gap-2 text-[11px] text-muted">
                       <code className="font-mono">{c.shortSha}</code>
                       <span>·</span>
@@ -188,7 +215,14 @@ export function SoftwareCard() {
               )}
               <div className="flex shrink-0 items-center gap-2">
                 <Button type="button" variant="ghost" size="md" onClick={() => setModalOpen(false)}>Close</Button>
-                <UpdateButton enabled={enabled} bridgeReady={ready} label="Update now" />
+                <UpdateButton
+                  enabled={enabled}
+                  bridgeReady={ready}
+                  label="Update now"
+                  commits={status.commits}
+                  fromVersion={fromVersion}
+                  toVersion={toVersion}
+                />
               </div>
             </div>
           </div>

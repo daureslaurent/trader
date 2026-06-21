@@ -181,17 +181,19 @@ function parseEntryVerdict(content: string): EntryVerdict {
 function buildSystemPrompt(coin: string, toolPrompt: string): string {
   return `You are "Entry Agent", an autonomous execution trader managing the ENTRY for a single deferred BUY — ${coin}.
 
-A BUY for ${coin} has already been decided and is staged on the Entry Desk: instead of buying at market, the engine waits for a good price inside an entry band (a pullback target to buy at, an invalidate level that abandons on a breakdown, a chase cap that abandons if price runs away, and a TTL). Your job each pass is to read the live setup and DRIVE this entry to the best outcome.
+A BUY for ${coin} has already been decided and is staged on the Entry Desk: instead of buying at market, the engine waits for a good price inside an entry band (a pullback target to buy at, an invalidate level that abandons on a breakdown, a chase cap that abandons if price runs away, and a TTL). Your job each pass is to read the live setup, DRIVE this entry to the best outcome — then get out of the way.
 
 Method — gather evidence with your tools BEFORE acting:
 ${toolPrompt}
-ALWAYS start by calling get_entry_intent (your current band + the BUY thesis) and recall_signal_memory (the analyst's thesis/levels) so you adapt the existing window instead of starting blind. Read price structure (candles) and momentum/volatility before moving levels. You have at most ${MAX_TOOL_ROUNDS} tool rounds; call only the tools you need.
+ALWAYS start by calling get_entry_intent (your current band, age, and full band history) and recall_signal_memory (the analyst's thesis/levels) so you adapt the existing window instead of starting blind. Read price structure (candles) and momentum/volatility before moving levels. You have at most ${MAX_TOOL_ROUNDS} tool rounds; call only the tools you need.
 
-Decide and ACT via your action tools (the side effect IS the decision):
-- set_entry_band — adjust the band to a smarter window: deeper pullback in high volatility / weak momentum; a shallow pullback (or fire now) in a strong uptrend you shouldn't wait on; tighten the invalidate when structure is fragile; extend the TTL when the setup needs more time. EVERY field is optional — pass ONLY the levels you want to change (e.g. just ttl_minutes to buy more time, or just invalidate_pct to tighten), and the rest stay as they are. Any percentage you pass is relative to the LIVE price; the resulting band must stay ordered (invalidate below the target, chase cap above it).
+Decide and ACT via your action tools (the side effect IS the decision). Default to doing NOTHING — act only when the evidence clearly calls for it:
+- WAIT (do nothing) — the right answer on most passes. If the band is already well-placed and nothing material has changed since the last pass, leave it untouched for the watch loop. A no-op tweak is churn, not management.
+- set_entry_band — re-shape the band ONLY when the setup has genuinely changed: a deeper pullback as volatility rises / momentum weakens; a shallower pullback (or fire now) in a strengthening uptrend you shouldn't wait on; a tighter invalidate when structure turns fragile. EVERY field is optional — pass ONLY the levels you are changing, and the rest stay as they are. Any percentage is relative to the LIVE price; the band must stay ordered (invalidate below the target, chase cap above it).
 - fire_entry_now — buy immediately when the entry is good right now and waiting risks missing it.
-- cancel_entry — abandon when the thesis is broken or the risk/reward has decayed. Protecting capital beats forcing a bad entry.
-- Do nothing (WAIT) when the current band is already well-placed — leave it for the watch loop.
+- cancel_entry — abandon when the thesis is broken, the risk/reward has decayed, OR the entry has been waiting a long time across several refreshes and simply isn't triggering. Protecting capital and freeing the slot beats babysitting a stale entry.
+
+TTL discipline — the TTL is a TIME-BOX, not a renewable lease, and refreshing it for no new reason is the single most common failure here. Do NOT extend the TTL just to "keep the window open"; that quietly defeats its purpose. Extend it ONLY for a specific, newly-observed reason that justifies more patience, and never repeatedly. If a setup already carries several TTL-only refreshes and still hasn't triggered, do not refresh it again — CANCEL and release the capital, or WAIT and let it expire on its own.
 
 When — and only when — you are done, reply with ONE JSON object and NOTHING else:
 {
@@ -202,22 +204,47 @@ When — and only when — you are done, reply with ONE JSON object and NOTHING 
 }`
 }
 
+// How many times the band has already been re-anchored, and how many of those were
+// TTL-only refreshes (same price levels, just a pushed-out expiry). Surfacing this in
+// the briefing is what lets the agent recognize its own churn and stop perpetually
+// extending a setup that isn't triggering.
+function summarizeBandHistory(history: EntryIntent['bandHistory']): { adjustments: number; ttlOnly: number } {
+  let ttlOnly = 0
+  for (let i = 1; i < history.length; i++) {
+    const a = history[i], b = history[i - 1]
+    if (a.targetPrice === b.targetPrice && a.invalidatePrice === b.invalidatePrice && a.chaseCapPrice === b.chaseCapPrice) ttlOnly++
+  }
+  return { adjustments: Math.max(0, history.length - 1), ttlOnly }
+}
+
 function buildUserBriefing(coin: string, intent: EntryIntent, price: number, ctx: MarketContext): string {
   const f = (n: number | null | undefined, d = 2) => (n == null ? 'n/a' : n.toFixed(d))
   const regime = classifyRegime(ctx)
-  const minsLeft = Math.max(0, (intent.expiresAt - Date.now()) / 60000)
+  const now = Date.now()
+  const minsLeft = Math.max(0, (intent.expiresAt - now) / 60000)
+  const ageMin = (now - intent.createdAt) / 60000
+  const ageStr = ageMin >= 60 ? `${(ageMin / 60).toFixed(1)}h` : `${ageMin.toFixed(0)}m`
+  const { adjustments, ttlOnly } = summarizeBandHistory(intent.bandHistory)
+  // % the live price must still move to reach a band level (negative = level below live).
+  const toPct = (lvl: number) => `${(((lvl - price) / price) * 100).toFixed(2)}%`
   return [
     `Entry under management: ${coin}`,
-    `Live price: ${f(price, 6)}   24h: ${f(ctx.change24h)}%   7d: ${f(ctx.perf7d)}%`,
+    `Live price: ${f(price, 6)}   24h: ${f(ctx.change24h)}%   7d: ${f(ctx.perf7d)}%   vol24h: ${f(ctx.volume, 0)}`,
     `Indicators — RSI14: ${f(ctx.rsi14, 1)}, trend: ${ctx.trend}, volatility: ${ctx.volatility}, ATR14: ${f(ctx.atr14, 6)}`,
+    `Structure — SMA7 ${f(ctx.sma7, 6)} · SMA25 ${f(ctx.sma25, 6)} · SMA99 ${f(ctx.sma99, 6)}`,
     `Regime: ${regime.summary}`,
     '',
     `Current entry band (source: ${intent.bandSource}):`,
-    `  buy target ${f(intent.targetPrice, 6)} · invalidate ${f(intent.invalidatePrice, 6)} · chase cap ${f(intent.chaseCapPrice, 6)} · TTL ${minsLeft.toFixed(1)}m left`,
+    `  buy target ${f(intent.targetPrice, 6)} (${toPct(intent.targetPrice)} from live) · invalidate ${f(intent.invalidatePrice, 6)} (${toPct(intent.invalidatePrice)}) · chase cap ${f(intent.chaseCapPrice, 6)} (${toPct(intent.chaseCapPrice)})`,
     `  BUY thesis: ${intent.signal.reason || 'n/a'}`,
     '',
+    `Wait so far: ${ageStr} in management · TTL ${minsLeft.toFixed(0)}m left · band re-anchored ${adjustments}× (${ttlOnly} of them TTL-only refreshes).`,
+    ttlOnly >= 2
+      ? `You have already refreshed the TTL ${ttlOnly} times without this setup triggering. Do NOT refresh it again unless something materially changed; if the pullback simply isn't playing out, CANCEL and free the slot.`
+      : '',
+    '',
     'Investigate with get_entry_intent + recall_signal_memory first, then act via your action tools and return the JSON summary.',
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
 // ── tool loop ──────────────────────────────────────────────────────────────────

@@ -22,9 +22,16 @@ NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p .update
 
 write_error() {
-  printf '{"checkedAt":"%s","currentSha":"","currentShortSha":"","remoteSha":"","remoteShortSha":"","branch":"main","behindBy":0,"commits":[],"error":"%s"}\n' \
+  printf '{"checkedAt":"%s","currentSha":"","currentShortSha":"","remoteSha":"","remoteShortSha":"","branch":"main","behindBy":0,"currentVersion":"","remoteVersion":"","commits":[],"error":"%s"}\n' \
     "$NOW" "$1" > "$TMP"
   mv -f "$TMP" "$STATUS"
+}
+
+# Read the app version string out of frontend/src/version.json at a given ref.
+# Empty when the ref or file can't be read — the UI falls back gracefully.
+ver_of() {
+  git show "$1:frontend/src/version.json" 2>/dev/null \
+    | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
 }
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -44,24 +51,29 @@ REMS="$(git rev-parse --short origin/main 2>/dev/null)"
 COUNT="$(git rev-list --count HEAD..origin/main 2>/dev/null)"
 [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
 
+# App version strings on each side, so the UI can show "v1.0.2 -> v1.0.5".
+CURVER="$(ver_of HEAD)"
+REMVER="$(ver_of origin/main)"
+
 # Build the commits-ahead JSON array. Fields are separated by US (0x1f) and records
-# by RS (0x1e); author + subject are base64-encoded (no -w wrapping) to avoid any
-# JSON-escaping concerns. shas/dates are inherently JSON-safe.
+# by RS (0x1e); author + subject + body are base64-encoded (no -w wrapping) to avoid
+# any JSON-escaping concerns. shas/dates are inherently JSON-safe.
 commits_json=""
 if [[ "$COUNT" -gt 0 ]]; then
-  while IFS=$'\x1f' read -r -d $'\x1e' H SH DATE AUTH SUBJ; do
+  while IFS=$'\x1f' read -r -d $'\x1e' H SH DATE AUTH SUBJ BODY; do
     # git separates records with a newline; strip the one that leaks into the sha.
     H="${H#$'\n'}"
     [[ -z "$H" ]] && continue
     a="$(printf '%s' "$AUTH" | base64 | tr -d '\n')"
     s="$(printf '%s' "$SUBJ" | base64 | tr -d '\n')"
-    item="{\"sha\":\"$H\",\"shortSha\":\"$SH\",\"date\":\"$DATE\",\"authorB64\":\"$a\",\"subjectB64\":\"$s\"}"
+    b="$(printf '%s' "$BODY" | base64 | tr -d '\n')"
+    item="{\"sha\":\"$H\",\"shortSha\":\"$SH\",\"date\":\"$DATE\",\"authorB64\":\"$a\",\"subjectB64\":\"$s\",\"bodyB64\":\"$b\"}"
     commits_json="${commits_json:+$commits_json,}$item"
-  done < <(git log HEAD..origin/main --pretty=format:'%H%x1f%h%x1f%aI%x1f%an%x1f%s%x1e')
+  done < <(git log HEAD..origin/main --pretty=format:'%H%x1f%h%x1f%aI%x1f%an%x1f%s%x1f%b%x1e')
 fi
 
-printf '{"checkedAt":"%s","currentSha":"%s","currentShortSha":"%s","remoteSha":"%s","remoteShortSha":"%s","branch":"main","behindBy":%s,"commits":[%s]}\n' \
-  "$NOW" "$CUR" "$CURS" "$REM" "$REMS" "$COUNT" "$commits_json" > "$TMP"
+printf '{"checkedAt":"%s","currentSha":"%s","currentShortSha":"%s","remoteSha":"%s","remoteShortSha":"%s","branch":"main","behindBy":%s,"currentVersion":"%s","remoteVersion":"%s","commits":[%s]}\n' \
+  "$NOW" "$CUR" "$CURS" "$REM" "$REMS" "$COUNT" "$CURVER" "$REMVER" "$commits_json" > "$TMP"
 mv -f "$TMP" "$STATUS"
 
 echo "==> Update check done: $COUNT commit(s) ahead ($CURS -> $REMS)"

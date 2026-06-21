@@ -90,6 +90,8 @@ export interface UpdateCommit {
   date: string
   author: string
   subject: string
+  /** Full commit body (everything after the subject line). Empty when none. */
+  body: string
 }
 
 /** The host-side git comparison result (from .update/status.json). */
@@ -101,6 +103,10 @@ export interface UpdateStatus {
   remoteShortSha: string
   branch: string
   behindBy: number
+  /** Deployed app version string (from version.json). Empty when unknown. */
+  currentVersion: string
+  /** App version string the update would deploy. Empty when unknown. */
+  remoteVersion: string
   commits: UpdateCommit[]
   error?: string
 }

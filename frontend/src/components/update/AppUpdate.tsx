@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button } from '../ui/Button'
+import { UpdateCommit } from '../../types'
+import { stashPendingUpdate } from '../../lib/whatsNew'
 
 /**
  * Full-screen takeover shown while the host restarts the stack (update rebuild or
@@ -77,12 +79,19 @@ export function UpdateButton({
   label = 'Update app',
   variant = 'primary',
   size = 'md',
+  commits,
+  fromVersion,
+  toVersion,
 }: {
   enabled: boolean
   bridgeReady: boolean
   label?: string
   variant?: 'primary' | 'ghost' | 'secondary' | 'danger'
   size?: 'sm' | 'md'
+  /** Commits about to be applied — stashed so the "What's new" modal can show them post-update. */
+  commits?: UpdateCommit[]
+  fromVersion?: string
+  toVersion?: string
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [phase, setPhase] = useState<'idle' | 'triggering' | 'updating'>('idle')
@@ -96,6 +105,10 @@ export function UpdateButton({
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error((body as { error?: string }).error || `Request failed (${res.status})`)
+      }
+      // Capture what's being applied so we can celebrate it once the rebuild lands.
+      if (commits && commits.length) {
+        stashPendingUpdate({ fromVersion: fromVersion ?? '', toVersion: toVersion ?? '', commits })
       }
       setConfirmOpen(false)
       setPhase('updating')
