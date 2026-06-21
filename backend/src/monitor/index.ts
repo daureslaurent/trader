@@ -8,5 +8,6 @@ export {
   buildReviewContext, parseReview, finalizeReview,
   getReviews, getNotes, clearReviewsForCoin,
 } from './context.js'
+export { reviewPositionRules } from './rules.js'
 export type { MonitorEntry, CycleParams, RawReview, FinalizeReviewInput } from './context.js'
 export type { PositionContext, HorizonConfigs, MonitorNotes } from './types.js'

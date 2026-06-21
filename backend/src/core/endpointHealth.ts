@@ -3,6 +3,7 @@ import { broadcast } from '../api/ws.js'
 import { logger } from './logger.js'
 import { pingEndpoint } from './llm.js'
 import type { EndpointPing } from './llm.js'
+import { recomputeOfflineMode } from './offlineMode.js'
 
 /** Cached health of a single LLM catalog endpoint. */
 export interface EndpointHealth {
@@ -108,6 +109,8 @@ export function runEndpointHealthCheck(): Promise<EndpointHealth[]> {
     .then(results => {
       cache = results
       broadcast('endpoint_health', cache)
+      // Endpoint health is the trigger for automatic offline-mode fallback/recovery.
+      recomputeOfflineMode()
       return cache
     })
     .catch(err => {

@@ -6,6 +6,40 @@ export function SystemSection({ settings, set, toggle }: SectionProps) {
   return (
     <Panel>
       <Row
+        label="Force offline mode"
+        hint="When on, the bot never calls an LLM: the Analyst, Monitor and Discoverer run deterministic technical-analysis rules instead, and Summary + the conversational Agent are disabled. All trade mechanics (sizing, ATR SL/TP, gates, OCO, exits) are unchanged. Use this to run fully rule-based even when endpoints are up."
+      >
+        <Toggle
+          label="Force offline mode"
+          checked={settings.offline_mode_forced}
+          onChange={() => toggle('offline_mode_forced')}
+        />
+      </Row>
+      <Row
+        label="Auto offline fallback"
+        hint="When on (default), the bot automatically switches to offline (rule-based) mode whenever every configured LLM endpoint is unreachable, and returns to LLM mode once one recovers. The manual force toggle always wins."
+      >
+        <Toggle
+          label="Auto offline fallback"
+          checked={settings.offline_auto}
+          onChange={() => toggle('offline_auto')}
+        />
+      </Row>
+      <Row
+        label="Reuse recent LLM data within"
+        hint="While offline, the rules analyst may blend the most recent LLM analyst decision / cached article sentiment for a coin as a confidence tilt when it is younger than this. Older data is ignored (pure technical analysis). Set 0 to never reuse."
+      >
+        <UnitInput
+          type="number"
+          step="5"
+          min="0"
+          max="1440"
+          unit="min"
+          value={settings.offline_reuse_max_age_min}
+          onChange={e => set('offline_reuse_max_age_min', parseInt(e.target.value, 10) || 0)}
+        />
+      </Row>
+      <Row
         label="Enable app updates"
         hint="Turn on the in-app host actions: periodic checks for new commits on main (driving the System page pin), the one-click rebuild, and the Reboot button. Requires the host watcher (tools/updater/install-updater.sh). Off by default so the rebuild can't be triggered by accident."
       >

@@ -118,3 +118,5 @@ Single-page app, **no router library** — page switching is `useState<Page>` in
 Required: `BINANCE_API_KEY`, `BINANCE_SECRET`, `LLAMA_BASE_URL`, `LLAMA_MODEL`.
 Optional per-module LLM overrides (default to the `LLAMA_*` values): `EXTRACTOR_*`, `ANALYST_*`, `DISCOVERER_*`, `DISCOVERER_EXTRACTOR_*`, `MONITOR_*`, `SUMMARY_*`, `ENTRY_PLANNER_*`, `AGENT_*` (each `_BASE_URL`, `_MODEL`, `_MAX_TOKENS`).
 Optional other: `MONGO_URL` (default `mongodb://localhost:27017/?directConnection=true`), `MONGO_DB` (default `cryptobot`), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PORT` (3000), `APPROVAL_TIMEOUT_MINUTES` (5), `PIPELINE_CRON`.
+
+Offline mode (deterministic, LLM-free trading): `OFFLINE_MODE` (`true`/`false` — manual force), `OFFLINE_AUTO` (default `true` — auto-fall-back to rules when every LLM endpoint is down, recover when one returns), `OFFLINE_REUSE_MAX_AGE_MIN` (default `30` — freshness window for the offline analyst to reuse recent LLM-derived sentiment). Each only seeds its `settings` row when explicitly set; the effective mode is resolved in `core/offlineMode.ts` (`isOffline()`), driven by the endpoint health monitor, and shown by the top-bar mode badge.

@@ -3,6 +3,7 @@ import { resolveLLM } from '../config/llm.js'
 import { scheduleChat } from '../core/llmScheduler.js'
 import { coinDiscoveries, pipelineEvents, nowSql, getSettings, updateSetting } from '../db/index.js'
 import { getMarketContext } from '../portfolio/market.js'
+import { isOffline } from '../core/offlineMode.js'
 import { getTopPairs, fetchMarketData } from '../trader/index.js'
 import { getOpenEntries } from '../portfolio/index.js'
 import { bus } from '../core/events.js'
@@ -38,6 +39,46 @@ async function logDiscoveryEvent(
   }
 }
 
+// Offline scorer: a deterministic trend/momentum/volume screen replacing the LLM scoring when
+// no endpoint is reachable. No research / extraction / LLM — just the market context math.
+async function scoreCandidateRules(
+  symbol: string,
+  price: number,
+  change24h: number,
+  volume: number,
+  cycleId: string,
+): Promise<{ score: number; reasoning: string; marketData: Record<string, unknown> } | null> {
+  logDiscoveryEvent('discovery_evaluating', symbol, cycleId, { symbol, price, volume, offline: true })
+  try {
+    const m = await getMarketContext(symbol, price)
+    let score = 0
+    if (m.trend === 'uptrend') score += 0.35
+    else if (m.trend === 'ranging') score += 0.1
+    if (m.sma7 > m.sma25 && m.sma25 > 0) score += 0.2
+    if (m.rsi14 >= 55 && m.rsi14 < 68) score += 0.2
+    else if (m.rsi14 >= 50 && m.rsi14 < 55) score += 0.05
+    if (m.rsi14 >= 72) score -= 0.1 // overbought — wait for a pullback
+    if (m.perf7d > 0) score += 0.15
+    if (change24h > 0) score += 0.1
+    score = Math.min(1, Math.max(0, score))
+
+    const marketData = {
+      price, change24h, volume,
+      rsi14: m.rsi14, trend: m.trend, volatility: m.volatility, atr14: m.atr14,
+      sma7: m.sma7, sma25: m.sma25, perf7d: m.perf7d,
+    }
+    const reasoning = `[rules] ${m.trend}, RSI ${m.rsi14.toFixed(0)}, 7d ${m.perf7d >= 0 ? '+' : ''}${m.perf7d.toFixed(1)}%, 24h ${change24h >= 0 ? '+' : ''}${change24h.toFixed(1)}%`
+    logDiscoveryEvent('discovery_scored', symbol, cycleId, { symbol, score, reasoning, ...marketData })
+    logger.info('Discovery scored (offline rules)', { symbol, score })
+    return { score, reasoning, marketData }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.warn('Failed to score discovery candidate (offline)', { symbol, error: message })
+    logDiscoveryEvent('discovery_error', symbol, cycleId, { symbol, error: message })
+    return null
+  }
+}
+
 async function evaluateCandidate(
   symbol: string,
   price: number,
@@ -45,6 +86,9 @@ async function evaluateCandidate(
   volume: number,
   cycleId: string,
 ): Promise<{ score: number; reasoning: string; marketData: Record<string, unknown> } | null> {
+  // Offline mode: deterministic screen instead of the research → extractor → LLM scorer.
+  if (isOffline()) return scoreCandidateRules(symbol, price, change24h, volume, cycleId)
+
   logDiscoveryEvent('discovery_evaluating', symbol, cycleId, { symbol, price, volume })
 
   try {

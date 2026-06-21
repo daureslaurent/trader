@@ -3,6 +3,7 @@ import { llmCalls, llmStatsSnapshots, getSettings } from '../../db/index.js'
 import { getRunningLLMCalls } from '../../core/llm.js'
 import { getSchedulerState } from '../../core/llmScheduler.js'
 import { getEndpointHealth, runEndpointHealthCheck } from '../../core/endpointHealth.js'
+import { getOfflineState } from '../../core/offlineMode.js'
 import { config } from '../../config/index.js'
 
 export const router = Router()
@@ -29,6 +30,13 @@ router.post('/llm/endpoints/health/check', async (_req: Request, res: Response) 
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
   }
+})
+
+// Effective offline state (LLM-free mode): manual override or auto-fallback when every
+// endpoint is down. The mode badge fetches this once on load, then tracks the live
+// `offline_mode` WS broadcast for changes.
+router.get('/llm/offline-mode', (_req: Request, res: Response) => {
+  res.json(getOfflineState())
 })
 
 // Env-var fallback endpoint/model/max-tokens for each module whose LLM is overridable

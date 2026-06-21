@@ -26,6 +26,7 @@ import { scheduleChat, runInSession } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
+import { isOffline } from '../core/offlineMode.js'
 import { getSettings, nowSql, entryAgentRuns } from '../db/index.js'
 import * as priceCache from '../market/index.js'
 import { getMarketContext, classifyRegime } from '../portfolio/index.js'
@@ -479,8 +480,8 @@ async function pruneRuns(): Promise<void> {
 // `module_entry_agent` (and the manual "Run now"). Guarded so passes can't overlap.
 export async function runEntryAgent(cycleId: string): Promise<void> {
   const s = getSettings()
-  if (s.entry_model !== 'agent') {
-    logger.info('Entry Agent skipped — entry_model is not "agent"', { cycleId, mode: s.entry_model })
+  if (s.entry_model !== 'agent' || isOffline()) {
+    logger.info('Entry Agent skipped', { cycleId, mode: s.entry_model, offline: isOffline() })
     return
   }
   if (running) {
@@ -521,7 +522,7 @@ export async function runEntryAgent(cycleId: string): Promise<void> {
 // (entry_intent_registered) and the manual "run this coin" trigger. Independent of the
 // full-cycle lock so it can run on demand; the per-coin inFlight guard prevents overlap.
 export async function runEntryAgentCoin(coin: string, cycleId: string): Promise<void> {
-  if (getSettings().entry_model !== 'agent') return
+  if (getSettings().entry_model !== 'agent' || isOffline()) return
   if (!entry.hasActiveIntent(coin)) return
   logger.info('Entry Agent single-coin pass started', { coin, cycleId })
   try {

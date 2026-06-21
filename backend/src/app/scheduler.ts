@@ -6,6 +6,7 @@ import { checkOpenPositions } from '../portfolio/index.js'
 import { runMonitor, runAgentSignal, runAgentSignalCoin } from '../agent/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { startEndpointHealthMonitor, stopEndpointHealthMonitor, runEndpointHealthCheck } from '../core/endpointHealth.js'
+import { isOffline } from '../core/offlineMode.js'
 import { scheduleUpdateCheck, stopUpdateCheck, startAppSampler, stopAppSampler } from '../host/index.js'
 import { syncFromSettings, stopRouting, refreshBinanceStreams, refreshHeldCoins } from '../routing/index.js'
 
@@ -30,12 +31,12 @@ export function dispatchMonitorRun(cycleId: string): Promise<void> {
 // are mutually exclusive. Shared by the manual pipeline-run bus handlers so they route the
 // same way the scheduled trigger does.
 export function dispatchPipelineRun(): Promise<void> {
-  return getSettings().signal_model === 'agent'
+  return getSettings().signal_model === 'agent' && !isOffline()
     ? runAgentSignal(`${Date.now().toString(36)}-signal`)
     : runPipeline()
 }
 export function dispatchSingleCoinPipeline(symbol: string, cycleId: string): Promise<void> {
-  return getSettings().signal_model === 'agent'
+  return getSettings().signal_model === 'agent' && !isOffline()
     ? runAgentSignalCoin(symbol, cycleId)
     : runSingleCoinPipeline(symbol, cycleId)
 }

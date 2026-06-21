@@ -26,6 +26,7 @@ import { resolveLLM } from '../config/llm.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
 import { getSettings, nowSql, agentSignalRuns, decisions } from '../db/index.js'
+import { isOffline } from '../core/offlineMode.js'
 import { fetchMarketData } from '../trader/index.js'
 import { getPortfolioState, getMarketContext, getOpenEntries, classifyRegime } from '../portfolio/index.js'
 import { prepareBuyOrder, deferToEntryDesk, logPipelineEvent } from '../pipeline/index.js'
@@ -514,8 +515,8 @@ async function resolveCoins(): Promise<string[]> {
 // the guard below is belt-and-braces enforcement of that single-engine-per-tick rule.
 export async function runAgentSignal(cycleId: string): Promise<void> {
   const s = getSettings()
-  if (s.signal_model !== 'agent') {
-    logger.info('Agent Signal skipped — signal_model is not "agent"', { cycleId, mode: s.signal_model })
+  if (s.signal_model !== 'agent' || isOffline()) {
+    logger.info('Agent Signal skipped', { cycleId, mode: s.signal_model, offline: isOffline() })
     return
   }
   if (running) {
@@ -566,6 +567,10 @@ export async function runAgentSignal(cycleId: string): Promise<void> {
 export async function runAgentSignalCoin(coin: string, cycleId: string): Promise<void> {
   if (!isTradeable(coin)) {
     logger.info('Agent Signal single-coin skipped — fiat/stablecoin', { coin })
+    return
+  }
+  if (isOffline()) {
+    logger.info('Agent Signal single-coin skipped — offline mode', { coin, cycleId })
     return
   }
   logger.info('Agent Signal single-coin run started', { coin, cycleId })

@@ -1,4 +1,5 @@
 import { logger } from '../core/logger.js'
+import { isOffline } from '../core/offlineMode.js'
 import { getSettings } from '../db/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
@@ -38,12 +39,14 @@ function guarded(moduleType: string, run: () => Promise<unknown>): boolean {
 }
 
 // Entry-signal dispatch: the agentic Agent Signal engine when signal_model === 'agent',
-// otherwise the classic research pipeline. Kept local (same reason as dispatchMonitor).
+// otherwise the classic pipeline. Kept local (same reason as dispatchMonitor). In offline
+// mode the agentic engine has no LLM — route to the classic pipeline, which itself runs the
+// deterministic rules analyst when offline.
 function dispatchPipeline(): Promise<void> {
-  return getSettings().signal_model === 'agent' ? runAgentSignal(cycle('signal')) : runPipeline()
+  return getSettings().signal_model === 'agent' && !isOffline() ? runAgentSignal(cycle('signal')) : runPipeline()
 }
 function dispatchPipelineCoin(symbol: string): Promise<void> {
-  return getSettings().signal_model === 'agent'
+  return getSettings().signal_model === 'agent' && !isOffline()
     ? runAgentSignalCoin(symbol, cycle('signal'))
     : runSingleCoinPipeline(symbol, cycle('pipeline'))
 }

@@ -14,6 +14,7 @@ import { runDiscovery } from '../discoverer/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { runEntryAgentCoin } from '../agent/index.js'
 import { getSettings } from '../db/index.js'
+import { recomputeOfflineMode, isOffline } from '../core/offlineMode.js'
 import { rescheduleFromSettings, dispatchMonitorRun, dispatchPipelineRun, dispatchSingleCoinPipeline } from './scheduler.js'
 
 const errMsg = (err: unknown) => err instanceof Error ? err.message : String(err)
@@ -41,7 +42,8 @@ export function registerEventHandlers(): void {
   // No-op unless entry_model === 'agent' (the engine also guards). Gives a new intent
   // smart levels within seconds instead of waiting for the next routing tick.
   bus.on('entry_intent_registered', ({ coin, cycle_id }) => {
-    if (getSettings().entry_model !== 'agent') return
+    // Offline: the Entry Agent is LLM-driven — skip it so the intent keeps the static band.
+    if (getSettings().entry_model !== 'agent' || isOffline()) return
     runEntryAgentCoin(coin, cycle_id).catch(err => logger.error('Entry Agent first-pass handler error', { coin, error: errMsg(err) }))
   })
 
@@ -82,6 +84,9 @@ export function registerEventHandlers(): void {
   // ── Scheduling & manual pipeline triggers ──────────────────────────────────
   bus.on('settings_updated', (updated) => {
     rescheduleFromSettings(updated)
+    // The manual offline override (and offline_auto) live in settings — re-evaluate the
+    // effective mode immediately so a toggle takes effect without waiting for a health tick.
+    recomputeOfflineMode()
   })
 
   bus.on('pipeline_cancel_requested', ({ cycle_id }) => {

@@ -7,6 +7,7 @@ import {
   trades, positionReviews, nowSql, getSettings,
 } from '../db/index.js'
 import { resolveLLM } from '../config/llm.js'
+import { isOffline } from '../core/offlineMode.js'
 import { broadcast } from '../api/ws.js'
 import { bus } from '../core/events.js'
 import * as priceCache from '../market/index.js'
@@ -108,6 +109,12 @@ export async function getLatestSummary(): Promise<PortfolioSummary | null> {
 }
 
 export async function runPortfolioSummary(cycleId: string): Promise<void> {
+  // Offline mode: the portfolio summary is a pure LLM narrative with no deterministic
+  // equivalent and no effect on trading — skip the run rather than fail.
+  if (isOffline()) {
+    logger.info('Portfolio summary skipped — offline mode (LLM disabled)', { cycleId })
+    return
+  }
   if (running) {
     logger.warn('Portfolio summary already running, skipping')
     return

@@ -22,8 +22,9 @@ import { logger } from '../core/logger.js'
 import { getSettings, nowSql, monitorRuns } from '../db/index.js'
 import {
   getMonitorEntries, filterReviewableEntries, buildCycleParams,
-  buildReviewContext, parseReview, finalizeReview,
+  buildReviewContext, parseReview, finalizeReview, reviewPositionRules,
 } from '../monitor/index.js'
+import { isOffline } from '../core/offlineMode.js'
 import type { MonitorEntry, RawReview, PositionContext } from '../monitor/index.js'
 import type { MonitorRun, MonitorRunFrame, PositionReview, ReviewRiskFields } from '../types.js'
 import { isReadOnlyTool } from './tools.js'
@@ -299,14 +300,24 @@ async function reviewPosition(coin: string, entry: MonitorEntry, cycleId: string
   rec.push('coin_started', '🔍', `Reviewing ${coin}…`, 'accent')
 
   const { ctx, effectiveUseHorizon } = await buildReviewContext(coin, entry, p)
-  // One session per position: holds the monitor endpoint across all rounds + nested tool
-  // LLM calls so no other module swaps the model mid-review.
-  const verdict = await runInSession(
-    { route: () => resolveLLM('monitor') },
-    () => runAgenticReview(coin, ctx, cycleId, rec),
-  )
 
-  const model = `monitor:${resolveLLM('monitor').model}`
+  // Offline mode: decide with deterministic rules (trailing-stop / thesis-break CLOSE) instead
+  // of the agentic LLM loop. Same RawReview → finalizeReview path, no LLM call.
+  let verdict: RawReview
+  let model: string
+  if (isOffline()) {
+    verdict = reviewPositionRules(ctx, p)
+    model = 'monitor:rules'
+    rec.push('offline_review', '🧮', `Offline rules: ${verdict.action}`, 'accent', { action: verdict.action, reasoning: verdict.reasoning })
+  } else {
+    // One session per position: holds the monitor endpoint across all rounds + nested tool
+    // LLM calls so no other module swaps the model mid-review.
+    verdict = await runInSession(
+      { route: () => resolveLLM('monitor') },
+      () => runAgenticReview(coin, ctx, cycleId, rec),
+    )
+    model = `monitor:${resolveLLM('monitor').model}`
+  }
   const review = await finalizeReview({
     ctx, raw: verdict, effectiveUseHorizon, modelName: model, cycleId,
   }, p)

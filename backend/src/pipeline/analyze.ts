@@ -4,6 +4,7 @@ import { extractResearch, selectArticles } from '../extractor/index.js'
 import { analyzeSignal } from '../analyst/index.js'
 import { getMarketContext, getPortfolioState } from '../portfolio/index.js'
 import { Signal } from '../types.js'
+import { isOffline } from '../core/offlineMode.js'
 import { logPipelineEvent } from './events.js'
 import { checkCancelled } from './cancellation.js'
 
@@ -25,6 +26,13 @@ export async function analyzeCoin(
   portfolioState: Awaited<ReturnType<typeof getPortfolioState>>,
   cycleId: string,
 ): Promise<CoinAnalysisResult> {
+  // Offline mode: the analyst decides on market data alone (deterministic rules), so the
+  // web-research and LLM extraction/selection stages are skipped entirely — no wasted scrape
+  // or model call. Market context is still computed (it's pure math) and feeds the rules.
+  if (isOffline()) {
+    return analyzeCoinOffline(data, portfolioState, cycleId)
+  }
+
   // Research and market context are independent — fetch in parallel
   logPipelineEvent('research_started', data.symbol, cycleId, { symbol: data.symbol })
   checkCancelled(cycleId)
@@ -84,3 +92,43 @@ export async function analyzeCoin(
 
   return { data, signal, marketCtx, cycleId }
 }
+
+/**
+ * Offline variant of analyzeCoin: market context + deterministic analyst only. Emits the same
+ * analysis/signal pipeline events (with empty research) so the Pipeline page renders normally,
+ * and records the decision. No researcher / extractor / selection (no web or LLM work).
+ */
+async function analyzeCoinOffline(
+  data: MarketDataItem,
+  portfolioState: Awaited<ReturnType<typeof getPortfolioState>>,
+  cycleId: string,
+): Promise<CoinAnalysisResult> {
+  checkCancelled(cycleId)
+  const marketCtx = await getMarketContext(data.symbol, data.price)
+
+  logPipelineEvent('analysis_started', data.symbol, cycleId, {
+    symbol: data.symbol, price: data.price, change24h: data.change24h, volume: data.volume,
+    rsi14: marketCtx.rsi14, trend: marketCtx.trend, atr14: marketCtx.atr14,
+    sma7: marketCtx.sma7, sma25: marketCtx.sma25, sma99: marketCtx.sma99,
+    perf7d: marketCtx.perf7d, volatility: marketCtx.volatility, offline: true,
+  })
+
+  const signal = await analyzeSignal(data.symbol, marketCtx, portfolioState, EMPTY_RESEARCH(data.symbol))
+
+  logPipelineEvent('signal_generated', data.symbol, cycleId, {
+    symbol: data.symbol, action: signal.action, reason: signal.reason, confidence: signal.confidence, offline: true,
+  })
+
+  await decisions.insert({
+    coin: data.symbol, action: signal.action, reason: signal.reason, confidence: signal.confidence,
+    context: JSON.stringify({ price: data.price, offline: true }), triggered_trade_id: null, created_at: nowSql(),
+  })
+
+  return { data, signal, marketCtx, cycleId }
+}
+
+// Empty research stub passed to the (offline) analyst, which ignores it — keeps the
+// analyzeSignal signature intact without a researcher/extractor pass.
+const EMPTY_RESEARCH = (coin: string) => ({
+  coin, articles: [], skipped_articles: [], aggregated_sentiment: 'neutral' as const, top_headlines: [],
+})

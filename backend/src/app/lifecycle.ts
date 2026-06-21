@@ -53,6 +53,18 @@ export async function start(): Promise<void> {
     await updateSetting('pipeline_cron', config.pipelineCron)
   }
 
+  // Offline-mode env seeds: only applied when explicitly set, so the stored
+  // setting (and its defaults) win when the env var is absent.
+  if (config.offline.forced != null) {
+    await updateSetting('offline_mode_forced', config.offline.forced === 'true' ? 'true' : 'false')
+  }
+  if (config.offline.auto != null) {
+    await updateSetting('offline_auto', config.offline.auto === 'true' ? 'true' : 'false')
+  }
+  if (config.offline.reuseMaxAgeMin != null && /^\d+$/.test(config.offline.reuseMaxAgeMin)) {
+    await updateSetting('offline_reuse_max_age_min', config.offline.reuseMaxAgeMin)
+  }
+
   server = startAPI()
 
   // Wire deferred engine startup before any early return, so completing the

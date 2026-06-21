@@ -12,6 +12,7 @@ import OpenAI from 'openai'
 import type { LLMTarget } from '../core/llm.js'
 import { scheduleChat, runInSession } from '../core/llmScheduler.js'
 import { resolveLLM } from '../config/llm.js'
+import { isOffline } from '../core/offlineMode.js'
 import { broadcast } from '../api/ws.js'
 import { logger } from '../core/logger.js'
 import { getSettings } from '../db/index.js'
@@ -168,6 +169,21 @@ export async function runChatTurn(conversationId: number, userText: string): Pro
 
   const convo = await store.getConversation(conversationId)
   if (!convo) throw new Error('Conversation not found')
+
+  // Offline mode: the conversational agent is a tool-calling LLM with no deterministic
+  // fallback. Persist the user message and a short notice instead of attempting an LLM turn.
+  if (isOffline()) {
+    const userMsg = await store.addMessage(conversationId, { role: 'user', content: text })
+    await store.touchConversation(conversationId)
+    step(conversationId, { type: 'user', message: userMsg })
+    const notice = await store.addMessage(conversationId, {
+      role: 'assistant',
+      content: 'The assistant is unavailable right now — the bot is in **offline mode** (no LLM endpoint reachable). Deterministic trading (rule-based entries, monitoring and exits) continues to run. The assistant returns automatically once an LLM endpoint is back online.',
+    })
+    await store.touchConversation(conversationId)
+    step(conversationId, { type: 'assistant', message: notice })
+    return { produced: [userMsg, notice] }
+  }
 
   inFlight.add(conversationId)
   // Encode the conversation in the cycle id so agent calls are traceable in LLM Debug.

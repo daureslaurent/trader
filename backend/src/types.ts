@@ -102,6 +102,19 @@ export interface BotSettings {
    *  Signal engine — one agentic, single-coin tool-calling agent per watchlist coin that keeps
    *  long-term per-coin memory and a thesis. Mutually exclusive. */
   signal_model: 'classic' | 'agent'
+  /** Offline mode — force deterministic, LLM-free decisions. When on, the Analyst, Monitor and
+   *  Discoverer run rule-based (technical-analysis) logic instead of calling any LLM; Summary and
+   *  the conversational Agent are disabled. Trade mechanics (sizing, SL/TP, gates, OCO, exits) are
+   *  unchanged. This is the manual override; `offline_auto` adds automatic fallback. */
+  offline_mode_forced: boolean
+  /** When true (default), the bot automatically enters offline mode whenever every configured LLM
+   *  catalog endpoint is unreachable (per the endpoint health monitor), and returns to LLM mode
+   *  once any endpoint recovers. The manual `offline_mode_forced` override always wins. */
+  offline_auto: boolean
+  /** Freshness window (minutes) for reusing recently-computed LLM artifacts while offline. The
+   *  offline analyst may blend the last analyst decision / cached article sentiment for a coin as a
+   *  confidence tilt when it is younger than this; older data is ignored (pure TA). */
+  offline_reuse_max_age_min: number
   /** Agent Signal only: when true, skip coins currently held in the portfolio (they belong to
    *  the monitor); when false, run an agent on every watchlist coin regardless of holdings. */
   agent_signal_check_portfolio: boolean

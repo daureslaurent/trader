@@ -127,6 +127,13 @@ export const config = {
   dbImportMaxMb: num('DB_IMPORT_MAX_MB', 512),
   approvalsEnabled: process.argv.includes('--approval'),
   pipelineCron: opt('PIPELINE_CRON', ''),
+  // Offline mode seeds. Raw env values (undefined when unset) so lifecycle only
+  // overwrites the stored setting when the operator explicitly sets one in .env.
+  offline: {
+    forced: process.env.OFFLINE_MODE,          // 'true' | 'false' | undefined
+    auto: process.env.OFFLINE_AUTO,             // 'true' | 'false' | undefined
+    reuseMaxAgeMin: process.env.OFFLINE_REUSE_MAX_AGE_MIN, // numeric string | undefined
+  },
   // Authentication gateway. Raw env values; resolved/validated in auth/config.ts.
   // Auth turns ON automatically once a password (hash or plaintext) is configured.
   auth: {

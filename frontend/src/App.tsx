@@ -8,6 +8,7 @@ import { ThemeSelector } from './components/layout/ThemeSelector'
 import { PnLBadge } from './components/layout/PnLBadge'
 import { ControlRoomBadge } from './components/layout/ControlRoomBadge'
 import { EndpointStatusBadge } from './components/layout/EndpointStatusBadge'
+import { OfflineModeBadge } from './components/layout/OfflineModeBadge'
 import { Page, Toast, ApprovalRequest, UpdateInfo } from './types'
 import { useWebSocket } from './hooks/useWebSocket'
 import { cn } from './lib/utils'
@@ -216,6 +217,7 @@ function AppInner() {
             </span>
             <PnLBadge onOpen={() => setPage('portfolio')} />
             <ControlRoomBadge onOpen={() => setPage('control-room')} />
+            <OfflineModeBadge />
             <EndpointStatusBadge />
             <ThemeSelector />
             {authEnabled && (

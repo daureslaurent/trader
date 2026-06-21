@@ -9,6 +9,8 @@ import { getCoinPortfolioContext } from '../portfolio/service.js'
 import { classifyRegime } from '../portfolio/market.js'
 import { computeRiskLevels } from '../portfolio/risk.js'
 import { getSettings } from '../db/index.js'
+import { isOffline } from '../core/offlineMode.js'
+import { analyzeSignalRules } from './rules.js'
 import { LLMError } from '../core/errors.js'
 import { fetchOrderBook, analyzeOrderBook } from '../trader/index.js'
 import { OrderBookAnalysis } from '../trader/types.js'
@@ -100,6 +102,11 @@ export async function analyzeSignal(
   research: ExtractedResearch,
 ): Promise<Signal> {
   const settings = getSettings()
+  // Offline mode: no LLM is reachable (or it's been force-disabled) — decide with the
+  // deterministic trend+momentum rules instead. Same Signal contract, no LLM call.
+  if (isOffline()) {
+    return analyzeSignalRules(coin, market, portfolio)
+  }
   // Regime is deterministic and cheap — recomputed here for the post-parse risk
   // sizing; the prompt's copy is rebuilt fresh inside the JIT thunk at dispatch.
   const regime = classifyRegime(market)

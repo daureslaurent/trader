@@ -4,6 +4,9 @@ export interface SettingsData {
   watchlist: string[]
   pipeline_cron: string
   signal_model: 'classic' | 'agent'
+  offline_mode_forced: boolean
+  offline_auto: boolean
+  offline_reuse_max_age_min: number
   agent_signal_check_portfolio: boolean
   agent_signal_retain_runs: number
   default_horizon: 'auto' | 'llm' | 'short' | 'medium' | 'long'
@@ -148,6 +151,7 @@ export type ToggleKey =
   | 'telegram_notify_portfolio' | 'telegram_notify_summary'
   | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors'
   | 'telegram_notify_update' | 'update_enabled'
+  | 'offline_mode_forced' | 'offline_auto'
 
 // Props every section component receives from the page shell.
 export interface SectionProps {
