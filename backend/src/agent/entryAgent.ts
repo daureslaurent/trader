@@ -259,6 +259,18 @@ function buildUserBriefing(coin: string, intent: EntryIntent, price: number, ctx
   const { adjustments, ttlOnly } = summarizeBandHistory(intent.bandHistory)
   // % the live price must still move to reach a band level (negative = level below live).
   const toPct = (lvl: number) => `${(((lvl - price) / price) * 100).toFixed(2)}%`
+  // When ARMED (price in zone, confirming a rebound), the engine is already trailing the low
+  // and will fire on a bounce — re-anchoring the band would throw that progress away. Steer the
+  // agent off ADJUST in that state; the line only shows when the intent is actually armed.
+  const reboundPct = getSettings().entry_rebound_pct
+  const trigger = intent.armed && intent.troughPrice != null ? intent.troughPrice * (1 + reboundPct / 100) : null
+  const armedBlock = intent.armed
+    ? [
+        `ARMED — price is in the buy zone and confirming a rebound. Trailing low ${f(intent.troughPrice, 6)}` +
+          (trigger != null ? ` · fires on a +${reboundPct}% bounce (≈ ${f(trigger, 6)}, ${toPct(trigger)} from live).` : '.'),
+        `The trailing trough is already capturing a lower entry; ADJUSTing the band would throw it away and restart confirmation from scratch. Do NOT ADJUST an armed entry — prefer WAIT and let it confirm; only FIRE (buy the bounce now) or CANCEL (thesis broken).`,
+      ]
+    : []
   return [
     `Entry under management: ${coin}`,
     `Live price: ${f(price, 6)}   24h: ${f(ctx.change24h)}%   7d: ${f(ctx.perf7d)}%   vol24h: ${f(ctx.volume, 0)}`,
@@ -269,6 +281,7 @@ function buildUserBriefing(coin: string, intent: EntryIntent, price: number, ctx
     `Current entry band (source: ${intent.bandSource}):`,
     `  buy target ${f(intent.targetPrice, 6)} (${toPct(intent.targetPrice)} from live) · invalidate ${f(intent.invalidatePrice, 6)} (${toPct(intent.invalidatePrice)}) · chase cap ${f(intent.chaseCapPrice, 6)} (${toPct(intent.chaseCapPrice)})`,
     `  BUY thesis: ${intent.signal.reason || 'n/a'}`,
+    ...armedBlock,
     '',
     `Wait so far: ${ageStr} in management · TTL ${minsLeft.toFixed(0)}m left · band re-anchored ${adjustments}× (${ttlOnly} of them TTL-only refreshes).`,
     ttlOnly >= 2

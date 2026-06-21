@@ -408,6 +408,12 @@ function getEntryIntent(args: Record<string, unknown>): unknown {
   priceCache.subscribe([coin])
   const now = Date.now()
   const current = priceFor(coin)
+  const s = getSettings()
+  // Rebound-confirmation state: while ARMED the engine trails a trough down and fires only on
+  // a +entry_rebound_pct bounce off it — so the trough is already capturing a lower entry. The
+  // agent must see this to avoid re-anchoring (an ADJUST) and throwing the in-progress fill away.
+  const reboundTriggerPrice =
+    intent.armed && intent.troughPrice != null ? intent.troughPrice * (1 + s.entry_rebound_pct / 100) : null
   return {
     coin,
     active: true,
@@ -423,6 +429,13 @@ function getEntryIntent(args: Record<string, unknown>): unknown {
     toTargetPct: current != null ? pctDiff(current, intent.targetPrice) : null,
     toInvalidatePct: current != null ? pctDiff(current, intent.invalidatePrice) : null,
     toChaseCapPct: current != null ? pctDiff(current, intent.chaseCapPrice) : null,
+    // Rebound confirmation: whether the feature is on, and (when armed) the trailing low + the
+    // bounce price that fires the buy. Do NOT ADJUST an armed entry — it resets this progress.
+    confirmRebound: s.entry_confirm_rebound,
+    armed: intent.armed,
+    troughPrice: intent.troughPrice ?? null,
+    reboundTriggerPrice,
+    toReboundPct: current != null && reboundTriggerPrice != null ? pctDiff(current, reboundTriggerPrice) : null,
     ageMinutes: Number(((now - intent.createdAt) / 60000).toFixed(1)),
     ttlMinutesLeft: Number(Math.max(0, (intent.expiresAt - now) / 60000).toFixed(1)),
     signal: {
