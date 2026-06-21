@@ -354,7 +354,9 @@ export function Sidebar({ active, onNavigate, wsConnected, pendingCount, updateA
           <span className={cn(
             'w-2 h-2 rounded-full shrink-0',
             wsConnected
-              ? theme === 'aurora' ? 'bg-accent aurora-dot' : 'bg-buy animate-pulse'
+              ? theme === 'aurora' ? 'bg-accent aurora-dot'
+                : theme === 'obsidian' ? 'bg-accent obsidian-dot'
+                : 'bg-buy animate-pulse'
               : 'bg-sell',
           )} />
           <div className="min-w-0">

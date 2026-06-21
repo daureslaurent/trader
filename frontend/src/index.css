@@ -111,6 +111,23 @@
   color-scheme: dark;
 }
 
+[data-theme='obsidian'] {
+  --surface-base: #08090a;
+  --surface-card: #0f1213;
+  --surface-elevated: #161a1c;
+  --surface-hover: #1d2225;
+  --accent-rgb: 45 212 191;   /* teal-400 */
+  --accent2-rgb: 56 189 248;  /* sky-400  */
+  --buy-rgb: 52 211 153;      /* emerald — kept distinct from the teal accent */
+  --sell-rgb: 251 113 133;    /* rose-400 */
+  --warn-rgb: 251 191 36;
+  --foreground: #e8eef0;
+  --muted-fg: #76868d;        /* cool neutral slate */
+  --border-color: rgba(148, 163, 184, 0.1);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.45), 0 12px 32px -14px rgba(0, 0, 0, 0.7);
+  color-scheme: dark;
+}
+
 [data-theme='light'] {
   --surface-base: #f8fafc;
   --surface-card: #ffffff;
@@ -300,4 +317,55 @@ body::before {
 
 [data-theme='volcano'] .ember-dot {
   animation: ember-flicker 2s ease-in-out infinite;
+}
+
+/* ============================================================
+   OBSIDIAN THEME — neutral graphite glass + teal/sky sheen
+   ============================================================ */
+
+/* Cool dual-tone ambient glow: teal top-right, sky bottom-left */
+[data-theme='obsidian'] body::before {
+  background:
+    radial-gradient(ellipse 58% 40% at 80% -10%, rgb(var(--accent-rgb) / 0.1) 0%, transparent 70%),
+    radial-gradient(ellipse 42% 30% at -8% 72%, rgb(var(--accent2-rgb) / 0.07) 0%, transparent 70%);
+}
+
+/* A faint hairline of light along the very top edge — the "glass" highlight */
+[data-theme='obsidian'] body::after {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 1px;
+  z-index: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgb(var(--accent-rgb) / 0.35) 30%,
+    rgb(var(--accent2-rgb) / 0.35) 70%,
+    transparent 100%
+  );
+}
+
+[data-theme='obsidian'] aside {
+  background: linear-gradient(180deg, #0d1011 0%, #08090a 100%);
+  border-right-color: rgba(148, 163, 184, 0.1);
+}
+
+/* Premium glass ring with a soft teal halo */
+[data-theme='obsidian'] .neon-border {
+  box-shadow:
+    0 0 0 1px rgba(45, 212, 191, 0.16),
+    0 0 24px rgba(45, 212, 191, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+/* Slow breathing glow for the live indicator dot */
+@keyframes obsidian-breathe {
+  0%, 100% { opacity: 0.55; box-shadow: 0 0 0 0 rgb(var(--accent-rgb) / 0.4); }
+  50%      { opacity: 1;    box-shadow: 0 0 8px 1px rgb(var(--accent-rgb) / 0.3); }
+}
+
+[data-theme='obsidian'] .obsidian-dot {
+  animation: obsidian-breathe 2.6s ease-in-out infinite;
 }
