@@ -119,6 +119,12 @@ export function EntrySection({ settings, set, toggle }: SectionProps) {
           >
             <UnitInput type="number" step="10" min="0" max="600" unit="min" value={settings.entry_max_ttl_minutes} onChange={e => set('entry_max_ttl_minutes', parseFloat(e.target.value) || 0)} />
           </Row>
+          <Row
+            label="Max pullback depth"
+            hint="Hard ceiling on how far below the live price the buy target may sit, applied to every source — static and Entry Agent. A deeper target is clamped to this (moved nearer to market) so an over-greedy entry can't park the target so low the pullback never plays out and the intent just expires. Set 0 to disable the cap."
+          >
+            <UnitInput type="number" step="0.1" min="0" max="10" unit="%" value={settings.entry_max_pullback_pct} onChange={e => set('entry_max_pullback_pct', parseFloat(e.target.value) || 0)} />
+          </Row>
           <Row label="On expiry" hint="When the intent expires still in-band: fill at market so you don't keep missing valid setups, or cancel and wait for a fresh signal.">
             <select
               value={settings.entry_on_expiry}

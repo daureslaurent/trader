@@ -55,6 +55,7 @@ export interface SettingsData {
   entry_max_chase_pct: number
   entry_ttl_minutes: number
   entry_max_ttl_minutes: number
+  entry_max_pullback_pct: number
   entry_on_expiry: 'market' | 'cancel'
   entry_poll_seconds: number
   entry_confirm_rebound: boolean

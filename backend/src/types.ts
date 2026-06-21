@@ -223,6 +223,11 @@ export interface BotSettings {
   /** Hard cap on an entry intent's TTL, in minutes, regardless of source (static/agent/manual).
    *  Any chosen TTL is clamped to this ceiling. 0 disables the cap. */
   entry_max_ttl_minutes: number
+  /** Hard cap on how far below the live price the buy target may sit, as a % (the pullback depth).
+   *  Applied to the static band at registration and to every Entry Agent re-anchor, so no source
+   *  can park the target so deep the pullback never plays out and the intent just expires. A deeper
+   *  requested pullback is clamped up to this ceiling (target moved closer to market). 0 disables it. */
+  entry_max_pullback_pct: number
   /** On expiry: 'market' fires at the current (in-band) price; 'cancel' drops the intent. */
   entry_on_expiry: 'market' | 'cancel'
   /** How often the entry engine evaluates intents against the live price, in seconds. */

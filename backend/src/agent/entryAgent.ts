@@ -200,9 +200,15 @@ function parseEntryVerdict(content: string): EntryVerdict {
 // The "Method" section lists exactly the tools getAgentToolPrompt resolves for this agent
 // (filtered to whatever's granted) — never hardcode a tool name here, or it can drift.
 function buildSystemPrompt(coin: string, toolPrompt: string): string {
+  const maxPullback = getSettings().entry_max_pullback_pct
+  const depthRule = maxPullback > 0
+    ? `Entry-depth discipline — getting filled matters more than shaving the last fraction of a percent. The buy target may sit AT MOST ${maxPullback}% below the live price (deeper requests are clamped to this), but you should usually choose far less. A target a few percent down looks great on paper and then never triggers: the price drifts up, the TTL lapses, and you miss the whole move — this is the single most common way this desk loses a good BUY. Reserve a deeper pullback for a genuinely ranging / oversold tape where a dip is likely. When the setup is up-momentum, breaking out, or pressing resistance, do NOT wait for a dip that probably won't come: set a shallow pullback (≈0–0.5%) or FIRE now. A small, certain fill beats a perfect entry you never get.`
+    : `Entry-depth discipline — getting filled matters more than shaving the last fraction of a percent. A buy target a few percent below market looks great on paper and then never triggers: the price drifts up, the TTL lapses, and you miss the whole move — this is the single most common way this desk loses a good BUY. Reserve a deeper pullback for a genuinely ranging / oversold tape where a dip is likely. When the setup is up-momentum, breaking out, or pressing resistance, do NOT wait for a dip that probably won't come: set a shallow pullback (≈0–0.5%) or FIRE now. A small, certain fill beats a perfect entry you never get.`
   return `You are "Entry Agent", an autonomous execution trader managing the ENTRY for a single deferred BUY — ${coin}.
 
 A BUY for ${coin} has already been decided and is staged on the Entry Desk: instead of buying at market, the engine waits for a good price inside an entry band (a pullback target to buy at, an invalidate level that abandons on a breakdown, a chase cap that abandons if price runs away, and a TTL). Your job each pass is to read the live setup and decide how to DRIVE this entry to the best outcome — then get out of the way.
+
+${depthRule}
 
 Method — gather evidence with your READ-ONLY tools BEFORE deciding:
 ${toolPrompt}

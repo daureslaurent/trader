@@ -30,6 +30,19 @@ function capTtl(ttlMinutes: number): number {
   return cap > 0 ? Math.min(ttlMinutes, cap) : ttlMinutes
 }
 
+/**
+ * Clamp a chosen pullback depth (% below live) to the global `entry_max_pullback_pct` ceiling.
+ * Applied to every band source (static register + Entry Agent re-anchor) so no one can park the
+ * buy target so far below market that the pullback never plays out and the intent merely expires
+ * — the dominant Entry-Desk miss. A deeper request is clamped UP to the cap (target nearer market);
+ * a cap of 0 (or non-positive) disables it. Negative inputs are floored at 0 (never above market).
+ */
+function capPullback(pullbackPct: number): number {
+  const floored = Math.max(0, pullbackPct)
+  const cap = getSettings().entry_max_pullback_pct
+  return cap > 0 ? Math.min(floored, cap) : floored
+}
+
 export function hasActiveIntent(coin: string): boolean {
   return intents.has(coin)
 }
@@ -74,12 +87,13 @@ export function register({ signal, signalPrice, notionalUsdc, atr, band, market 
 
   const now = Date.now()
   const ttlMinutes = capTtl(band.ttlMinutes)
+  const pullbackPct = capPullback(band.pullbackPct)
   const intent: EntryIntent = {
     id: `${now.toString(36)}-${coin}`,
     coin,
     signal,
     signalPrice,
-    targetPrice: signalPrice * (1 - band.pullbackPct / 100),
+    targetPrice: signalPrice * (1 - pullbackPct / 100),
     invalidatePrice: signalPrice * (1 - band.invalidatePct / 100),
     chaseCapPrice: signalPrice * (1 + band.chaseCapPct / 100),
     notionalUsdc,
@@ -174,7 +188,7 @@ export async function applyAgentBand(
     }
     signalPrice = livePrice
     atr = market.atr14 // refresh ATR too — it feeds SL/TP sizing at fill
-    if (hasPullback) targetPrice = livePrice * (1 - band.pullbackPct! / 100)
+    if (hasPullback) targetPrice = livePrice * (1 - capPullback(band.pullbackPct!) / 100)
     if (hasInvalidate) invalidatePrice = livePrice * (1 - band.invalidatePct! / 100)
     if (hasChase) chaseCapPrice = livePrice * (1 + band.chaseCapPct! / 100)
   }
