@@ -765,9 +765,11 @@ export async function appendCoachMemory(text: string, cycleId?: string): Promise
     notes.push({ at: now, text: trimmed, ...(cycleId ? { cycle_id: cycleId } : {}) })
     if (notes.length > COACH_NOTES_CAP) notes.splice(0, notes.length - COACH_NOTES_CAP)
   }
-  const doc: CoachMemory = { _id: COACH_MEMORY_ID, notes, updated_at: now }
-  await coachMemory.upsert(COACH_MEMORY_ID, doc)
-  return doc
+  // `_id` is supplied by upsert via $setOnInsert — including it in the $set payload makes
+  // Mongo reject the update ("would create a conflict at '_id'"), so set only the fields.
+  const set = { notes, updated_at: now }
+  await coachMemory.upsert(COACH_MEMORY_ID, set)
+  return { _id: COACH_MEMORY_ID, ...set }
 }
 
 /** Read the global coach-memory log (most recent lessons last), for the Monitor/Analyst
