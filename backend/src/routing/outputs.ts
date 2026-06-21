@@ -3,7 +3,7 @@ import { isOffline } from '../core/offlineMode.js'
 import { getSettings } from '../db/index.js'
 import { runPipeline, runSingleCoinPipeline } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
-import { runMonitor, runAgentSignal, runAgentSignalCoin, runEntryAgent } from '../agent/index.js'
+import { runMonitor, runAgentSignal, runAgentSignalCoin, runEntryAgent, runCoach } from '../agent/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
 import { RouteNode, FireContext } from './types.js'
 
@@ -87,6 +87,9 @@ const HANDLERS: Record<string, OutputHandler> = {
 
   module_entry_agent: () =>
     result(guarded('module_entry_agent', () => runEntryAgent(cycle('entry')))),
+
+  module_coach: () =>
+    result(guarded('module_coach', () => runCoach(cycle('coach')))),
 }
 
 export function runOutput(node: RouteNode, ctx: FireContext): OutputResult {

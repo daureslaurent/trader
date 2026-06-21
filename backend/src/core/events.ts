@@ -18,6 +18,7 @@ interface EventMap {
   discovery_run_requested: [{ cycle_id: string }]
   monitor_run_requested: [{ cycle_id: string }]
   summary_run_requested: [{ cycle_id: string }]
+  coach_run_requested: [{ cycle_id: string }]
   portfolio_summary_created: [PortfolioSummary]
   position_adjustment_proposed: [SlTpAdjustmentProposal]
   adjustment_approved: [number]

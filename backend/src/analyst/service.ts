@@ -10,6 +10,7 @@ import { classifyRegime } from '../portfolio/market.js'
 import { computeRiskLevels } from '../portfolio/risk.js'
 import { getSettings } from '../db/index.js'
 import { isOffline } from '../core/offlineMode.js'
+import { getCoachGuidanceBlock } from '../core/coachGuidance.js'
 import { analyzeSignalRules } from './rules.js'
 import { LLMError } from '../core/errors.js'
 import { fetchOrderBook, analyzeOrderBook } from '../trader/index.js'
@@ -146,12 +147,15 @@ export async function analyzeSignal(
     // any other mode resolves the horizon deterministically (see resolveHorizon below).
     const chooseHorizon = settings.default_horizon === 'llm'
     const { system, user } = buildAnalysisPrompt(coin, market, regime, portfolio, settings, research, coinCtx, orderBook, chooseHorizon, candles, tf)
+    // Append the Coach Agent's standing lessons (if any) so the analyst self-corrects.
+    const coachGuidance = await getCoachGuidanceBlock()
+    const systemWithCoach = coachGuidance ? `${system}\n\n${coachGuidance}` : system
     logger.info('Request LLM', { module: 'analyst', coin, regime: regime.summary, model: route.model })
 
     return {
       model: route.model,
       messages: [
-        { role: 'system', content: system },
+        { role: 'system', content: systemWithCoach },
         { role: 'user', content: user },
       ],
       // Single low temperature — the only subtask left is a discrete judgement (#1a)

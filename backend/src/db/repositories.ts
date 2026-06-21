@@ -15,6 +15,7 @@ export const positionReviews    = new Repository<Row>('position_reviews')
 export const monitorRuns        = new Repository<Row>('monitor_runs')
 export const agentSignalRuns    = new Repository<Row>('agent_signal_runs')
 export const entryAgentRuns     = new Repository<Row>('entry_agent_runs')
+export const coachRuns          = new Repository<Row>('coach_runs')
 export const positionAdjustments = new Repository<Row>('position_adjustments')
 export const slTpHistory        = new Repository<Row>('sl_tp_history')
 export const portfolioSummaries = new Repository<Row>('portfolio_summaries')
@@ -24,6 +25,7 @@ export const agentMessages      = new Repository<Row>('agent_messages')
 // Natural string-key collections (no auto-increment).
 export const monitorNotes       = new Repository<Row>('monitor_notes', false)        // _id = coin
 export const agentSignalMemory  = new Repository<Row>('agent_signal_memory', false)  // _id = coin
+export const coachMemory        = new Repository<Row>('coach_memory', false)          // _id = 'global'
 export const entryIntents       = new Repository<Row>('entry_intents', false)        // _id = intent id
 export const entryEvents        = new Repository<Row>('entry_events', false)          // _id = event id
 export const settings           = new Repository<Row>('settings', false)             // _id = key
@@ -57,11 +59,11 @@ export const ALL_REPOS: Record<string, Repository<Row>> = {
   trades, decisions, positions, portfolio_entries: portfolioEntries,
   portfolio_snapshots: portfolioSnapshots, position_reviews: positionReviews,
   monitor_runs: monitorRuns, agent_signal_runs: agentSignalRuns,
-  entry_agent_runs: entryAgentRuns,
+  entry_agent_runs: entryAgentRuns, coach_runs: coachRuns,
   position_adjustments: positionAdjustments, sl_tp_history: slTpHistory,
   portfolio_summaries: portfolioSummaries, agent_conversations: agentConversations,
   agent_messages: agentMessages, monitor_notes: monitorNotes,
-  agent_signal_memory: agentSignalMemory,
+  agent_signal_memory: agentSignalMemory, coach_memory: coachMemory,
   entry_intents: entryIntents, entry_events: entryEvents, settings,
   pipeline_events: pipelineEvents, extraction_cache: extractionCache,
   ohlcv_cache: ohlcvCache, coin_discoveries: coinDiscoveries,

@@ -22,6 +22,7 @@ function statusFor(id: SectionId, s: SettingsData, themeLabel: string): { text: 
       ? { text: 'Agent Monitor', tone: 'on' }
       : { text: 'Paused', tone: 'off' }
     case 'summary':    return s.summary_auto_run ? { text: 'Auto', tone: 'on' } : { text: 'Manual', tone: 'off' }
+    case 'coach':      return s.coach_auto_run ? { text: 'Auto', tone: 'on' } : { text: 'Manual', tone: 'off' }
     case 'models':     return { text: `${s.llm_endpoints.length} endpoint${s.llm_endpoints.length === 1 ? '' : 's'}`, tone: 'neutral' }
     case 'appearance': return { text: themeLabel, tone: 'neutral' }
     case 'telegram':   return s.telegram_notify_enabled ? { text: 'On', tone: 'on' } : { text: 'Off', tone: 'off' }

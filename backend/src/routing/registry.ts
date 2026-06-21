@@ -337,6 +337,16 @@ export const NODE_TYPES: Record<string, NodeTypeMeta> = {
     defaultConfig: {},
     singleton: true,
   },
+  module_coach: {
+    type: 'module_coach',
+    kind: 'output',
+    label: 'Run Coach',
+    description: 'Audits how the other agents are deciding and writes corrections into their memory (read-only on trading).',
+    category: 'execution',
+    configFields: [],
+    defaultConfig: {},
+    singleton: true,
+  },
 }
 
 export function getNodeType(type: string): NodeTypeMeta | undefined {

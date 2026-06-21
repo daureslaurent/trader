@@ -1,4 +1,4 @@
-export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'agent-monitor' | 'summary' | 'trade' | 'entry' | 'entry-agent' | 'pipeline' | 'agent-signal' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'control-room' | 'agent' | 'host' | 'event-stream' | 'routing'
+export type Page = 'dashboard' | 'trading-state' | 'portfolio' | 'monitor' | 'agent-monitor' | 'summary' | 'trade' | 'entry' | 'entry-agent' | 'coach-agent' | 'pipeline' | 'agent-signal' | 'cache' | 'settings' | 'discover' | 'llm-debug' | 'llm-stats' | 'control-room' | 'agent' | 'host' | 'event-stream' | 'routing'
 
 export interface HostStats {
   timestamp: number
@@ -568,6 +568,7 @@ export type LLMModuleKey =
   | 'agent'
   | 'monitor'
   | 'agentSignal'
+  | 'coach'
   | 'webSearch'
 
 /** Env-var fallback endpoint/model/max-tokens for a module, from GET /api/llm/defaults. */

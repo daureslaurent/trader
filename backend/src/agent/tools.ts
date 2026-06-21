@@ -5,8 +5,8 @@
 // it can mutate is the watchlist and kicking off the engines that already run on crons.
 import { bus } from '../core/events.js'
 import { logger } from '../core/logger.js'
-import { getSettings, updateSetting, nowSql, trades, decisions, llmCalls, entryEvents, monitorNotes, agentSignalMemory, agentSignalRuns } from '../db/index.js'
-import type { SignalMemory } from '../types.js'
+import { getSettings, updateSetting, nowSql, trades, decisions, llmCalls, entryEvents, monitorNotes, agentSignalMemory, agentSignalRuns, coachMemory, positions } from '../db/index.js'
+import type { SignalMemory, CoachMemory } from '../types.js'
 import { isTradeable } from '../core/tradeable.js'
 import * as priceCache from '../market/index.js'
 import { fetchMarketData } from '../trader/index.js'
@@ -745,6 +745,115 @@ async function getCoinSignalHistory(args: Record<string, unknown>): Promise<unkn
   }
 }
 
+// ── Coach Agent tools + memory ─────────────────────────────────────────────────
+// Read-only audit inputs (aggregated so the agent reasons over digests, not raw rows)
+// plus the global coach-memory log it builds. The coach has NO write tools — its
+// corrections ride on the final JSON verdict and the engine applies them.
+
+// Cap on the global coach-memory log; oldest entries fall off.
+const COACH_NOTES_CAP = 40
+const COACH_MEMORY_ID = 'global'
+
+/** Append one lesson to the global coach-memory log (read by the Monitor + Analyst
+ *  prompts and the recall_coach_memory tool). Capped to the most recent entries. */
+export async function appendCoachMemory(text: string, cycleId?: string): Promise<CoachMemory> {
+  const now = nowSql()
+  const trimmed = text.trim().slice(0, 500)
+  const existing = await coachMemory.findOne({ _id: COACH_MEMORY_ID }) as Partial<CoachMemory> | null
+  const notes = Array.isArray(existing?.notes) ? [...existing!.notes!] : []
+  if (trimmed) {
+    notes.push({ at: now, text: trimmed, ...(cycleId ? { cycle_id: cycleId } : {}) })
+    if (notes.length > COACH_NOTES_CAP) notes.splice(0, notes.length - COACH_NOTES_CAP)
+  }
+  const doc: CoachMemory = { _id: COACH_MEMORY_ID, notes, updated_at: now }
+  await coachMemory.upsert(COACH_MEMORY_ID, doc)
+  return doc
+}
+
+/** Read the global coach-memory log (most recent lessons last), for the Monitor/Analyst
+ *  prompt injection and the recall_coach_memory tool. */
+export async function getCoachMemory(limit = COACH_NOTES_CAP): Promise<CoachMemory['notes']> {
+  const row = await coachMemory.findOne({ _id: COACH_MEMORY_ID }, { projection: { notes: 1 } }) as { notes?: CoachMemory['notes'] } | null
+  const notes = Array.isArray(row?.notes) ? row!.notes! : []
+  return notes.slice(-Math.max(1, limit))
+}
+
+async function recallCoachMemory(args: Record<string, unknown>): Promise<unknown> {
+  const limit = clampLimit(args.limit, 20, COACH_NOTES_CAP)
+  const notes = await getCoachMemory(limit)
+  if (!notes.length) return { notes: [], note: 'No coach lessons recorded yet — this is the first audit.' }
+  return { count: notes.length, notes }
+}
+
+// Aggregate entry-timing outcomes from entry_events: how often deferred BUYs actually
+// fill vs. miss (expire / run away), and the mean fill slippage. This is the by-hand
+// analysis that surfaced the "targets too deep → 62% miss" pattern, as one tool call.
+async function getEntryPerformance(args: Record<string, unknown>): Promise<unknown> {
+  const lookback = clampLimit(args.lookback, 200, 1000)
+  const rows = await entryEvents.find(
+    {}, { sort: { created_at: -1 }, limit: lookback, projection: { _id: 0, type: 1, reason: 1, slippage_pct: 1 } },
+  ) as { type: string; reason: string | null; slippage_pct: number | null }[]
+
+  const registered = rows.filter(r => r.type === 'registered').length
+  const filled = rows.filter(r => r.type === 'filled')
+  const cancelled = rows.filter(r => r.type === 'cancelled')
+  const cancelByReason: Record<string, number> = {}
+  for (const c of cancelled) {
+    const key = c.reason ?? 'unknown'
+    cancelByReason[key] = (cancelByReason[key] ?? 0) + 1
+  }
+  const slips = filled.map(f => f.slippage_pct).filter((n): n is number => typeof n === 'number')
+  const meanSlippagePct = slips.length ? Number((slips.reduce((a, b) => a + b, 0) / slips.length).toFixed(3)) : null
+  const resolved = filled.length + cancelled.length
+  return {
+    sampleEvents: rows.length,
+    registered,
+    filled: filled.length,
+    cancelled: cancelled.length,
+    fillRatePct: resolved > 0 ? Number(((filled.length / resolved) * 100).toFixed(1)) : null,
+    cancelByReason,
+    // positive = filled below the signal price (favorable). Negative = paid up.
+    meanFillSlippagePct: meanSlippagePct,
+    note: 'fillRatePct = filled / (filled + cancelled). cancelByReason buckets: expired/ran_away = price moved away from a too-deep or stale target; manual = user/agent cancel.',
+  }
+}
+
+// Closed-position outcomes (status ≠ OPEN) joined to their exit trade, plus win/loss
+// aggregates — the raw material for judging whether the analyst's BUYs and the monitor's
+// exits actually made money. Mirrors the summary engine's closed-position lookup.
+async function getClosedPositions(args: Record<string, unknown>): Promise<unknown> {
+  const limit = clampLimit(args.limit, 20, 100)
+  const rows = await positions.aggregate<{
+    coin: string; status: string; entry_price: number | null; pnl: number | null;
+    exit_price: number | null; closed_at: string | null; opened_at: string
+  }>([
+    { $match: { status: { $ne: 'OPEN' } } },
+    { $lookup: { from: 'trades', localField: 'exit_id', foreignField: 'id', as: 'exitTrade' } },
+    { $addFields: { exitTrade: { $arrayElemAt: ['$exitTrade', 0] } } },
+    { $addFields: { sortKey: { $ifNull: ['$exitTrade.created_at', '$created_at'] } } },
+    { $sort: { sortKey: -1 } },
+    { $limit: limit },
+    { $project: { _id: 0, coin: 1, status: 1, entry_price: 1, pnl: 1, opened_at: '$created_at', exit_price: '$exitTrade.price', closed_at: '$exitTrade.created_at' } },
+  ])
+  const withPnl = rows.filter(r => typeof r.pnl === 'number') as (typeof rows[number] & { pnl: number })[]
+  const wins = withPnl.filter(r => r.pnl > 0)
+  const losses = withPnl.filter(r => r.pnl < 0)
+  const totalPnl = withPnl.reduce((a, r) => a + r.pnl, 0)
+  return {
+    count: rows.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRatePct: withPnl.length ? Number(((wins.length / withPnl.length) * 100).toFixed(1)) : null,
+    totalRealizedPnlUsd: Number(totalPnl.toFixed(2)),
+    avgWinUsd: wins.length ? Number((wins.reduce((a, r) => a + r.pnl, 0) / wins.length).toFixed(2)) : null,
+    avgLossUsd: losses.length ? Number((losses.reduce((a, r) => a + r.pnl, 0) / losses.length).toFixed(2)) : null,
+    positions: rows.map(r => ({
+      coin: r.coin, status: r.status, entryPrice: r.entry_price, exitPrice: r.exit_price,
+      realizedPnlUsd: r.pnl, openedAt: r.opened_at, closedAt: r.closed_at,
+    })),
+  }
+}
+
 // ── safe-action tools ────────────────────────────────────────────────────────
 
 async function addToWatchlist(args: Record<string, unknown>): Promise<unknown> {
@@ -1168,6 +1277,39 @@ export const TOOLS: AgentTool[] = [
     readOnly: false,
     handler: triggerMonitor,
   },
+  {
+    name: 'get_entry_performance',
+    description: 'Aggregate entry-timing outcomes from the entry desk: how many deferred BUYs registered, filled vs. cancelled, the fill rate, a breakdown of cancel reasons (expired / ran_away / manual), and the mean fill slippage. Use this to judge whether the Entry Agent is setting good entry bands or missing fills with too-deep targets.',
+    parameters: {
+      type: 'object',
+      properties: { lookback: { type: 'number', description: 'How many recent entry events to scan (default 200, max 1000).' } },
+      required: [],
+    },
+    readOnly: true,
+    handler: getEntryPerformance,
+  },
+  {
+    name: 'get_closed_positions',
+    description: 'List recently closed positions (with entry/exit price, realized P&L, open/close times) plus win/loss aggregates (win rate, total realized P&L, average win/loss). Use this to judge whether the analyst BUYs and monitor exits are actually making money.',
+    parameters: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'How many closed positions (default 20, max 100).' } },
+      required: [],
+    },
+    readOnly: true,
+    handler: getClosedPositions,
+  },
+  {
+    name: 'recall_coach_memory',
+    description: 'Read the global coach-memory log — the running list of system-wide lessons the Coach has recorded across prior audits (also injected into the Monitor and Analyst prompts). Recall this first so you build on past findings instead of repeating them.',
+    parameters: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'How many recent lessons (default 20, max 40).' } },
+      required: [],
+    },
+    readOnly: true,
+    handler: recallCoachMemory,
+  },
 ]
 
 const TOOL_MAP = new Map(TOOLS.map(t => [t.name, t]))
@@ -1199,6 +1341,18 @@ export const AGENT_SIGNAL_TOOL_NAMES = [
 export const ENTRY_AGENT_TOOL_NAMES = [
   'get_entry_intent', 'get_market', 'get_candle_data', 'get_coin_sentiment', 'web_search',
   'recall_signal_memory', 'get_coin_signal_history', 'list_recent_signals', 'list_entry_events',
+] as const
+
+// The curated belt the Coach Agent exposes: the system-wide reads it needs to audit how the
+// other agents are deciding — entry/closed-position performance digests, recent signals/
+// reviews/trades, portfolio + per-coin context, and its own prior lessons. Strictly
+// READ-ONLY: the coach's corrections ride on its final JSON verdict and the engine applies
+// them (see agent/coach.ts). It must never trigger engines or mutate the watchlist.
+export const COACH_TOOL_NAMES = [
+  'get_entry_performance', 'get_closed_positions', 'recall_coach_memory',
+  'get_portfolio', 'list_open_positions', 'list_recent_trades', 'list_recent_signals',
+  'list_position_reviews', 'get_portfolio_summary', 'get_position_history',
+  'recall_signal_memory', 'get_coin_signal_history', 'get_market', 'get_trading_settings',
 ] as const
 
 export function isReadOnlyTool(name: string): boolean {

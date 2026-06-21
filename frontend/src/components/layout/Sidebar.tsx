@@ -80,6 +80,12 @@ const ITEMS: Record<Page, NavItem> = {
     label: 'Agent Signal',
     path: 'M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z',
   },
+  'coach-agent': {
+    key: 'coach-agent',
+    label: 'Coach Agent',
+    // Academic cap — the desk's reviewer / coach.
+    path: 'M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.62 48.62 0 0112 20.904a48.62 48.62 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15a.75.75 0 100-1.5.75.75 0 000 1.5zm0 0v-3.675A55.378 55.378 0 0112 8.443m-7.007 11.55A5.981 5.981 0 006.75 15.75v-1.5',
+  },
   discover: {
     key: 'discover',
     label: 'Discover',
@@ -150,7 +156,7 @@ interface NavGroup {
 const GROUPS: NavGroup[] = [
   { id: 'trading', label: 'Trading', icon: SECTION_ICONS.trading, keys: ['portfolio', 'monitor', 'agent-monitor', 'summary', 'entry', 'entry-agent', 'trade', 'trading-state'] },
   { id: 'engine', label: 'Engine', icon: SECTION_ICONS.engine, keys: ['routing', 'pipeline', 'agent-signal', 'discover'] },
-  { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['control-room', 'event-stream', 'llm-debug', 'llm-stats', 'cache'] },
+  { id: 'intelligence', label: 'Intelligence', icon: SECTION_ICONS.intelligence, keys: ['coach-agent', 'control-room', 'event-stream', 'llm-debug', 'llm-stats', 'cache'] },
   { id: 'system', label: 'Platform', icon: SECTION_ICONS.system, keys: ['host', 'settings'] },
 ]
 

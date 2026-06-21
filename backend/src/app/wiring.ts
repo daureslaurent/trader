@@ -12,7 +12,7 @@ import {
 } from '../pipeline/index.js'
 import { runDiscovery } from '../discoverer/index.js'
 import { runPortfolioSummary } from '../summary/index.js'
-import { runEntryAgentCoin } from '../agent/index.js'
+import { runEntryAgentCoin, runCoach } from '../agent/index.js'
 import { getSettings } from '../db/index.js'
 import { recomputeOfflineMode, isOffline } from '../core/offlineMode.js'
 import { rescheduleFromSettings, dispatchMonitorRun, dispatchPipelineRun, dispatchSingleCoinPipeline } from './scheduler.js'
@@ -118,6 +118,12 @@ export function registerEventHandlers(): void {
   bus.on('summary_run_requested', ({ cycle_id }) => {
     runPortfolioSummary(cycle_id).catch(err => {
       logger.error('Portfolio summary run failed', { error: errMsg(err) })
+    })
+  })
+
+  bus.on('coach_run_requested', ({ cycle_id }) => {
+    runCoach(cycle_id).catch(err => {
+      logger.error('Coach audit run failed', { error: errMsg(err) })
     })
   })
 

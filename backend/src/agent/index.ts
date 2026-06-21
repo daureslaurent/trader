@@ -10,4 +10,7 @@ export type { AgenticToolInfo, AgenticAgentInfo, ToolPermission } from './regist
 export { runMonitor, isRunning as isMonitorRunning, getMonitorRuns, getActiveReviews } from './monitor.js'
 export { runAgentSignal, runAgentSignalCoin, isRunningSignal, getSignalRuns, getActiveSignalReviews } from './signalD.js'
 export { runEntryAgent, runEntryAgentCoin, isRunningEntry, getEntryAgentRuns, getActiveEntryReviews } from './entryAgent.js'
+export { runCoach, isRunningCoach, getCoachRuns, getActiveCoachReview } from './coach.js'
+export { getCoachMemory } from './tools.js'
+export type { ActiveCoachReview } from './coach.js'
 export type { ChatTurnResult } from './service.js'

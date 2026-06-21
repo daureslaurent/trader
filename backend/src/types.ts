@@ -258,6 +258,18 @@ export interface BotSettings {
   /** How many of the most recent Entry Agent run records to keep in entry_agent_runs;
    *  older ones are pruned after each pass. */
   entry_agent_retain_runs: number
+  /** Coach Agent — the agentic, system-wide process-audit engine. When auto-run is on it
+   *  fires on `coach_cron`, reviews how the other agents are deciding, and writes
+   *  corrections into their memory channels. Opt-in (off by default). */
+  coach_auto_run: boolean
+  /** Cron driving the periodic Coach audit pass (surfaced in the routing graph). */
+  coach_cron: string
+  /** Minimum number of closed positions before the Coach will issue findings — below
+   *  this it no-ops (too small a sample to generalize from). */
+  coach_min_trades: number
+  /** How many of the most recent Coach run records to keep in coach_runs; older ones are
+   *  pruned after each pass. */
+  coach_retain_runs: number
   /** Shared catalog of named LLM endpoints. Each module references one by id via
    *  `llm_<module>_endpoint`; a blank id falls back to the module's env-var config. */
   llm_endpoints: LLMEndpoint[]
@@ -284,6 +296,9 @@ export interface BotSettings {
   llm_monitor_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
+  /** Coach Agent — the agentic system-wide process auditor. Needs a tool-calling-capable model. */
+  llm_coach_endpoint: string
+  llm_coach_max_tokens: number
   /** Generic web_search agent tool — per-page query-relevant extraction. */
   llm_webSearch_endpoint: string
   llm_webSearch_max_tokens: number
@@ -302,6 +317,7 @@ export interface BotSettings {
   llm_stream_agent: boolean
   llm_stream_monitor: boolean
   llm_stream_agentSignal: boolean
+  llm_stream_coach: boolean
   llm_stream_webSearch: boolean
   /** Per-module failover endpoint selection (id into `llm_endpoints`; blank = no
    *  fallback) + max-tokens (0 = reuse the primary's effective max-tokens). Tried
@@ -324,6 +340,8 @@ export interface BotSettings {
   llm_monitor_fb_max_tokens: number
   llm_agentSignal_fb_endpoint: string
   llm_agentSignal_fb_max_tokens: number
+  llm_coach_fb_endpoint: string
+  llm_coach_fb_max_tokens: number
   llm_webSearch_fb_endpoint: string
   llm_webSearch_fb_max_tokens: number
   /** When auto-naming an Agent conversation, the title LLM summarizes only this many
@@ -701,6 +719,63 @@ export interface EntryAgentRun {
   peak_context_tokens: number
   started_at_ms: number
   created_at: string
+}
+
+// ── Coach Agent (the agentic, system-wide process-audit engine) ──────────────
+// A single global tool-calling pass that audits how the OTHER agents are deciding
+// (entry fills/misses, closed-position outcomes, monitor/analyst calls), then writes
+// corrections back into the channels those agents read: per-coin signal memory and a
+// global coach-memory log injected into the Monitor + Analyst prompts. Read-only belt;
+// the corrections ride on the final JSON verdict and the engine executes them. The run +
+// transcript reuse the SignalRunFrame shape so the page renders like the other agents.
+
+/** One observation about an agent's decision quality. */
+export interface CoachFinding {
+  /** Which agent the observation is about. */
+  agent: 'analyst' | 'signal' | 'entry' | 'monitor' | 'portfolio'
+  observation: string
+  severity: 'info' | 'low' | 'medium' | 'high'
+}
+
+/** A correction the Coach wrote back. `signal` targets one coin's signal memory
+ *  (read by Agent Signal + Entry Agent); `global` appends to the coach-memory log
+ *  injected into the Monitor + Analyst prompts. */
+export interface CoachCorrection {
+  target: 'signal' | 'global'
+  /** Required when target === 'signal'. */
+  coin: string | null
+  note: string
+}
+
+export interface CoachRun {
+  id: number
+  cycle_id: string
+  /** Narrative verdict of how the agents are performing this audit. */
+  assessment: string
+  findings: CoachFinding[]
+  /** The corrections actually written back (what the engine applied from the verdict). */
+  corrections: CoachCorrection[]
+  /** Advisory settings ideas for the human — surfaced on the page, NOT applied. */
+  recommendations: string[]
+  confidence: number
+  /** Model id credited (e.g. "coach:<model>"). */
+  model: string
+  /** The agent's loop transcript (thinking / tool_call / tool_result / decision …). */
+  frames: SignalRunFrame[]
+  prompt_tokens: number
+  completion_tokens: number
+  peak_context_tokens: number
+  started_at_ms: number
+  created_at: string
+}
+
+// Global, append-only "lessons learned" log the Coach maintains (one doc, _id = 'global').
+// Injected as a short guidance block into the Monitor context + Analyst prompt, and
+// readable via the recall_coach_memory tool. Capped to the most recent entries.
+export interface CoachMemory {
+  _id: string
+  notes: { at: string; text: string; cycle_id?: string }[]
+  updated_at: string
 }
 
 export interface PositionAdjustment {

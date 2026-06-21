@@ -15,7 +15,7 @@ import { getSettings } from '../db/index.js'
 import { logger } from '../core/logger.js'
 import type { AgentToolPermission } from '../types.js'
 import {
-  TOOLS, AgentTool, MONITOR_TOOL_NAMES, AGENT_SIGNAL_TOOL_NAMES, ENTRY_AGENT_TOOL_NAMES,
+  TOOLS, AgentTool, MONITOR_TOOL_NAMES, AGENT_SIGNAL_TOOL_NAMES, ENTRY_AGENT_TOOL_NAMES, COACH_TOOL_NAMES,
   getToolSchemas, runTool, isReadOnlyTool,
 } from './tools.js'
 
@@ -34,6 +34,7 @@ export interface AgentDef {
 const MONITOR_SET = new Set<string>(MONITOR_TOOL_NAMES)
 const AGENT_SIGNAL_SET = new Set<string>(AGENT_SIGNAL_TOOL_NAMES)
 const ENTRY_AGENT_SET = new Set<string>(ENTRY_AGENT_TOOL_NAMES)
+const COACH_SET = new Set<string>(COACH_TOOL_NAMES)
 
 // The tool-calling agents. Order is the display order in the settings UI.
 export const AGENTS: AgentDef[] = [
@@ -64,6 +65,13 @@ export const AGENTS: AgentDef[] = [
     description: 'The agentic, per-coin entry-position engine. One agent per active entry intent reads live market structure + the BUY thesis / Agent Signal memory, then drives the deferred BUY — adjusting the entry band, firing now, or cancelling — via its final JSON verdict, which the engine executes (it has no action tools). Coin-scoped; it never triggers engines or edits the watchlist mid-pass.',
     // Curated, strictly read-only belt — the entry decision rides on the JSON verdict, not tools.
     defaultGrant: t => (ENTRY_AGENT_SET.has(t.name) ? 'read' : 'off'),
+  },
+  {
+    id: 'coach',
+    label: 'Coach Agent',
+    description: 'The agentic, system-wide process auditor. One global pass reviews how the other agents are deciding (entry fills/misses, closed-position outcomes, monitor/analyst calls) with read-only tools, then writes corrections into the channels those agents read — per-coin signal memory and a global coach-memory log injected into the Monitor + Analyst prompts. Strictly read-only belt; its corrections ride on the final JSON verdict and the engine applies them.',
+    // Curated, strictly read-only belt — corrections are carried by the JSON verdict, not tools.
+    defaultGrant: t => (COACH_SET.has(t.name) ? 'read' : 'off'),
   },
 ]
 

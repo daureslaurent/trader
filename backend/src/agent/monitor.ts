@@ -25,6 +25,7 @@ import {
   buildReviewContext, parseReview, finalizeReview, reviewPositionRules,
 } from '../monitor/index.js'
 import { isOffline } from '../core/offlineMode.js'
+import { getCoachGuidanceBlock } from '../core/coachGuidance.js'
 import type { MonitorEntry, RawReview, PositionContext } from '../monitor/index.js'
 import type { MonitorRun, MonitorRunFrame, PositionReview, ReviewRiskFields } from '../types.js'
 import { isReadOnlyTool } from './tools.js'
@@ -215,8 +216,11 @@ async function runAgenticReview(coin: string, ctx: PositionContext, cycleId: str
   const active = resolveLLM('monitor') // dedicated, tool-calling-capable module (Settings → LLM Models)
   const tools = getAgentToolSchemas(AGENT_ID)
 
+  // Append the Coach Agent's standing lessons (if any) so the monitor self-corrects.
+  const coachGuidance = await getCoachGuidanceBlock()
+  const systemPrompt = buildSystemPrompt(getAgentToolPrompt(AGENT_ID))
   const messages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: buildSystemPrompt(getAgentToolPrompt(AGENT_ID)) },
+    { role: 'system', content: coachGuidance ? `${systemPrompt}\n\n${coachGuidance}` : systemPrompt },
     { role: 'user', content: buildUserBriefing(ctx) },
   ]
 

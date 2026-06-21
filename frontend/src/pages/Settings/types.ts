@@ -65,6 +65,10 @@ export interface SettingsData {
   entry_agent_candle_tf: string
   entry_agent_candle_count: number
   entry_agent_retain_runs: number
+  coach_auto_run: boolean
+  coach_cron: string
+  coach_min_trades: number
+  coach_retain_runs: number
   llm_endpoints: LLMEndpoint[]
   llm_analyst_endpoint: string
   llm_analyst_max_tokens: number
@@ -84,6 +88,8 @@ export interface SettingsData {
   llm_monitor_max_tokens: number
   llm_agentSignal_endpoint: string
   llm_agentSignal_max_tokens: number
+  llm_coach_endpoint: string
+  llm_coach_max_tokens: number
   llm_webSearch_endpoint: string
   llm_webSearch_max_tokens: number
   llm_stream_analyst: boolean
@@ -95,6 +101,7 @@ export interface SettingsData {
   llm_stream_agent: boolean
   llm_stream_monitor: boolean
   llm_stream_agentSignal: boolean
+  llm_stream_coach: boolean
   llm_stream_webSearch: boolean
   llm_analyst_fb_endpoint: string
   llm_analyst_fb_max_tokens: number
@@ -114,6 +121,8 @@ export interface SettingsData {
   llm_monitor_fb_max_tokens: number
   llm_agentSignal_fb_endpoint: string
   llm_agentSignal_fb_max_tokens: number
+  llm_coach_fb_endpoint: string
+  llm_coach_fb_max_tokens: number
   llm_webSearch_fb_endpoint: string
   llm_webSearch_fb_max_tokens: number
   agent_title_context_messages: number
@@ -147,7 +156,7 @@ export type ToggleKey =
   | 'approval_required' | 'binance_read_only' | 'monitor_auto_run' | 'monitor_adjust_sltp' | 'monitor_auto_approve'
   | 'monitor_trust_llm_sltp' | 'monitor_use_horizon' | 'monitor_protect_winners' | 'monitor_sequential'
   | 'agent_signal_check_portfolio' | 'entry_timing_enabled' | 'entry_confirm_rebound' | 'llm_allow_parallel_same_url'
-  | 'summary_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup'
+  | 'summary_auto_run' | 'coach_auto_run' | 'telegram_notify_enabled' | 'telegram_notify_startup'
   | 'telegram_notify_position_opened' | 'telegram_notify_position_closed' | 'telegram_notify_sl_tp_adjusted'
   | 'telegram_notify_portfolio' | 'telegram_notify_summary'
   | 'telegram_notify_discovery' | 'telegram_notify_trade_failed' | 'telegram_notify_errors'

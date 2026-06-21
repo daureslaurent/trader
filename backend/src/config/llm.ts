@@ -17,6 +17,7 @@ export type LLMModule =
   | 'agent'
   | 'monitor'
   | 'agentSignal'
+  | 'coach'
   | 'webSearch'
 
 interface ModuleSpec {
@@ -97,6 +98,13 @@ const SPECS: Record<LLMModule, ModuleSpec> = {
     fbEndpointKey: 'llm_agentSignal_fb_endpoint',
     fbMaxTokensKey: 'llm_agentSignal_fb_max_tokens',
     fallback: config.agentSignal,
+  },
+  coach: {
+    endpointKey: 'llm_coach_endpoint',
+    maxTokensKey: 'llm_coach_max_tokens',
+    fbEndpointKey: 'llm_coach_fb_endpoint',
+    fbMaxTokensKey: 'llm_coach_fb_max_tokens',
+    fallback: config.coach,
   },
   webSearch: {
     endpointKey: 'llm_webSearch_endpoint',

@@ -108,6 +108,14 @@ export const config = {
     model: opt('AGENT_SIGNAL_MODEL', llamaModel),
     maxTokens: num('AGENT_SIGNAL_MAX_TOKENS', 4096),
   },
+  coach: {
+    // Coach Agent — the agentic, system-wide process auditor. One global tool-calling pass
+    // reviews how the other agents are deciding and writes corrections into their memory, so
+    // it needs a tool-calling-capable model. Env COACH_* falls back to the llama defaults.
+    baseURL: opt('COACH_BASE_URL', llamaBaseURL),
+    model: opt('COACH_MODEL', llamaModel),
+    maxTokens: num('COACH_MAX_TOKENS', 4096),
+  },
   webSearch: {
     // Generic web_search agent tool — per-page extraction that summarizes search results
     // against the caller's free-text query (no coin coupling). Falls back to llama.

@@ -24,6 +24,7 @@ import Summary from './pages/Summary'
 import Trade from './pages/Trade'
 import EntryDesk from './pages/EntryDesk'
 import EntryAgent from './pages/EntryAgent'
+import CoachAgent from './pages/CoachAgent'
 import Settings from './pages/Settings'
 import LLM from './pages/LLM'
 import LLMDebug from './pages/LLMDebug'
@@ -46,6 +47,7 @@ const PAGE_TITLES: Record<Page, string> = {
   trade: 'Trade',
   entry: 'Entry Desk',
   'entry-agent': 'Entry Agent',
+  'coach-agent': 'Coach Agent',
   pipeline: 'Pipeline',
   'agent-signal': 'Agent Signal',
   cache: 'Article Cache',
@@ -248,6 +250,7 @@ function AppInner() {
           {page === 'trade' && <Trade />}
           {page === 'entry' && <EntryDesk />}
           {page === 'entry-agent' && <EntryAgent />}
+          {page === 'coach-agent' && <CoachAgent />}
           {page === 'pipeline' && <LLM />}
           {page === 'cache' && <CacheView />}
           {page === 'discover' && <Discover />}

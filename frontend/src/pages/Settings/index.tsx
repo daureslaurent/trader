@@ -11,6 +11,7 @@ import { RiskSection } from './sections/RiskSection'
 import { MonitorSection } from './sections/MonitorSection'
 import { ChartSection } from './sections/ChartSection'
 import { SummarySection } from './sections/SummarySection'
+import { CoachSection } from './sections/CoachSection'
 import { ModelsSection } from './sections/ModelsSection'
 import { AgentSection } from './sections/AgentSection'
 import { AppearanceSection } from './sections/AppearanceSection'
@@ -161,6 +162,7 @@ export default function Settings() {
       case 'monitor':    return <MonitorSection {...sectionProps} />
       case 'chart':      return <ChartSection {...sectionProps} />
       case 'summary':    return <SummarySection {...sectionProps} />
+      case 'coach':      return <CoachSection {...sectionProps} />
       case 'models':     return <ModelsSection {...sectionProps} llmDefaults={llmDefaults} modalOpen={endpointModalOpen} setModalOpen={setEndpointModalOpen} />
       case 'agent':      return <AgentSection {...sectionProps} toolsConfig={toolsConfig} setGrant={setGrant} setAgentPreset={setAgentPreset} />
       case 'appearance': return <AppearanceSection />

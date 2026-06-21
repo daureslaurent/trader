@@ -9,6 +9,7 @@ import { router as discoverRoutes } from './discover.routes.js'
 import { router as monitorRoutes } from './monitor.routes.js'
 import { router as agentSignalRoutes } from './agent-signal.routes.js'
 import { router as entryAgentRoutes } from './entry-agent.routes.js'
+import { router as coachRoutes } from './coach.routes.js'
 import { router as summaryRoutes } from './summary.routes.js'
 import { router as llmRoutes } from './llm.routes.js'
 import { router as agentRoutes } from './agent.routes.js'
@@ -36,6 +37,7 @@ router.use(discoverRoutes)
 router.use(monitorRoutes)
 router.use(agentSignalRoutes)
 router.use(entryAgentRoutes)
+router.use(coachRoutes)
 router.use(summaryRoutes)
 router.use(llmRoutes)
 router.use(agentRoutes)
